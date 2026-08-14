@@ -42,6 +42,8 @@ export interface Config {
   outputDir?: string
   /** Total poll budget in milliseconds while the async task finishes. */
   pollTimeoutMs?: number
+  /** 测试线路：仅提交任务、不轮询结果，由用户到官方后台查看进度。 */
+  submitOnly?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -50,6 +52,7 @@ export const Config: z<Config> = z.object({
   resolution: z.string().default('720p'),
   outputDir: z.string().default('outputs'),
   pollTimeoutMs: z.number().default(420000),
+  submitOnly: z.boolean().default(false),
 })
 
 type ResolvedConfig = Required<Config>
@@ -148,7 +151,7 @@ export function apply(ctx: Context, config: Config): void {
         if (value.done && value.path !== undefined) {
           return [{ type: 'text', text: `generated video: ${value.path}` }]
         }
-        return [{ type: 'text', text: `video still generating; submit_id=${value.submit_id ?? 'unknown'}. Query later with query_result.` }]
+        return [{ type: 'text', text: `video task submitted; submit_id=${value.submit_id ?? 'unknown'}. Check progress in the Dreamina dashboard.` }]
       },
     },
     // Long async task: never run concurrently with sibling calls.
@@ -177,6 +180,11 @@ export function apply(ctx: Context, config: Config): void {
       const submitId = submitted.submit_id
       if (submitted.gen_status === 'fail') {
         throw new Error(`dreamina task failed: ${String(submitted.fail_reason ?? 'unknown reason')}`)
+      }
+
+      // 测试线路：仅提交，不轮询，由用户到官方后台查看进度。
+      if (resolved.submitOnly) {
+        return { submit_id: submitId, done: false }
       }
 
       // Poll query_result until the CLI downloads a video or the budget expires.

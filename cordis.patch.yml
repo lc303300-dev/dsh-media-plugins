@@ -18,9 +18,10 @@
     - id: Ws_tool-video-gen
       name: dsh-media-plugins/Ws_tool-video-gen
       config:
-        # 默认视频模型与分辨率（Seedance 2.5 为 VIP 模型，480p）。
-        model: 'seedance2.5'
-        resolution: '480p'
+        # 测试专用线路：Seedance 2.0（非 VIP）+ 720p，仅提交不轮询，用户到官方后台查看进度。
+        model: 'seedance2.0'
+        resolution: '720p'
+        submitOnly: true
 
     - id: Ws_completion-notify
       name: dsh-media-plugins/Ws_completion-notify
