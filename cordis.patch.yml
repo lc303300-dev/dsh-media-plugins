@@ -1,0 +1,26 @@
+# dsh-media-plugins 组合层：注册三个媒体工具。
+#
+# 依赖说明：
+# - describe_image 依赖火山方舟视觉 provider，需在 $DSH_HOME/settings.yaml
+#   配置 llm-pi-ai.providers.volcengine（见 README / setup.ps1）。
+# - generate_image / generate_video 的 Key 走 DSH credentials 系统
+#   （VOLCANO_ENGINE_API_KEY / COMFLY_API_KEY），由 setup 引导写入。
+- insert:
+    - id: Ws_tool-vision
+      name: dsh-media-plugins/Ws_tool-vision
+
+    - id: Ws_tool-image-gen
+      name: dsh-media-plugins/Ws_tool-image-gen
+      config:
+        # Comfly 需要 VPN 代理；按本机代理端口修改。
+        proxyUrl: 'http://127.0.0.1:7897'
+
+    - id: Ws_tool-video-gen
+      name: dsh-media-plugins/Ws_tool-video-gen
+      config:
+        # 默认视频模型与分辨率（Seedance 2.5 为 VIP 模型，480p）。
+        model: 'seedance2.5'
+        resolution: '480p'
+
+    - id: Ws_completion-notify
+      name: dsh-media-plugins/Ws_completion-notify

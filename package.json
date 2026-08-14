@@ -1,0 +1,49 @@
+{
+  "name": "dsh-media-plugins",
+  "version": "0.1.0",
+  "description": "DSH 媒体能力组合包：describe_image（火山方舟看图）、generate_image（Comfly Gemini 生图）、generate_video（即梦 Dreamina 生视频）、完成通知（Windows 托盘气泡）",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lc303300-dev/dsh-media-plugins.git"
+  },
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./tool-vision": "./tool-vision.js",
+    "./Ws_tool-vision": "./tool-vision.js",
+    "./tool-image-gen": "./tool-image-gen.js",
+    "./Ws_tool-image-gen": "./tool-image-gen.js",
+    "./tool-video-gen": "./tool-video-gen.js",
+    "./Ws_tool-video-gen": "./tool-video-gen.js",
+    "./notify": "./notify.js",
+    "./Ws_completion-notify": "./notify.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "tool-vision.js",
+    "tool-image-gen.js",
+    "tool-video-gen.js",
+    "notify.js",
+    "cordis.patch.yml",
+    "scripts/notify-toast.ps1"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "prepare": "tsdown",
+    "build": "tsdown"
+  },
+  "dependencies": {
+    "undici": "^8.10.0"
+  },
+  "devDependencies": {
+    "tsdown": "^0.22.0",
+    "typescript": "^5.0.0"
+  },
+  "license": "MIT"
+}
