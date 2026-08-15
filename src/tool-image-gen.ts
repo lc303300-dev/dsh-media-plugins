@@ -5,7 +5,7 @@
  * Contract:
  * - `image_ratio` is required (8 supported values); missing or unsupported
  *   fails as input_error before any provider is called (never inferred).
- * - Adapters run strictly serially: comfly-gemini-lite →
+ * - Adapters run strictly serially: comfly-gemini-flash-preview →
  *   comfly-gpt-image-2-all → comfly-gpt-image-2 → apimart-gpt-image-2 →
  *   google-gemini-image → dreamina-image. Fallback only for allowed
  *   failure classes; indeterminate submissions never retry.
@@ -120,7 +120,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'generate_image',
       description:
-        '用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。图片按配置顺序严格串行尝试适配器（comfly-gemini-lite → comfly-gpt-image-2-all → comfly-gpt-image-2 → apimart-gpt-image-2 → google-gemini-image → dreamina-image），单适配器最多 120 秒、整任务最多 300 秒；仅明确可回退的失败才进入下一适配器，提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。',
+        '用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。图片按配置顺序严格串行尝试适配器（comfly-gemini-flash-preview → comfly-gpt-image-2-all → comfly-gpt-image-2 → apimart-gpt-image-2 → google-gemini-image → dreamina-image），单适配器最多 120 秒、整任务最多 300 秒；仅明确可回退的失败才进入下一适配器，提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。',
       parameters: {
         prompt: {
           type: 'string',

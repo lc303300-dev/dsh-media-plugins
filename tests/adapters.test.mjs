@@ -51,8 +51,19 @@ test('defaultAdapters respects enabled filter and contract order', () => {
     maxConcurrency: 6, providerTimeoutMs: 120000, taskTimeoutMs: 300000, outputDir: 'o', enabled: [],
   }
   const all = defaultAdapters(cfg)
-  assert.deepEqual(all.map((a) => a.id), ['comfly-gemini-lite', 'comfly-gpt-image-2-all', 'comfly-gpt-image-2', 'apimart-gpt-image-2', 'google-gemini-image', 'dreamina-image'])
+  assert.deepEqual(all.map((a) => a.id), ['comfly-gemini-flash-preview', 'comfly-gpt-image-2-all', 'comfly-gpt-image-2', 'apimart-gpt-image-2', 'google-gemini-image', 'dreamina-image'])
+  const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gemini-flash-preview'] })
+  assert.equal(filtered.length, 1)
+  assert.equal(filtered[0].id, 'comfly-gemini-flash-preview')
+})
+
+test('legacy adapter id alias: comfly-gemini-lite still selects the renamed adapter', () => {
+  const cfg = {
+    comflyBaseURL: 'x', comflyApiKeyEnv: 'K', apimartBaseURL: 'x', apimartApiKeyEnv: 'K',
+    geminiApiURL: 'x', geminiApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
+    maxConcurrency: 6, providerTimeoutMs: 120000, taskTimeoutMs: 300000, outputDir: 'o', enabled: [],
+  }
   const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gemini-lite'] })
   assert.equal(filtered.length, 1)
-  assert.equal(filtered[0].id, 'comfly-gemini-lite')
+  assert.equal(filtered[0].id, 'comfly-gemini-flash-preview')
 })

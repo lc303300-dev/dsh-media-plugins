@@ -316,10 +316,15 @@ function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
   }
 }
 
+/** Legacy adapter ids -> current ids (configs written against old names keep working). */
+export const ADAPTER_ALIASES: Readonly<Record<string, string>> = {
+  'comfly-gemini-lite': 'comfly-gemini-flash-preview',
+}
+
 /** Build the default adapter chain in contract priority order. */
 export function defaultAdapters(cfg: RouterConfig): ImageAdapter[] {
   const chain: ImageAdapter[] = [
-    comflyAdapter('comfly-gemini-lite', 'gemini-3.1-flash-image-preview', cfg),
+    comflyAdapter('comfly-gemini-flash-preview', 'gemini-3.1-flash-image-preview', cfg),
     comflyAdapter('comfly-gpt-image-2-all', 'gpt-image-2-all', cfg),
     comflyAdapter('comfly-gpt-image-2', 'gpt-image-2', cfg),
     apimartAdapter(cfg),
@@ -327,7 +332,8 @@ export function defaultAdapters(cfg: RouterConfig): ImageAdapter[] {
     dreaminaImageAdapter(cfg),
   ]
   if (!cfg.enabled || cfg.enabled.length === 0) return chain
-  return chain.filter((a) => cfg.enabled.includes(a.id))
+  const enabledIds = new Set(cfg.enabled.map((id) => ADAPTER_ALIASES[id] ?? id))
+  return chain.filter((a) => enabledIds.has(a.id))
 }
 
 export interface RouterOutcome {
