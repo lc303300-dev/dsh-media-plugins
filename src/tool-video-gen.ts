@@ -45,10 +45,18 @@ export const name = 'Ws_tool-video-gen'
 /** Services required by the video tool. */
 export const inject = ['tools']
 
-export const VIDEO_EXECUTION_MODES = ['production', 'production_submit_only', 'test_submit_only'] as const
-export type VideoExecutionMode = (typeof VIDEO_EXECUTION_MODES)[number]
+import {
+  VIDEO_EXECUTION_MODES,
+  resolveVideoModel,
+  resolveVideoResolution,
+  normalizeModel,
+  limitsFor,
+  selectVideoSubcommand,
+  type VideoExecutionMode,
+} from './shared/video-policy.ts'
 
-/** Plugin config (all optional — `Config` supplies the defaults). */
+export { VIDEO_EXECUTION_MODES }
+export type { VideoExecutionMode }/** Plugin config (all optional — `Config` supplies the defaults). */
 export interface Config {
   dreaminaPath?: string
   model?: string
@@ -78,66 +86,6 @@ const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi'])
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'])
 const REF_VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v'])
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'])
-
-/** Model alias -> official CLI model id (auto-completes the seedance prefix). */
-const MODEL_ALIASES: Record<string, string> = {
-  '2.0': 'seedance2.0',
-  '2.0fast': 'seedance2.0fast',
-  '2.0_vip': 'seedance2.0_vip',
-  '2.0fast_vip': 'seedance2.0fast_vip',
-  '2.0mini': 'seedance2.0mini',
-  '2.5': 'seedance2.5',
-}
-
-/** Non-VIP 2.0-series models: only reachable through the test channel. */
-const NON_VIP_2_0 = new Set(['seedance2.0', 'seedance2.0fast', 'seedance2.0mini'])
-
-interface ModelLimits {
-  total: number
-  durationMin: number
-  durationMax: number
-  resolutions: string[]
-  ratios: string[]
-  audioOnlyAllowed: boolean
-}
-
-const LIMITS_SEEDANCE_2_5: ModelLimits = {
-  total: 50,
-  durationMin: 4,
-  durationMax: 30,
-  resolutions: ['480p', '720p'],
-  ratios: ['1:1', '3:4', '16:9', '4:3', '9:16', '21:9'],
-  audioOnlyAllowed: true,
-}
-
-const LIMITS_SEEDANCE_2_0: ModelLimits = {
-  total: 12,
-  durationMin: 4,
-  durationMax: 15,
-  resolutions: ['720p', '1080p', '4k'],
-  ratios: ['1:1', '3:4', '16:9', '4:3', '9:16', '21:9'],
-  audioOnlyAllowed: false,
-}
-
-const LIMITS_OTHER: ModelLimits = {
-  total: 12,
-  durationMin: 4,
-  durationMax: 15,
-  resolutions: ['720p'],
-  ratios: ['1:1', '3:4', '16:9', '4:3', '9:16', '21:9'],
-  audioOnlyAllowed: false,
-}
-
-function normalizeModel(value: string | undefined): string {
-  if (!value) return value as unknown as string
-  return MODEL_ALIASES[value] ?? value
-}
-
-function limitsFor(model: string): ModelLimits {
-  if (model === 'seedance2.5') return LIMITS_SEEDANCE_2_5
-  if (model === 'seedance2.0_vip' || model === 'seedance2.0fast_vip') return LIMITS_SEEDANCE_2_0
-  return LIMITS_OTHER
-}
 
 /** Validate reference files: extension allowlist + existence. */
 async function validateRefFiles(kind: 'image' | 'video' | 'audio', paths: string[]): Promise<void> {
@@ -286,8 +234,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
 
         // model policy
         const userModel = normalizeModel(args.model_version ?? config.model)
-        const model = mode === 'test_submit_only' ? 'seedance2.0' : NON_VIP_2_0.has(userModel) ? 'seedance2.0_vip' : userModel
-        const resolution = mode === 'test_submit_only' ? '720p' : (args.video_resolution ?? config.resolution)
+        const model = resolveVideoModel(mode, userModel)
+        const resolution = resolveVideoResolution(mode, args.video_resolution, config.resolution)
         const duration = Number(args.duration ?? 5)
         const ratio = String(args.ratio ?? '16:9')
 
@@ -342,7 +290,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const outDir = join(workspaceRoot, config.outputDir)
         try {
           // contract: verify the chosen subcommand exists before any real submit
-          const subcommand = totalRefs > 0 ? 'multimodal2video' : 'text2video'
+          const subcommand = selectVideoSubcommand(totalRefs)
           if (config.runHelpBeforeSubmit) {
             try {
               await runDreamina(config.dreaminaPath, [subcommand, '-h'], 15000)

@@ -342,6 +342,8 @@ export interface RouterOptions {
   privateRoot: string
   signal?: AbortSignal
   taskId?: string
+  /** Injectable adapter chain (defaults to the contract chain); used by tests. */
+  adapters?: ImageAdapter[]
 }
 
 /** Normalize references (EXIF + ≤1920 px) into the private inputs dir. */
@@ -379,7 +381,7 @@ async function normalizeInputs(images: string[], privateRoot: string, taskId: st
 export async function runImageRouter(options: RouterOptions): Promise<RouterOutcome> {
   const { prompt, images, ratio, config, privateRoot, signal, taskId = newTaskId() } = options
   const size = ratioToSize(ratio)
-  const adapters = defaultAdapters(config)
+  const adapters = options.adapters ?? defaultAdapters(config)
   const taskDeadline = Date.now() + config.taskTimeoutMs
   const attempts: AttemptRecord[] = []
   const startedAt = Date.now()

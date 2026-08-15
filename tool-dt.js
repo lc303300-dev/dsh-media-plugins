@@ -5,6 +5,32 @@ import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+//#region src/shared/dt-core.ts
+function escapeHtml(text) {
+	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+/** Build review/index.html: per-material preview + Chinese prompt, numbered. */
+function buildReviewHtml(manifest, items) {
+	const rows = items.map((it) => `<tr><td>#${it.index}</td><td>${it.preview ? `<img src="${it.preview.split("\\").join("/").replace(/^.*\/dt\//, "dt/")}" width="240">` : "—"}</td><td style="max-width:480px">${escapeHtml(it.prompt)}</td></tr>`).join("\n");
+	return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>DT 审阅 ${manifest.batch_id}</title><style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse}td{border:1px solid #ccc;padding:10px;vertical-align:top}</style></head><body><h1>审阅批次 ${manifest.batch_id}</h1><p>时长 ${manifest.duration}s · 比例 ${manifest.ratio} · 模型 ${manifest.model}</p><table><thead><tr><th>#</th><th>素材预览</th><th>中文提示词</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+}
+/** Build the review items (index/material/preview/prompt) from a manifest. */
+function buildReviewItems(manifest, previews) {
+	const items = [];
+	for (let i = 0; i < manifest.materials.length; i += 1) {
+		const m = manifest.materials[i];
+		const prev = previews.find((p) => p.material === m.path);
+		const prompt = manifest.prompts.find((p) => String(p.material) === m.path)?.prompt ?? "";
+		items.push({
+			index: i + 1,
+			material: m.path,
+			preview: prev?.preview ?? "",
+			prompt
+		});
+	}
+	return items;
+}
+//#endregion
 //#region src/tool-dt.ts
 /** Cordis plugin name used by loader diagnostics. */
 const name = "Ws_tool-dt";
@@ -192,20 +218,8 @@ function apply(ctx, config) {
 				case "finalize_review": {
 					const previews = await readJsonSafe(join(dir, "previews.json")) ?? [];
 					const reviewDir = await ensureDir(join(dir, "review"));
-					const items = [];
-					for (let i = 0; i < manifest.materials.length; i += 1) {
-						const m = manifest.materials[i];
-						const prev = previews.find((p) => p.material === m.path);
-						const prompt = manifest.prompts.find((p) => String(p.material) === m.path)?.prompt ?? "";
-						items.push({
-							index: i + 1,
-							material: m.path,
-							preview: prev?.preview ?? "",
-							prompt
-						});
-					}
-					const rows = items.map((it) => `<tr><td>#${it.index}</td><td>${it.preview ? `<img src="${it.preview.split("\\").join("/").replace(/^.*\/dt\//, "dt/")}" width="240">` : "—"}</td><td style="max-width:480px">${escapeHtml(it.prompt)}</td></tr>`).join("\n");
-					const html = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>DT 审阅 ${batchId}</title><style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse}td{border:1px solid #ccc;padding:10px;vertical-align:top}</style></head><body><h1>审阅批次 ${batchId}</h1><p>时长 ${manifest.duration}s · 比例 ${manifest.ratio} · 模型 ${manifest.model}</p><table><thead><tr><th>#</th><th>素材预览</th><th>中文提示词</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+					const items = buildReviewItems(manifest, previews);
+					const html = buildReviewHtml(manifest, items);
 					await writeFile(join(reviewDir, "index.html"), html, "utf8");
 					await atomicWriteJson(join(dir, "review.json"), items);
 					return {
@@ -227,9 +241,6 @@ function apply(ctx, config) {
 			}
 		}
 	}));
-}
-function escapeHtml(text) {
-	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 //#endregion
 export { Config, apply, inject, name };

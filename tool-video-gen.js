@@ -7,60 +7,25 @@ import { dirname, isAbsolute, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-//#region src/tool-video-gen.ts
-const execFileAsync = promisify(execFile);
-/** Bundle root: the built tool file lives at the package root. */
-const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
-/** Cordis plugin name used by loader diagnostics. */
-const name = "Ws_tool-video-gen";
-/** Services required by the video tool. */
-const inject = ["tools"];
+//#region src/shared/video-policy.ts
+/**
+* Video model/execution policy (pure domain — no DSH imports).
+*
+* Contract (Codex_image AGENTS.md / UNIFIED_MEDIA_TOOL_REFACTOR_BLUEPRINT):
+* - default model seedance2.5, default resolution 480p;
+* - test_submit_only forces non-VIP seedance2.0 + 720p + poll=0 and never
+*   queries/downloads;
+* - ordinary explicit 2.0-series (non-VIP, non-test) normalizes to
+*   seedance2.0_vip;
+* - multiframe2video is disabled legacy — the command selector never emits it.
+*
+* @module dsh-media-plugins/shared/video-policy
+*/
 const VIDEO_EXECUTION_MODES = [
 	"production",
 	"production_submit_only",
 	"test_submit_only"
 ];
-const Config = z.object({
-	dreaminaPath: z.string().default(join(PACKAGE_ROOT, "bin", "dreamina.exe")),
-	model: z.string().default("seedance2.5"),
-	resolution: z.string().default("480p"),
-	outputDir: z.string().default("outputs"),
-	privateDir: z.string().default(""),
-	pollTimeoutMs: z.number().default(42e4),
-	executionMode: z.union([...VIDEO_EXECUTION_MODES]).default("production"),
-	runHelpBeforeSubmit: z.boolean().default(true)
-});
-const VIDEO_EXTENSIONS = /* @__PURE__ */ new Set([
-	".mp4",
-	".mov",
-	".webm",
-	".mkv",
-	".avi"
-]);
-const IMAGE_EXTENSIONS = /* @__PURE__ */ new Set([
-	".png",
-	".jpg",
-	".jpeg",
-	".webp",
-	".gif",
-	".bmp"
-]);
-const REF_VIDEO_EXTENSIONS = /* @__PURE__ */ new Set([
-	".mp4",
-	".mov",
-	".webm",
-	".mkv",
-	".avi",
-	".m4v"
-]);
-const AUDIO_EXTENSIONS = /* @__PURE__ */ new Set([
-	".mp3",
-	".wav",
-	".m4a",
-	".aac",
-	".flac",
-	".ogg"
-]);
 /** Model alias -> official CLI model id (auto-completes the seedance prefix). */
 const MODEL_ALIASES = {
 	"2.0": "seedance2.0",
@@ -134,6 +99,76 @@ function limitsFor(model) {
 	if (model === "seedance2.0_vip" || model === "seedance2.0fast_vip") return LIMITS_SEEDANCE_2_0;
 	return LIMITS_OTHER;
 }
+/**
+* Model policy: test channel forces non-VIP seedance2.0; ordinary explicit
+* 2.0-series normalizes to seedance2.0_vip; everything else passes through.
+*/
+function resolveVideoModel(mode, userModel) {
+	if (mode === "test_submit_only") return "seedance2.0";
+	return NON_VIP_2_0.has(userModel) ? "seedance2.0_vip" : userModel;
+}
+/** Resolution policy: test channel forces 720p; otherwise requested or default. */
+function resolveVideoResolution(mode, requested, defaultResolution) {
+	if (mode === "test_submit_only") return "720p";
+	return requested ?? defaultResolution;
+}
+/**
+* CLI subcommand selection. The disabled legacy `multiframe2video` is never
+* produced; any reference input (or audio) routes to multimodal2video.
+*/
+function selectVideoSubcommand(totalRefs) {
+	return totalRefs > 0 ? "multimodal2video" : "text2video";
+}
+//#endregion
+//#region src/tool-video-gen.ts
+const execFileAsync = promisify(execFile);
+/** Bundle root: the built tool file lives at the package root. */
+const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
+/** Cordis plugin name used by loader diagnostics. */
+const name = "Ws_tool-video-gen";
+/** Services required by the video tool. */
+const inject = ["tools"];
+const Config = z.object({
+	dreaminaPath: z.string().default(join(PACKAGE_ROOT, "bin", "dreamina.exe")),
+	model: z.string().default("seedance2.5"),
+	resolution: z.string().default("480p"),
+	outputDir: z.string().default("outputs"),
+	privateDir: z.string().default(""),
+	pollTimeoutMs: z.number().default(42e4),
+	executionMode: z.union([...VIDEO_EXECUTION_MODES]).default("production"),
+	runHelpBeforeSubmit: z.boolean().default(true)
+});
+const VIDEO_EXTENSIONS = /* @__PURE__ */ new Set([
+	".mp4",
+	".mov",
+	".webm",
+	".mkv",
+	".avi"
+]);
+const IMAGE_EXTENSIONS = /* @__PURE__ */ new Set([
+	".png",
+	".jpg",
+	".jpeg",
+	".webp",
+	".gif",
+	".bmp"
+]);
+const REF_VIDEO_EXTENSIONS = /* @__PURE__ */ new Set([
+	".mp4",
+	".mov",
+	".webm",
+	".mkv",
+	".avi",
+	".m4v"
+]);
+const AUDIO_EXTENSIONS = /* @__PURE__ */ new Set([
+	".mp3",
+	".wav",
+	".m4a",
+	".aac",
+	".flac",
+	".ogg"
+]);
 /** Validate reference files: extension allowlist + existence. */
 async function validateRefFiles(kind, paths) {
 	const accepted = kind === "image" ? IMAGE_EXTENSIONS : kind === "video" ? REF_VIDEO_EXTENSIONS : AUDIO_EXTENSIONS;
@@ -278,9 +313,8 @@ function apply(ctx, config) {
 			if (prompt.length === 0) throw mediaErrors.input("prompt must be a non-empty string");
 			const mode = args.video_execution_mode ?? config.executionMode;
 			if (!VIDEO_EXECUTION_MODES.includes(mode)) throw mediaErrors.input(`unsupported video_execution_mode: ${mode}`);
-			const userModel = normalizeModel(args.model_version ?? config.model);
-			const model = mode === "test_submit_only" ? "seedance2.0" : NON_VIP_2_0.has(userModel) ? "seedance2.0_vip" : userModel;
-			const resolution = mode === "test_submit_only" ? "720p" : args.video_resolution ?? config.resolution;
+			const model = resolveVideoModel(mode, normalizeModel(args.model_version ?? config.model));
+			const resolution = resolveVideoResolution(mode, args.video_resolution, config.resolution);
 			const duration = Number(args.duration ?? 5);
 			const ratio = String(args.ratio ?? "16:9");
 			const images = [];
@@ -322,7 +356,7 @@ function apply(ctx, config) {
 			});
 			const outDir = join(workspaceRoot, config.outputDir);
 			try {
-				const subcommand = totalRefs > 0 ? "multimodal2video" : "text2video";
+				const subcommand = selectVideoSubcommand(totalRefs);
 				if (config.runHelpBeforeSubmit) try {
 					await runDreamina(config.dreaminaPath, [subcommand, "-h"], 15e3);
 				} catch (error) {

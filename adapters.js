@@ -532,7 +532,7 @@ async function normalizeInputs(images, privateRoot, taskId) {
 async function runImageRouter(options) {
 	const { prompt, images, ratio, config, privateRoot, signal, taskId = newTaskId() } = options;
 	const size = ratioToSize(ratio);
-	const adapters = defaultAdapters(config);
+	const adapters = options.adapters ?? defaultAdapters(config);
 	const taskDeadline = Date.now() + config.taskTimeoutMs;
 	const attempts = [];
 	const startedAt = Date.now();

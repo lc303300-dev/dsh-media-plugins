@@ -32,6 +32,8 @@ export const Config: z<Config> = z.object({
 
 type ResolvedConfig = Required<Config>
 
+import { buildReviewHtml, buildReviewItems } from './shared/dt-core.ts'
+
 function apply(ctx: Context, config: ResolvedConfig): void {
   ctx.tools.register(
     defineTool({
@@ -135,20 +137,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           case 'finalize_review': {
             const previews = (await readJsonSafe(join(dir, 'previews.json'))) ?? []
             const reviewDir = await ensureDir(join(dir, 'review'))
-            const items: Array<{ index: number; material: string; preview: string; prompt: string }> = []
-            for (let i = 0; i < manifest.materials.length; i += 1) {
-              const m = manifest.materials[i]
-              const prev = previews.find((p: any) => p.material === m.path)
-              const prompt = manifest.prompts.find((p: any) => String(p.material) === m.path)?.prompt ?? ''
-              items.push({ index: i + 1, material: m.path, preview: prev?.preview ?? '', prompt })
-            }
-            const rows = items
-              .map(
-                (it) =>
-                  `<tr><td>#${it.index}</td><td>${it.preview ? `<img src="${it.preview.split('\\').join('/').replace(/^.*\/dt\//, 'dt/')}" width="240">` : '—'}</td><td style="max-width:480px">${escapeHtml(it.prompt)}</td></tr>`,
-              )
-              .join('\n')
-            const html = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>DT 审阅 ${batchId}</title><style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse}td{border:1px solid #ccc;padding:10px;vertical-align:top}</style></head><body><h1>审阅批次 ${batchId}</h1><p>时长 ${manifest.duration}s · 比例 ${manifest.ratio} · 模型 ${manifest.model}</p><table><thead><tr><th>#</th><th>素材预览</th><th>中文提示词</th></tr></thead><tbody>${rows}</tbody></table></body></html>`
+            const items = buildReviewItems(manifest, previews)
+            const html = buildReviewHtml(manifest, items)
             await writeFile(join(reviewDir, 'index.html'), html, 'utf8')
             await atomicWriteJson(join(dir, 'review.json'), items)
             return { ok: true, message: `review page ready: ${join(reviewDir, 'index.html')}`, batch_id: batchId, review_path: join(reviewDir, 'index.html') }
@@ -161,10 +151,6 @@ function apply(ctx: Context, config: ResolvedConfig): void {
       },
     }),
   )
-}
-
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
 export { apply }
