@@ -2,6 +2,18 @@ import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+//#region \0rolldown/runtime.js
+var __defProp = Object.defineProperty;
+var __exportAll = (all, no_symbols) => {
+	let target = {};
+	for (var name in all) __defProp(target, name, {
+		get: all[name],
+		enumerable: true
+	});
+	if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
+	return target;
+};
+//#endregion
 //#region src/shared/registry-core.ts
 /**
 * Skill Registry domain (Codex_CS rebuild, all-JS): node:sqlite + FTS5
@@ -11,6 +23,12 @@ import { DatabaseSync } from "node:sqlite";
 *
 * @module dsh-media-plugins/shared/registry-core
 */
+var registry_core_exports = /* @__PURE__ */ __exportAll({
+	SkillRegistry: () => SkillRegistry,
+	VIDEO_RATIOS: () => VIDEO_RATIOS,
+	skillSha256: () => skillSha256,
+	validateContract: () => validateContract
+});
 /** Supported video ratios (project pipeline contract). */
 const VIDEO_RATIOS = [
 	"1:1",
@@ -196,4 +214,4 @@ function safeJson(raw, fallback) {
 	}
 }
 //#endregion
-export { validateContract as n, SkillRegistry as t };
+export { registry_core_exports as n, validateContract as r, SkillRegistry as t };

@@ -37,6 +37,9 @@
     - id: Ws_tool-revision
       name: dsh-media-plugins/Ws_tool-revision
 
+    - id: Ws_tool-curator
+      name: dsh-media-plugins/Ws_tool-curator
+
     - id: Ws_tool-batch-image
       name: dsh-media-plugins/Ws_tool-batch-image
       config:

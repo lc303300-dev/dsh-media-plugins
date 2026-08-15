@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "skill_id": "{{skill_id}}",
+  "aliases": ["{{display_name}}"],
+  "user_intents": ["{{description}}"],
+  "subjects": [],
+  "styles": [],
+  "narrative_patterns": [],
+  "negative_intents": [],
+  "priority": 50
+}

@@ -1,5 +1,5 @@
-import { i as atomicWriteJson, l as resolvePrivateRoot, s as readJsonSafe, u as sha256File } from "./private-runtime.js";
 import { t as SkillRegistry } from "./registry-core.js";
+import { i as atomicWriteJson, l as resolvePrivateRoot, s as readJsonSafe, u as sha256File } from "./private-runtime.js";
 import { a as confirmPrompt, c as validateVideoSettings, i as buildSubmissionPayload, n as addMaterial, o as createProject, r as addPrompt, s as transition } from "./project-core.js";
 import { t as buildRevisionRequest } from "./revision-core.js";
 import z from "@deepseek-ai/schemastery";

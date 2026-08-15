@@ -1,0 +1,7 @@
+interface:
+  display_name: "{{display_name}}"
+  short_description: "{{short_description}}"
+  default_prompt: "Use ${{skill_id}} to create a professional video prompt from my supplied references and requirements."
+policy:
+  allow_implicit_invocation: true
+
