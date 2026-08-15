@@ -302,8 +302,11 @@ function apply(ctx, config) {
 						message: `batch ${plan.jobKey} started: ${plan.total} candidate(s), concurrency ${plan.concurrency}, estimate ${plan.estimateSeconds}s, deadline ${plan.deadlineSeconds}s; scheduler runs in background, poll status`,
 						job_key: plan.jobKey,
 						plan: {
-							...plan,
-							deadlineAtMs: void 0
+							jobKey: plan.jobKey,
+							total: plan.total,
+							concurrency: plan.concurrency,
+							estimateSeconds: plan.estimateSeconds,
+							deadlineSeconds: plan.deadlineSeconds
 						}
 					};
 				}
@@ -320,7 +323,6 @@ function apply(ctx, config) {
 					const tasks = db.prepare("SELECT status, COUNT(*) AS n FROM tasks WHERE job_key = ? GROUP BY status").all(args.job_key);
 					const summary = {};
 					for (const t of tasks) summary[t.status] = t.n;
-					db.prepare("SELECT output_path FROM tasks WHERE job_key = ? AND status = 'success'").all(args.job_key);
 					return {
 						ok: true,
 						message: `job ${args.job_key}: ${job.status} (landed ${job.landed}/${job.total})`,
@@ -329,8 +331,7 @@ function apply(ctx, config) {
 							landed: job.landed,
 							abandoned: job.abandoned,
 							status: job.status
-						},
-						contact_sheet_path: void 0
+						}
 					};
 				}
 				if (command === "contact_sheet") {

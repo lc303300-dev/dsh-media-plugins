@@ -219,7 +219,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               ok: true,
               message: `batch ${plan.jobKey} started: ${plan.total} candidate(s), concurrency ${plan.concurrency}, estimate ${plan.estimateSeconds}s, deadline ${plan.deadlineSeconds}s; scheduler runs in background, poll status`,
               job_key: plan.jobKey,
-              plan: { ...plan, deadlineAtMs: undefined },
+              plan: { jobKey: plan.jobKey, total: plan.total, concurrency: plan.concurrency, estimateSeconds: plan.estimateSeconds, deadlineSeconds: plan.deadlineSeconds },
             }
           }
 
@@ -231,8 +231,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             const tasks = db.prepare('SELECT status, COUNT(*) AS n FROM tasks WHERE job_key = ? GROUP BY status').all(args.job_key)
             const summary: Record<string, number> = {}
             for (const t of tasks) summary[t.status] = t.n
-            const landed = db.prepare("SELECT output_path FROM tasks WHERE job_key = ? AND status = 'success'").all(args.job_key)
-            return { ok: true, message: `job ${args.job_key}: ${job.status} (landed ${job.landed}/${job.total})`, summary: { ...summary, landed: job.landed, abandoned: job.abandoned, status: job.status }, contact_sheet_path: undefined }
+            return { ok: true, message: `job ${args.job_key}: ${job.status} (landed ${job.landed}/${job.total})`, summary: { ...summary, landed: job.landed, abandoned: job.abandoned, status: job.status } }
           }
 
           if (command === 'contact_sheet') {

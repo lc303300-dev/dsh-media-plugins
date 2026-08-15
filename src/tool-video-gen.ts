@@ -319,13 +319,12 @@ function apply(ctx: Context, config: ResolvedConfig): void {
 
           // submit-only modes never poll or download
           if (mode !== 'production') {
-            const base = { submit_id: submitId, done: false, execution_mode: mode, model }
             if (mode === 'test_submit_only') {
               await store.transition('video', taskId, 'success', { submitId, outputPath: undefined, nextAction: 'user_check_backend' })
-              return { ...base, path: undefined }
+              return { submit_id: submitId, done: false, execution_mode: mode, model }
             }
             await store.transition('video', taskId, 'success', { submitId, nextAction: 'query_later' })
-            return base
+            return { submit_id: submitId, done: false, execution_mode: mode, model }
           }
 
           // production: poll until terminal or deadline

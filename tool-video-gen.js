@@ -411,12 +411,6 @@ function apply(ctx, config) {
 					mode
 				});
 				if (mode !== "production") {
-					const base = {
-						submit_id: submitId,
-						done: false,
-						execution_mode: mode,
-						model
-					};
 					if (mode === "test_submit_only") {
 						await store.transition("video", taskId, "success", {
 							submitId,
@@ -424,15 +418,22 @@ function apply(ctx, config) {
 							nextAction: "user_check_backend"
 						});
 						return {
-							...base,
-							path: void 0
+							submit_id: submitId,
+							done: false,
+							execution_mode: mode,
+							model
 						};
 					}
 					await store.transition("video", taskId, "success", {
 						submitId,
 						nextAction: "query_later"
 					});
-					return base;
+					return {
+						submit_id: submitId,
+						done: false,
+						execution_mode: mode,
+						model
+					};
 				}
 				const deadline = Date.now() + config.pollTimeoutMs;
 				while (Date.now() < deadline) {
