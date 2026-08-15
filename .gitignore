@@ -1,15 +1,9 @@
-# 依赖与构建
+﻿# 依赖与构建
 node_modules/
 *.tgz
 
 # Dreamina CLI 二进制（31.9MB），由 setup.ps1 从官方地址下载，不进仓库
 bin/
-
-# 构建产物由 prepare 脚本生成
-tool-vision.js
-tool-image-gen.js
-tool-video-gen.js
-notify.js
 
 # 本地凭证/环境，绝不提交
 .env
