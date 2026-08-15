@@ -22,8 +22,10 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-fs'
+import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { copyFile, rename } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   SUPPORTED_RATIOS,
   runImageRouter,
@@ -39,6 +41,9 @@ import {
   redactPrompt,
   resolvePrivateRoot,
 } from './shared/private-runtime.ts'
+
+/** Bundle root: the built tool file lives at the package root. */
+const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-image-gen'
@@ -72,7 +77,7 @@ export const Config: z<Config> = z.object({
   apimartApiKeyEnv: z.string().default('APIMART_API_KEY'),
   geminiApiURL: z.string().default('https://generativelanguage.googleapis.com/v1beta/interactions'),
   geminiApiKeyEnv: z.string().default('GEMINI_API_KEY'),
-  dreaminaPath: z.string().default('dreamina'),
+  dreaminaPath: z.string().default(join(PACKAGE_ROOT, 'bin', 'dreamina.exe')),
   proxyUrl: z.string().default(''),
   outputDir: z.string().default('outputs'),
   privateDir: z.string().default(''),
@@ -172,6 +177,17 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const taskId = newTaskId()
         const store = new TaskStore(join(privateRoot, 'jobs'))
 
+        // resolve provider keys through the DSH credentials service (never env-only)
+        const credentials: Record<string, string> = {}
+        for (const env of [config.comflyApiKeyEnv, config.apimartApiKeyEnv, config.geminiApiKeyEnv]) {
+          try {
+            const resolved = await ctx.credentials?.resolve(credentialRef(env))
+            if (resolved?.value) credentials[env] = String(resolved.value)
+          } catch {
+            /* credential missing or service unavailable: adapter reports auth_unavailable */
+          }
+        }
+
         const routerConfig: RouterConfig = {
           comflyBaseURL: config.comflyBaseURL,
           comflyApiKeyEnv: config.comflyApiKeyEnv,
@@ -186,6 +202,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           taskTimeoutMs: config.taskTimeoutMs,
           outputDir: config.outputDir,
           enabled: config.enabled,
+          credentials,
         }
 
         const request = { prompt: redactPrompt(prompt), ratio, size, images: args.image ?? [] }

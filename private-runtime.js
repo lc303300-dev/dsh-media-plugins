@@ -117,7 +117,8 @@ var TaskStore = class {
 			kind: "image",
 			attempts: []
 		};
-		if (!(ALLOWED_TRANSITIONS[current.status] ?? []).includes(to)) throw new Error(`invalid task transition ${current.status} -> ${to} for ${taskId}`);
+		const allowed = ALLOWED_TRANSITIONS[current.status] ?? [];
+		if (to !== current.status && !allowed.includes(to)) throw new Error(`invalid task transition ${current.status} -> ${to} for ${taskId}`);
 		const next = {
 			...current,
 			...patch,

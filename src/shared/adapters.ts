@@ -61,6 +61,8 @@ export interface RouterConfig {
   taskTimeoutMs: number
   outputDir: string
   enabled: string[]
+  /** Injected credentials (env -> value), resolved by the tool via ctx.credentials. */
+  credentials?: Record<string, string>
 }
 
 export interface AdapterInput {
@@ -101,7 +103,10 @@ export function classifyHttp(status: number): MediaError {
   }
 }
 
-function credentials(env: string): string | undefined {
+/** Resolve a credential: injected map (DSH credentials service) first, env fallback. */
+function credentials(cfg: RouterConfig, env: string): string | undefined {
+  const injected = cfg.credentials?.[env]
+  if (typeof injected === 'string' && injected.length > 0) return injected
   return process.env[env] || undefined
 }
 
@@ -116,10 +121,10 @@ function comflyAdapter(id: string, model: string, cfg: RouterConfig): ImageAdapt
     model,
     capacityKey: id,
     async checkReady() {
-      return { ready: Boolean(credentials(cfg.comflyApiKeyEnv)), reason: cfg.comflyApiKeyEnv }
+      return { ready: Boolean(credentials(cfg, cfg.comflyApiKeyEnv)), reason: cfg.comflyApiKeyEnv }
     },
     async execute(input) {
-      const apiKey = credentials(cfg.comflyApiKeyEnv)
+      const apiKey = credentials(cfg, cfg.comflyApiKeyEnv)
       if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.comflyApiKeyEnv}`)
       const url = await openAiImageUrl({
         baseURL: cfg.comflyBaseURL,
@@ -152,10 +157,10 @@ function apimartAdapter(cfg: RouterConfig): ImageAdapter {
     model,
     capacityKey: id,
     async checkReady() {
-      return { ready: Boolean(credentials(cfg.apimartApiKeyEnv)), reason: cfg.apimartApiKeyEnv }
+      return { ready: Boolean(credentials(cfg, cfg.apimartApiKeyEnv)), reason: cfg.apimartApiKeyEnv }
     },
     async execute(input) {
-      const apiKey = credentials(cfg.apimartApiKeyEnv)
+      const apiKey = credentials(cfg, cfg.apimartApiKeyEnv)
       if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.apimartApiKeyEnv}`)
       const base = cfg.apimartBaseURL.replace(/\/+$/, '')
       const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json; charset=utf-8' }
@@ -198,10 +203,10 @@ function geminiAdapter(cfg: RouterConfig): ImageAdapter {
     model,
     capacityKey: id,
     async checkReady() {
-      return { ready: Boolean(credentials(cfg.geminiApiKeyEnv)), reason: cfg.geminiApiKeyEnv }
+      return { ready: Boolean(credentials(cfg, cfg.geminiApiKeyEnv)), reason: cfg.geminiApiKeyEnv }
     },
     async execute(input) {
-      const apiKey = credentials(cfg.geminiApiKeyEnv)
+      const apiKey = credentials(cfg, cfg.geminiApiKeyEnv)
       if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.geminiApiKeyEnv}`)
       const ratioKey = Object.entries(RATIO_SIZES).find(([, px]) => px === input.size)?.[0] ?? '16:9'
       const inputParts: Record<string, unknown>[] = [{ type: 'text', text: input.prompt }]

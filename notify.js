@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
-import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
 //#region src/notify.ts
 const name = "Ws_completion-notify";
 const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));

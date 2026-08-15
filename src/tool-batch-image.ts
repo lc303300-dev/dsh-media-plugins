@@ -13,10 +13,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join, isAbsolute, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   buildContactSheetHtml,
   computeDeadline,
@@ -27,9 +29,12 @@ import {
 import { runImageRouter, type RouterConfig } from './shared/adapters.ts'
 import { appendSafeLog, ensureDir, resolvePrivateRoot, sha256Text } from './shared/private-runtime.ts'
 
+/** Bundle root: the built tool file lives at the package root. */
+const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
+
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-batch-image'
-export const inject = ['tools']
+export const inject = ['tools', 'credentials']
 
 export interface Config {
   privateDir?: string
@@ -57,7 +62,7 @@ export const Config: z<Config> = z.object({
   apimartApiKeyEnv: z.string().default('APIMART_API_KEY'),
   geminiApiURL: z.string().default('https://generativelanguage.googleapis.com/v1beta/interactions'),
   geminiApiKeyEnv: z.string().default('GEMINI_API_KEY'),
-  dreaminaPath: z.string().default('dreamina'),
+  dreaminaPath: z.string().default(join(PACKAGE_ROOT, 'bin', 'dreamina.exe')),
   proxyUrl: z.string().default(''),
   maxConcurrency: z.number().default(6),
   providerTimeoutMs: z.number().default(120000),
@@ -102,7 +107,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function apply(ctx: Context, config: ResolvedConfig): void {
-  const routerConfig: RouterConfig = {
+  const baseRouterConfig: RouterConfig = {
     comflyBaseURL: config.comflyBaseURL,
     comflyApiKeyEnv: config.comflyApiKeyEnv,
     apimartBaseURL: config.apimartBaseURL,
@@ -116,6 +121,20 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     taskTimeoutMs: config.taskTimeoutMs,
     outputDir: config.outputDir,
     enabled: config.enabled,
+  }
+
+  /** Resolve provider keys through the DSH credentials service per call. */
+  async function resolveCredentials(): Promise<Record<string, string>> {
+    const credentials: Record<string, string> = {}
+    for (const env of [config.comflyApiKeyEnv, config.apimartApiKeyEnv, config.geminiApiKeyEnv]) {
+      try {
+        const resolved = await ctx.credentials?.resolve(credentialRef(env))
+        if (resolved?.value) credentials[env] = String(resolved.value)
+      } catch {
+        /* missing credential: adapter reports auth_unavailable */
+      }
+    }
+    return credentials
   }
 
   ctx.tools.register(
@@ -191,6 +210,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               insertTask.run(plan.jobKey, `${plan.jobKey}-${t.groupId}-${t.slot}`, t.groupId, t.slot, t.prompt, t.ratio, 'pending')
             }
             // detached scheduler loop: runs in the host process, writes state only
+            const routerConfig = { ...baseRouterConfig, credentials: await resolveCredentials() }
             runScheduler(db, plan.jobKey, manifest, plan.deadlineAtMs, privateRoot, routerConfig, config.outputDir, workspaceRoot).catch((error: any) => {
               db.prepare("UPDATE jobs SET status = 'failed', finished_at = ? WHERE job_key = ?").run(new Date().toISOString(), plan.jobKey)
               void appendSafeLog(privateRoot, 'batch_image', { jobKey: plan.jobKey, event: 'scheduler_crashed', detail: String(error?.message ?? error).slice(0, 300) })

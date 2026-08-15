@@ -237,7 +237,10 @@ function classifyHttp(status) {
 			return mediaErrors.provider(`HTTP ${status}: unexpected provider failure`);
 	}
 }
-function credentials(env) {
+/** Resolve a credential: injected map (DSH credentials service) first, env fallback. */
+function credentials(cfg, env) {
+	const injected = cfg.credentials?.[env];
+	if (typeof injected === "string" && injected.length > 0) return injected;
 	return process.env[env] || void 0;
 }
 /** Comfly OpenAI-compatible adapter (one fixed model, one request). */
@@ -248,12 +251,12 @@ function comflyAdapter(id, model, cfg) {
 		capacityKey: id,
 		async checkReady() {
 			return {
-				ready: Boolean(credentials(cfg.comflyApiKeyEnv)),
+				ready: Boolean(credentials(cfg, cfg.comflyApiKeyEnv)),
 				reason: cfg.comflyApiKeyEnv
 			};
 		},
 		async execute(input) {
-			const apiKey = credentials(cfg.comflyApiKeyEnv);
+			const apiKey = credentials(cfg, cfg.comflyApiKeyEnv);
 			if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.comflyApiKeyEnv}`);
 			return { outputPath: await downloadImageTo(await openAiImageUrl({
 				baseURL: cfg.comflyBaseURL,
@@ -283,12 +286,12 @@ function apimartAdapter(cfg) {
 		capacityKey: id,
 		async checkReady() {
 			return {
-				ready: Boolean(credentials(cfg.apimartApiKeyEnv)),
+				ready: Boolean(credentials(cfg, cfg.apimartApiKeyEnv)),
 				reason: cfg.apimartApiKeyEnv
 			};
 		},
 		async execute(input) {
-			const apiKey = credentials(cfg.apimartApiKeyEnv);
+			const apiKey = credentials(cfg, cfg.apimartApiKeyEnv);
 			if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.apimartApiKeyEnv}`);
 			const base = cfg.apimartBaseURL.replace(/\/+$/, "");
 			const headers = {
@@ -342,12 +345,12 @@ function geminiAdapter(cfg) {
 		capacityKey: id,
 		async checkReady() {
 			return {
-				ready: Boolean(credentials(cfg.geminiApiKeyEnv)),
+				ready: Boolean(credentials(cfg, cfg.geminiApiKeyEnv)),
 				reason: cfg.geminiApiKeyEnv
 			};
 		},
 		async execute(input) {
-			const apiKey = credentials(cfg.geminiApiKeyEnv);
+			const apiKey = credentials(cfg, cfg.geminiApiKeyEnv);
 			if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.geminiApiKeyEnv}`);
 			const ratioKey = Object.entries(RATIO_SIZES).find(([, px]) => px === input.size)?.[0] ?? "16:9";
 			const inputParts = [{

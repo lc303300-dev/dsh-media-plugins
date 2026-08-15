@@ -4,9 +4,9 @@ import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { access, mkdir, readdir, rename } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
 //#region src/shared/video-policy.ts
 /**
 * Video model/execution policy (pure domain — no DSH imports).

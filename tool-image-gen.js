@@ -3,9 +3,13 @@ import { n as ratioToSize, r as runImageRouter, t as SUPPORTED_RATIOS } from "./
 import { a as ensureDir, c as redactPrompt, l as resolvePrivateRoot, o as newTaskId, r as appendSafeLog, t as TaskStore } from "./private-runtime.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { copyFile, rename } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 //#region src/tool-image-gen.ts
+/** Bundle root: the built tool file lives at the package root. */
+const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
 /** Cordis plugin name used by loader diagnostics. */
 const name = "Ws_tool-image-gen";
 /** Services required by the image-generation tool. */
@@ -21,7 +25,7 @@ const Config = z.object({
 	apimartApiKeyEnv: z.string().default("APIMART_API_KEY"),
 	geminiApiURL: z.string().default("https://generativelanguage.googleapis.com/v1beta/interactions"),
 	geminiApiKeyEnv: z.string().default("GEMINI_API_KEY"),
-	dreaminaPath: z.string().default("dreamina"),
+	dreaminaPath: z.string().default(join(PACKAGE_ROOT, "bin", "dreamina.exe")),
 	proxyUrl: z.string().default(""),
 	outputDir: z.string().default("outputs"),
 	privateDir: z.string().default(""),
@@ -119,6 +123,15 @@ function apply(ctx, config) {
 			const privateRoot = resolvePrivateRoot(workspaceRoot, config.privateDir);
 			const taskId = newTaskId();
 			const store = new TaskStore(join(privateRoot, "jobs"));
+			const credentials = {};
+			for (const env of [
+				config.comflyApiKeyEnv,
+				config.apimartApiKeyEnv,
+				config.geminiApiKeyEnv
+			]) try {
+				const resolved = await ctx.credentials?.resolve(credentialRef(env));
+				if (resolved?.value) credentials[env] = String(resolved.value);
+			} catch {}
 			const routerConfig = {
 				comflyBaseURL: config.comflyBaseURL,
 				comflyApiKeyEnv: config.comflyApiKeyEnv,
@@ -132,7 +145,8 @@ function apply(ctx, config) {
 				providerTimeoutMs: config.providerTimeoutMs,
 				taskTimeoutMs: config.taskTimeoutMs,
 				outputDir: config.outputDir,
-				enabled: config.enabled
+				enabled: config.enabled,
+				credentials
 			};
 			const request = {
 				prompt: redactPrompt(prompt),

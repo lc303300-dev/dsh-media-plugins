@@ -172,7 +172,8 @@ export class TaskStore {
       attempts: [],
     }
     const allowed = ALLOWED_TRANSITIONS[current.status] ?? []
-    if (!allowed.includes(to)) {
+    // self-transition (running -> running) is a patch update, not a state change
+    if (to !== current.status && !allowed.includes(to)) {
       throw new Error(`invalid task transition ${current.status} -> ${to} for ${taskId}`)
     }
     const next: TaskRecord = {

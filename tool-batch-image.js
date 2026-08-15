@@ -2,8 +2,10 @@ import { r as runImageRouter, t as SUPPORTED_RATIOS } from "./adapters.js";
 import { a as ensureDir, l as resolvePrivateRoot, r as appendSafeLog } from "./private-runtime.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -117,9 +119,11 @@ function flattenTasks(manifest) {
 }
 //#endregion
 //#region src/tool-batch-image.ts
+/** Bundle root: the built tool file lives at the package root. */
+const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
 /** Cordis plugin name used by loader diagnostics. */
 const name = "Ws_tool-batch-image";
-const inject = ["tools"];
+const inject = ["tools", "credentials"];
 const Config = z.object({
 	privateDir: z.string().default(""),
 	outputDir: z.string().default("outputs"),
@@ -129,7 +133,7 @@ const Config = z.object({
 	apimartApiKeyEnv: z.string().default("APIMART_API_KEY"),
 	geminiApiURL: z.string().default("https://generativelanguage.googleapis.com/v1beta/interactions"),
 	geminiApiKeyEnv: z.string().default("GEMINI_API_KEY"),
-	dreaminaPath: z.string().default("dreamina"),
+	dreaminaPath: z.string().default(join(PACKAGE_ROOT, "bin", "dreamina.exe")),
 	proxyUrl: z.string().default(""),
 	maxConcurrency: z.number().default(6),
 	providerTimeoutMs: z.number().default(12e4),
@@ -160,7 +164,7 @@ function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function apply(ctx, config) {
-	const routerConfig = {
+	const baseRouterConfig = {
 		comflyBaseURL: config.comflyBaseURL,
 		comflyApiKeyEnv: config.comflyApiKeyEnv,
 		apimartBaseURL: config.apimartBaseURL,
@@ -175,6 +179,19 @@ function apply(ctx, config) {
 		outputDir: config.outputDir,
 		enabled: config.enabled
 	};
+	/** Resolve provider keys through the DSH credentials service per call. */
+	async function resolveCredentials() {
+		const credentials = {};
+		for (const env of [
+			config.comflyApiKeyEnv,
+			config.apimartApiKeyEnv,
+			config.geminiApiKeyEnv
+		]) try {
+			const resolved = await ctx.credentials?.resolve(credentialRef(env));
+			if (resolved?.value) credentials[env] = String(resolved.value);
+		} catch {}
+		return credentials;
+	}
 	ctx.tools.register(defineTool({
 		name: "batch_image",
 		description: "确定性批量图片调度器（Codex_Batch_Image 的 DSH 重建）：manifest（组 id 唯一、每组 prompt 非空、candidates ≥ 1、image_ratio 必填 8 值之一）→ 稳定 job key → SQLite 状态 → 最多 10 路并发、真实提交间隔 ≥ 1 秒 → 硬截止（默认 ceil(总数÷并发)×60 秒×1.5，可用 deadline_seconds 覆盖）→ 截止后未完成任务永久 abandoned（不查询、不重试），只收集已落地成功 → 生成固定槽位编号联系表供人工选图。付费执行全部走统一媒体路由器；同一候选绝不重复提交（job key + 任务 id 幂等）。",
@@ -268,6 +285,10 @@ function apply(ctx, config) {
 					db.prepare("INSERT INTO jobs (job_key, manifest_json, status, total, concurrency, estimate_seconds, deadline_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(plan.jobKey, JSON.stringify(manifest), "running", plan.total, plan.concurrency, plan.estimateSeconds, plan.deadlineSeconds, now);
 					const insertTask = db.prepare("INSERT OR IGNORE INTO tasks (job_key, task_id, group_id, slot, prompt, ratio, status) VALUES (?, ?, ?, ?, ?, ?, ?)");
 					for (const t of flattenTasks(manifest)) insertTask.run(plan.jobKey, `${plan.jobKey}-${t.groupId}-${t.slot}`, t.groupId, t.slot, t.prompt, t.ratio, "pending");
+					const routerConfig = {
+						...baseRouterConfig,
+						credentials: await resolveCredentials()
+					};
 					runScheduler(db, plan.jobKey, manifest, plan.deadlineAtMs, privateRoot, routerConfig, config.outputDir, workspaceRoot).catch((error) => {
 						db.prepare("UPDATE jobs SET status = 'failed', finished_at = ? WHERE job_key = ?").run((/* @__PURE__ */ new Date()).toISOString(), plan.jobKey);
 						appendSafeLog(privateRoot, "batch_image", {
