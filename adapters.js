@@ -92,28 +92,39 @@ async function openAiImageUrl(options) {
 		};
 		let response;
 		if (images.length > 0) {
-			const form = new FormData();
-			form.append("model", model);
-			form.append("prompt", prompt);
-			form.append("n", "1");
-			form.append("size", size);
-			form.append("response_format", "url");
+			const boundary = `----DshMedia${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+			const chunks = [];
+			for (const [fieldName, fieldValue] of [
+				["model", model],
+				["prompt", prompt],
+				["n", "1"],
+				["size", size],
+				["response_format", "url"]
+			]) chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"\r\n\r\n${fieldValue}\r\n`, "utf8"));
+			const fs = await import("node:fs/promises");
+			const mimeMap = {
+				".png": "image/png",
+				".jpg": "image/jpeg",
+				".jpeg": "image/jpeg",
+				".webp": "image/webp",
+				".gif": "image/gif"
+			};
 			for (const imagePath of images) {
-				const data = await (await import("node:fs/promises")).readFile(imagePath);
 				const name = imagePath.split(/[\\/]/).pop() ?? "ref.png";
 				const ext = (name.slice(name.lastIndexOf(".")) || ".png").toLowerCase();
-				form.append("image", new Blob([data], { type: {
-					".png": "image/png",
-					".jpg": "image/jpeg",
-					".jpeg": "image/jpeg",
-					".webp": "image/webp",
-					".gif": "image/gif"
-				}[ext] ?? "image/png" }), name);
+				const data = await fs.readFile(imagePath);
+				chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="${name}"\r\nContent-Type: ${mimeMap[ext] ?? "image/png"}\r\n\r\n`, "ascii"));
+				chunks.push(data);
+				chunks.push(Buffer.from("\r\n", "ascii"));
 			}
+			chunks.push(Buffer.from(`--${boundary}--\r\n`, "ascii"));
 			response = await fetch$1(`${baseURL.replace(/\/+$/, "")}/images/edits`, {
 				method: "POST",
-				headers: auth,
-				body: form,
+				headers: {
+					...auth,
+					"Content-Type": `multipart/form-data; boundary=${boundary}`
+				},
+				body: Buffer.concat(chunks),
 				...common
 			});
 		} else response = await fetch$1(`${baseURL.replace(/\/+$/, "")}/images/generations`, {

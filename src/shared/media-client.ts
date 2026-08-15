@@ -108,24 +108,35 @@ export async function openAiImageUrl(options: OpenAiImageOptions): Promise<strin
     const common = { signal: effectiveSignal, ...(dispatcher === undefined ? {} : { dispatcher }) }
     let response: Response
     if (images.length > 0) {
-      const form = new FormData()
-      form.append('model', model)
-      form.append('prompt', prompt)
-      form.append('n', '1')
-      form.append('size', size)
-      form.append('response_format', 'url')
+      // Manual multipart (mirrors the Codex platform's comfly_common.multipart_body):
+      // undici FormData fields are dropped by the new-api gateway through the VPN
+      // proxy ("model is required"), while an explicitly bounded body works.
+      const boundary = `----DshMedia${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`
+      const chunks: Buffer[] = []
+      for (const [fieldName, fieldValue] of [
+        ['model', model],
+        ['prompt', prompt],
+        ['n', '1'],
+        ['size', size],
+        ['response_format', 'url'],
+      ] as Array<[string, string]>) {
+        chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"\r\n\r\n${fieldValue}\r\n`, 'utf8'))
+      }
+      const fs = await import('node:fs/promises')
+      const mimeMap: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' }
       for (const imagePath of images) {
-        const fs = await import('node:fs/promises')
-        const data = await fs.readFile(imagePath)
         const name = imagePath.split(/[\\/]/).pop() ?? 'ref.png'
         const ext = (name.slice(name.lastIndexOf('.')) || '.png').toLowerCase()
-        const mime: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' }
-        form.append('image', new Blob([data], { type: mime[ext] ?? 'image/png' }), name)
+        const data = await fs.readFile(imagePath)
+        chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="${name}"\r\nContent-Type: ${mimeMap[ext] ?? 'image/png'}\r\n\r\n`, 'ascii'))
+        chunks.push(data)
+        chunks.push(Buffer.from('\r\n', 'ascii'))
       }
+      chunks.push(Buffer.from(`--${boundary}--\r\n`, 'ascii'))
       response = await fetch(`${baseURL.replace(/\/+$/, '')}/images/edits`, {
         method: 'POST',
-        headers: auth,
-        body: form,
+        headers: { ...auth, 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+        body: Buffer.concat(chunks),
         ...common,
       })
     } else {
