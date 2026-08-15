@@ -62,6 +62,8 @@ export interface ProjectState {
   prompts: PromptVersion[]
   lockedPromptHash?: string
   submissionPayload?: Record<string, unknown>
+  /** Constrained revision request emitted by the DT classifier (feedback → request). */
+  revisionRequest?: Record<string, unknown>
   history: Array<{ at: string; from: ProjectStatus; to: ProjectStatus; note?: string }>
   createdAt: string
   updatedAt: string

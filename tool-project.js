@@ -1,6 +1,7 @@
 import { i as atomicWriteJson, l as resolvePrivateRoot, s as readJsonSafe, u as sha256File } from "./private-runtime.js";
 import { t as SkillRegistry } from "./registry-core.js";
 import { a as confirmPrompt, c as validateVideoSettings, i as buildSubmissionPayload, n as addMaterial, o as createProject, r as addPrompt, s as transition } from "./project-core.js";
+import { t as buildRevisionRequest } from "./revision-core.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { readdir } from "node:fs/promises";
@@ -86,7 +87,11 @@ function apply(ctx, config) {
 					"ambiguous_creative",
 					"structural_rewrite"
 				],
-				description: "request_revision 用：修订类型。"
+				description: "request_revision 用：修订类型（与 feedback 二选一）。"
+			},
+			feedback: {
+				type: "string",
+				description: "request_revision 用：用户修改意见原文；提供后自动分类并生成受约束修订请求。"
 			}
 		},
 		output: {
@@ -261,6 +266,29 @@ function apply(ctx, config) {
 					};
 				}
 				case "request_revision": {
+					const feedback = String(args.feedback ?? "").trim();
+					if (feedback) {
+						const contractRules = state.skillName ? [`skill:${state.skillName}`] : [];
+						const request = buildRevisionRequest({
+							current_prompt: state.prompts[state.prompts.length - 1]?.text ?? "",
+							user_feedback: feedback,
+							locked_context: {
+								contract_rules: contractRules,
+								material_order: state.materials.map((m) => `${m.slot}:${m.path.split(/[\\/]/).pop() ?? m.path}`),
+								ratio: state.ratio ?? "16:9",
+								duration_seconds: state.duration ?? 5
+							}
+						});
+						const next = {
+							...transition(state, "revision_requested", `revision ${request.classification}`),
+							revisionRequest: request
+						};
+						return {
+							ok: true,
+							message: `status -> revision_requested (${request.classification})`,
+							project: await save(next)
+						};
+					}
 					const type = args.revision_type ?? "ambiguous_creative";
 					const next = transition(state, "revision_requested", `revision ${type}`);
 					return {

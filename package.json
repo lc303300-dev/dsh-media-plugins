@@ -22,6 +22,8 @@
     "./Ws_tool-project": "./tool-project.js",
     "./tool-dt": "./tool-dt.js",
     "./Ws_tool-dt": "./tool-dt.js",
+    "./tool-revision": "./tool-revision.js",
+    "./Ws_tool-revision": "./tool-revision.js",
     "./tool-batch-image": "./tool-batch-image.js",
     "./Ws_tool-batch-image": "./tool-batch-image.js",
     "./tool-video-to-gif": "./tool-video-to-gif.js",

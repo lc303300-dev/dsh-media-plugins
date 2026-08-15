@@ -23,6 +23,7 @@ import {
   type ProjectState,
 } from './shared/project-core.ts'
 import { SkillRegistry, type SlotContract } from './shared/registry-core.ts'
+import { buildRevisionRequest } from './shared/revision-core.ts'
 import { atomicWriteJson, readJsonSafe, resolvePrivateRoot, sha256File } from './shared/private-runtime.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -66,7 +67,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         path: { type: 'string', description: 'add_material 用：素材文件路径。' },
         text: { type: 'string', description: 'set_prompt 用：提示词文本。' },
         source: { type: 'string', enum: ['skill_v1', 'dt_revision', 'user'], description: 'set_prompt 用：提示词来源。' },
-        revision_type: { type: 'string', enum: ['explicit_local', 'ambiguous_creative', 'structural_rewrite'], description: 'request_revision 用：修订类型。' },
+        revision_type: { type: 'string', enum: ['explicit_local', 'ambiguous_creative', 'structural_rewrite'], description: 'request_revision 用：修订类型（与 feedback 二选一）。' },
+        feedback: { type: 'string', description: 'request_revision 用：用户修改意见原文；提供后自动分类并生成受约束修订请求。' },
       },
       output: {
         schema: {
@@ -167,6 +169,26 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             return { ok: true, message: `prompt v${next.prompts.length} added (${next.status})`, project: await save(next) }
           }
           case 'request_revision': {
+            // feedback text → deterministic classification (Codex_DT port); stored on the project
+            const feedback = String(args.feedback ?? '').trim()
+            if (feedback) {
+              const contractRules = state.skillName ? [`skill:${state.skillName}`] : []
+              const request = buildRevisionRequest({
+                current_prompt: state.prompts[state.prompts.length - 1]?.text ?? '',
+                user_feedback: feedback,
+                locked_context: {
+                  contract_rules: contractRules,
+                  material_order: state.materials.map((m) => `${m.slot}:${m.path.split(/[\\/]/).pop() ?? m.path}`),
+                  ratio: state.ratio ?? '16:9',
+                  duration_seconds: state.duration ?? 5,
+                },
+              })
+              const next = {
+                ...transition(state, 'revision_requested', `revision ${request.classification}`),
+                revisionRequest: request,
+              }
+              return { ok: true, message: `status -> revision_requested (${request.classification})`, project: await save(next) }
+            }
             const type = args.revision_type ?? 'ambiguous_creative'
             const next = transition(state, 'revision_requested', `revision ${type}`)
             return { ok: true, message: `status -> revision_requested (${type})`, project: await save(next) }

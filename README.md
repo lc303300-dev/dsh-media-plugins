@@ -1,7 +1,7 @@
 # dsh-media-plugins
 
-DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 9 个工具、6 个技能与一个完成通知，
-覆盖 Codex_Wsstudio 指南（P0–P4）在 DSH 平台上的重建：
+DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 10 个工具、6 个技能与一个完成通知，
+覆盖 Codex_Wsstudio 指南（P0–P4 + DT 修订系统）在 DSH 平台上的重建：
 
 | 功能 | 说明 | 底层 | 凭证 |
 |---|---|---|---|
@@ -11,6 +11,7 @@ DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 9 个
 | `skill_registry` | 业务 Skill 治理（Codex_CS）：ingest/search/get/publish/deprecate/list，contract 校验、name@version 去重、内容哈希防漂移、FTS5 trigram 中文检索 | node:sqlite + FTS5（零原生依赖） | 无 |
 | `project_pipeline` | 项目状态机（Codex_CS）：显式状态流转、素材槽 min/max 校验、素材/提示词 sha256 锁定、`build_payload` 提交前哈希复核防未确认版本 | 原子 JSON 状态（私有运行目录） | 无 |
 | `dt_batch` | DT 批次工作台：init_batch / prepare_previews（≤1024px）/ set_prompts / finalize_review（审阅 HTML） | sharp | 无 |
+| `prompt_revision` | 提示词修订系统（Codex_DT）：classify 确定性分类（explicit_local/ambiguous_creative/structural_rewrite）+ 规范哈希修订契约；search_corpus 内置 seedance-forge 全量语料（2477 条，≤3 上限、保留 provenance、语料模型版本绝不用于选模型）；validate_result 校验（locked_context_sha256 回显、explicit_local 禁语料） | 内置语料 `refs/forge-index.jsonl` | 无 |
 | `batch_image` | 确定性批量生图调度器：manifest 校验、稳定 job key、SQLite 状态、≤10 并发、≥1s 间隔、硬截止（默认 ceil(总数÷并发)×60s×1.5）、截止后永久 abandoned、编号联系表；重复提交被 job key 幂等拒绝 | node:sqlite + 统一路由器 | 同 generate_image |
 | `video_to_gif` | 视频转 GIF：FFmpeg 双遍 palettegen/paletteuse，宽度/FPS/抖动分档降级，默认 ≤10MB | FFmpeg（`FFMPEG_PATH` / PATH / 常见安装路径） | 无 |
 | `image_preview` | EXIF 归一化 ≤1024px 预览 + 尺寸报告（视觉检查/审阅页用，不读原始大图） | sharp | 无 |
