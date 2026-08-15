@@ -15,6 +15,7 @@ export default defineConfig({
     'tool-batch-image': 'src/tool-batch-image.ts',
     'tool-video-to-gif': 'src/tool-video-to-gif.ts',
     'tool-preview': 'src/tool-preview.ts',
+    'tool-status': 'src/tool-status.ts',
     'notify': 'src/notify.ts',
   },
   format: ['esm'],

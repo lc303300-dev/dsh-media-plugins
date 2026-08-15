@@ -32,6 +32,8 @@
     "./Ws_tool-video-to-gif": "./tool-video-to-gif.js",
     "./tool-preview": "./tool-preview.js",
     "./Ws_tool-preview": "./tool-preview.js",
+    "./tool-status": "./tool-status.js",
+    "./Ws_tool-status": "./tool-status.js",
     "./notify": "./notify.js",
     "./Ws_completion-notify": "./notify.js",
     "./package.json": "./package.json"
