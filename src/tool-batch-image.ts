@@ -256,6 +256,29 @@ function apply(ctx: Context, config: ResolvedConfig): void {
 
 /** Detached scheduler loop (runs after the tool call returns). */
 async function runScheduler(
+  _db: DatabaseSync,
+  jobKey: string,
+  manifest: BatchManifest,
+  deadlineAtMs: number,
+  privateRoot: string,
+  routerConfig: RouterConfig,
+  outputDir: string,
+  workspaceRoot: string,
+): Promise<void> {
+  // Own connection: the caller closes its handle as soon as start() returns.
+  const db = openDb(join(privateRoot, 'batch', 'batch.db'))
+  try {
+    await runSchedulerWith(db, jobKey, manifest, deadlineAtMs, privateRoot, routerConfig, outputDir, workspaceRoot)
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+async function runSchedulerWith(
   db: DatabaseSync,
   jobKey: string,
   manifest: BatchManifest,

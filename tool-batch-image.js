@@ -366,7 +366,17 @@ function apply(ctx, config) {
 	}));
 }
 /** Detached scheduler loop (runs after the tool call returns). */
-async function runScheduler(db, jobKey, manifest, deadlineAtMs, privateRoot, routerConfig, outputDir, workspaceRoot) {
+async function runScheduler(_db, jobKey, manifest, deadlineAtMs, privateRoot, routerConfig, outputDir, workspaceRoot) {
+	const db = openDb(join(privateRoot, "batch", "batch.db"));
+	try {
+		await runSchedulerWith(db, jobKey, manifest, deadlineAtMs, privateRoot, routerConfig, outputDir, workspaceRoot);
+	} finally {
+		try {
+			db.close();
+		} catch {}
+	}
+}
+async function runSchedulerWith(db, jobKey, manifest, deadlineAtMs, privateRoot, routerConfig, outputDir, workspaceRoot) {
 	const plan = computeDeadline(manifest);
 	const pending = db.prepare("SELECT task_id, group_id, slot, prompt, ratio FROM tasks WHERE job_key = ? AND status = 'pending' ORDER BY rowid").all(jobKey);
 	const inFlight = /* @__PURE__ */ new Map();
