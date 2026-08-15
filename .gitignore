@@ -8,3 +8,6 @@ bin/
 # 本地凭证/环境，绝不提交
 .env
 *.credentials
+
+# 验收/运行产物
+outputs/
