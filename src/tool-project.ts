@@ -75,9 +75,9 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           properties: {
             ok: { type: 'boolean', required: true },
             message: { type: 'string' },
-            project: { type: 'object' },
+            project: { type: 'object', additionalProperties: true },
             projects: { type: 'array' },
-            payload: { type: 'object' },
+            payload: { type: 'object', additionalProperties: true },
           },
         },
         render(_args: unknown, value: any) {

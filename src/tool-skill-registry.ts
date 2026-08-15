@@ -100,7 +100,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           properties: {
             ok: { type: 'boolean', required: true },
             message: { type: 'string' },
-            skill: { type: 'object' },
+            skill: { type: 'object', additionalProperties: true },
             skills: { type: 'array' },
             hits: { type: 'array' },
           },

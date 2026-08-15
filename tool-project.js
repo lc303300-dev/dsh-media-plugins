@@ -1,6 +1,6 @@
-import { i as atomicWriteJson, l as resolvePrivateRoot, s as readJsonSafe, u as sha256File } from "./private-runtime-D6gReaf9.js";
-import { t as SkillRegistry } from "./registry-core-DEcdqMxP.js";
-import { a as confirmPrompt, c as validateVideoSettings, i as buildSubmissionPayload, n as addMaterial, o as createProject, r as addPrompt, s as transition } from "./project-core-Bp6p0MQx.js";
+import { i as atomicWriteJson, l as resolvePrivateRoot, s as readJsonSafe, u as sha256File } from "./private-runtime.js";
+import { t as SkillRegistry } from "./registry-core.js";
+import { a as confirmPrompt, c as validateVideoSettings, i as buildSubmissionPayload, n as addMaterial, o as createProject, r as addPrompt, s as transition } from "./project-core.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { readdir } from "node:fs/promises";
@@ -99,9 +99,15 @@ function apply(ctx, config) {
 						required: true
 					},
 					message: { type: "string" },
-					project: { type: "object" },
+					project: {
+						type: "object",
+						additionalProperties: true
+					},
 					projects: { type: "array" },
-					payload: { type: "object" }
+					payload: {
+						type: "object",
+						additionalProperties: true
+					}
 				}
 			},
 			render(_args, value) {

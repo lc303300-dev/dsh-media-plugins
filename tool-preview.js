@@ -1,4 +1,4 @@
-import { n as makePreview, t as imageDimensions } from "./image-ops-ATTQ3xit.js";
+import { n as makePreview, t as imageDimensions } from "./image-ops.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { mkdir } from "node:fs/promises";
@@ -39,9 +39,15 @@ function apply(ctx, config) {
 						type: "boolean",
 						required: true
 					},
-					original: { type: "object" },
+					original: {
+						type: "object",
+						additionalProperties: true
+					},
 					preview_path: { type: "string" },
-					preview: { type: "object" },
+					preview: {
+						type: "object",
+						additionalProperties: true
+					},
 					message: { type: "string" }
 				}
 			},

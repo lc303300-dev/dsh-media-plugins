@@ -68,7 +68,7 @@ export const Config: z<Config> = z.object({
   outputDir: z.string().default('outputs'),
   privateDir: z.string().default(''),
   pollTimeoutMs: z.number().default(420000),
-  executionMode: z.enum(VIDEO_EXECUTION_MODES).default('production'),
+  executionMode: z.union([...VIDEO_EXECUTION_MODES]).default('production'),
   runHelpBeforeSubmit: z.boolean().default(true),
 })
 

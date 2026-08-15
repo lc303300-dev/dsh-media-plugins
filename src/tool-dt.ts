@@ -51,7 +51,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         model: { type: 'string', description: 'init_batch 用：模型选择证据（如 seedance2.5）。' },
         user_requirements: { type: 'string', description: 'init_batch 用：用户运镜/镜头/时长要求。' },
         materials: { type: 'array', items: { type: 'string' }, description: 'init_batch 用：本地素材路径列表（顺序即素材编号）。' },
-        prompts: { type: 'array', items: { type: 'object' }, description: 'set_prompts 用：[{material, prompt}] 逐素材中文提示词。' },
+        prompts: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_prompts 用：[{material, prompt}] 逐素材中文提示词。' },
       },
       output: {
         schema: {
@@ -61,7 +61,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             ok: { type: 'boolean', required: true },
             message: { type: 'string' },
             batch_id: { type: 'string' },
-            manifest: { type: 'object' },
+            manifest: { type: 'object', additionalProperties: true },
             review_path: { type: 'string' },
             batches: { type: 'array' },
           },

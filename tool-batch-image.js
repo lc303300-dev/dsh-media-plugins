@@ -1,5 +1,5 @@
-import { r as runImageRouter, t as SUPPORTED_RATIOS } from "./adapters-L3daqWKG.js";
-import { a as ensureDir, l as resolvePrivateRoot, r as appendSafeLog } from "./private-runtime-D6gReaf9.js";
+import { r as runImageRouter, t as SUPPORTED_RATIOS } from "./adapters.js";
+import { a as ensureDir, l as resolvePrivateRoot, r as appendSafeLog } from "./private-runtime.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { writeFile } from "node:fs/promises";
@@ -192,6 +192,7 @@ function apply(ctx, config) {
 			},
 			manifest: {
 				type: "object",
+				additionalProperties: true,
 				description: "start 用：{groups: [{id, prompt, candidates, image_ratio}], concurrency?, deadline_seconds?}；或传 manifest_path。"
 			},
 			manifest_path: {
@@ -214,8 +215,14 @@ function apply(ctx, config) {
 					},
 					message: { type: "string" },
 					job_key: { type: "string" },
-					plan: { type: "object" },
-					summary: { type: "object" },
+					plan: {
+						type: "object",
+						additionalProperties: true
+					},
+					summary: {
+						type: "object",
+						additionalProperties: true
+					},
 					contact_sheet_path: { type: "string" },
 					jobs: { type: "array" }
 				}

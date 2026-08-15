@@ -21,6 +21,7 @@ export default defineConfig({
   target: 'es2024',
   dts: false,
   clean: false,
+  hash: false,
   fixedExtension: false,
   deps: {
     neverBundle: [/^@deepseek-ai\//, /^node:/, /^undici$/, /^sharp$/],

@@ -1,4 +1,4 @@
-import { a as ensureDir } from "./private-runtime-D6gReaf9.js";
+import { a as ensureDir } from "./private-runtime.js";
 import { basename, extname, join } from "node:path";
 import sharp from "sharp";
 //#region src/shared/image-ops.ts

@@ -1,6 +1,6 @@
-import { a as ensureDir, i as atomicWriteJson, l as resolvePrivateRoot, o as newTaskId, s as readJsonSafe, u as sha256File } from "./private-runtime-D6gReaf9.js";
-import { t as VIDEO_RATIOS } from "./project-core-Bp6p0MQx.js";
-import { n as makePreview } from "./image-ops-ATTQ3xit.js";
+import { a as ensureDir, i as atomicWriteJson, l as resolvePrivateRoot, o as newTaskId, s as readJsonSafe, u as sha256File } from "./private-runtime.js";
+import { t as VIDEO_RATIOS } from "./project-core.js";
+import { n as makePreview } from "./image-ops.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { writeFile } from "node:fs/promises";
@@ -58,7 +58,10 @@ function apply(ctx, config) {
 			},
 			prompts: {
 				type: "array",
-				items: { type: "object" },
+				items: {
+					type: "object",
+					additionalProperties: true
+				},
 				description: "set_prompts 用：[{material, prompt}] 逐素材中文提示词。"
 			}
 		},
@@ -73,7 +76,10 @@ function apply(ctx, config) {
 					},
 					message: { type: "string" },
 					batch_id: { type: "string" },
-					manifest: { type: "object" },
+					manifest: {
+						type: "object",
+						additionalProperties: true
+					},
 					review_path: { type: "string" },
 					batches: { type: "array" }
 				}

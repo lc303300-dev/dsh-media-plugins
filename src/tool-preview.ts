@@ -50,9 +50,9 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           additionalProperties: false,
           properties: {
             ok: { type: 'boolean', required: true },
-            original: { type: 'object' },
+            original: { type: 'object', additionalProperties: true },
             preview_path: { type: 'string' },
-            preview: { type: 'object' },
+            preview: { type: 'object', additionalProperties: true },
             message: { type: 'string' },
           },
         },

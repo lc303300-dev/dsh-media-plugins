@@ -1,5 +1,5 @@
-import { l as resolvePrivateRoot } from "./private-runtime-D6gReaf9.js";
-import { n as validateContract, t as SkillRegistry } from "./registry-core-DEcdqMxP.js";
+import { l as resolvePrivateRoot } from "./private-runtime.js";
+import { n as validateContract, t as SkillRegistry } from "./registry-core.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { readFile, stat } from "node:fs/promises";
@@ -91,7 +91,10 @@ function apply(ctx, config) {
 						required: true
 					},
 					message: { type: "string" },
-					skill: { type: "object" },
+					skill: {
+						type: "object",
+						additionalProperties: true
+					},
 					skills: { type: "array" },
 					hits: { type: "array" }
 				}

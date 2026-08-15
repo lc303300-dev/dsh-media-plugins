@@ -169,7 +169,7 @@ function confirmPrompt(state) {
 	const current = state.prompts[state.prompts.length - 1];
 	if (!current) throw new Error("no prompt to confirm");
 	const now = (/* @__PURE__ */ new Date()).toISOString();
-	return transition({
+	let next = {
 		...state,
 		prompts: state.prompts.map((p, i) => i === state.prompts.length - 1 ? {
 			...p,
@@ -178,7 +178,10 @@ function confirmPrompt(state) {
 		lockedPromptHash: current.hash,
 		lockedMaterialHashes: lockMaterials(state),
 		updatedAt: now
-	}, "prompt_confirmed", `prompt v${current.version} confirmed`);
+	};
+	if (next.status === "authoring_prompt") next = transition(next, "awaiting_prompt_confirmation", "prompt submitted for confirmation");
+	if (next.status !== "awaiting_prompt_confirmation") throw new Error(`cannot confirm prompt in status ${state.status}`);
+	return transition(next, "prompt_confirmed", `prompt v${current.version} confirmed`);
 }
 /**
 * Build the standard submission payload; only from prompt_confirmed and

@@ -132,6 +132,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         },
         manifest: {
           type: 'object',
+          additionalProperties: true,
           description: 'start 用：{groups: [{id, prompt, candidates, image_ratio}], concurrency?, deadline_seconds?}；或传 manifest_path。',
         },
         manifest_path: { type: 'string', description: 'start 用：manifest JSON 文件路径（UTF-8）。' },
@@ -145,8 +146,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             ok: { type: 'boolean', required: true },
             message: { type: 'string' },
             job_key: { type: 'string' },
-            plan: { type: 'object' },
-            summary: { type: 'object' },
+            plan: { type: 'object', additionalProperties: true },
+            summary: { type: 'object', additionalProperties: true },
             contact_sheet_path: { type: 'string' },
             jobs: { type: 'array' },
           },

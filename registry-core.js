@@ -65,8 +65,8 @@ function skillSha256(name, version, contractJson, routingJson) {
 	})).digest("hex");
 }
 var SkillRegistry = class {
-	dbPath;
 	db;
+	dbPath;
 	constructor(dbPath) {
 		this.dbPath = dbPath;
 		mkdirSync(dirname(dbPath), { recursive: true });

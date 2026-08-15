@@ -1,5 +1,5 @@
-import { r as mediaErrors } from "./failure-BLDFEPKr.js";
-import { c as redactPrompt, l as resolvePrivateRoot, o as newTaskId, r as appendSafeLog, t as TaskStore } from "./private-runtime-D6gReaf9.js";
+import { r as mediaErrors } from "./failure.js";
+import { c as redactPrompt, l as resolvePrivateRoot, o as newTaskId, r as appendSafeLog, t as TaskStore } from "./private-runtime.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { access, mkdir, readdir, rename } from "node:fs/promises";
@@ -27,7 +27,7 @@ const Config = z.object({
 	outputDir: z.string().default("outputs"),
 	privateDir: z.string().default(""),
 	pollTimeoutMs: z.number().default(42e4),
-	executionMode: z.enum(VIDEO_EXECUTION_MODES).default("production"),
+	executionMode: z.union([...VIDEO_EXECUTION_MODES]).default("production"),
 	runHelpBeforeSubmit: z.boolean().default(true)
 });
 const VIDEO_EXTENSIONS = /* @__PURE__ */ new Set([
