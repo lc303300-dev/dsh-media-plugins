@@ -1,13 +1,24 @@
 # dsh-media-plugins
 
-DSH 媒体能力组合包（bundle），一次安装带来三个媒体工具和一个完成通知：
+DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 9 个工具、6 个技能与一个完成通知，
+覆盖 Codex_Wsstudio 指南（P0–P4）在 DSH 平台上的重建：
 
 | 功能 | 说明 | 底层 | 凭证 |
 |---|---|---|---|
+| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 值，6 级适配器严格串行回退（comfly×3 → apimart → google gemini → dreamina-image），单适配器 120s / 整任务 300s，失败分类 + needs_review 禁重试，EXIF 归一化 + 最长边 1920px，跨进程容量锁（默认 6，dreamina 图/视频共享 `seedance-cli`） | Comfly / APIMart / Google Gemini / Dreamina CLI | `COMFLY_API_KEY`、`APIMART_API_KEY`、`GEMINI_API_KEY` + VPN 代理 |
+| `generate_video` | 生视频：默认 seedance2.5 / 480p；text2video / multimodal2video；`video_execution_mode`：production（提交+轮询+下载）、production_submit_only（仅提交）、test_submit_only（强制非 VIP 2.0/720p，仅返回 submit_id，到即梦后台查看） | 即梦 Dreamina 本地 CLI（`dreamina.exe`） | OAuth 登录态 |
 | `describe_image` | 看图（识别/描述本地图片） | 火山方舟 Doubao（`doubao-seed-2-0-mini`） | `VOLCANO_ENGINE_API_KEY` |
-| `generate_image` | 生图（文生图 / 图生图） | Comfly Gemini（`gemini-3.1-flash-image-preview`） | `COMFLY_API_KEY` + VPN 代理 |
-| `generate_video` | 生视频（文生视频 / 图生视频） | 即梦 Dreamina 本地 CLI（`dreamina.exe`） | OAuth 登录态 |
-| 完成通知 | 答案生成完成时弹 Windows 托盘气泡（含答案摘要） | `notify-toast.ps1`（`NotifyIcon`） | 无（仅 Windows，免配置） |
+| `skill_registry` | 业务 Skill 治理（Codex_CS）：ingest/search/get/publish/deprecate/list，contract 校验、name@version 去重、内容哈希防漂移、FTS5 trigram 中文检索 | node:sqlite + FTS5（零原生依赖） | 无 |
+| `project_pipeline` | 项目状态机（Codex_CS）：显式状态流转、素材槽 min/max 校验、素材/提示词 sha256 锁定、`build_payload` 提交前哈希复核防未确认版本 | 原子 JSON 状态（私有运行目录） | 无 |
+| `dt_batch` | DT 批次工作台：init_batch / prepare_previews（≤1024px）/ set_prompts / finalize_review（审阅 HTML） | sharp | 无 |
+| `batch_image` | 确定性批量生图调度器：manifest 校验、稳定 job key、SQLite 状态、≤10 并发、≥1s 间隔、硬截止（默认 ceil(总数÷并发)×60s×1.5）、截止后永久 abandoned、编号联系表；重复提交被 job key 幂等拒绝 | node:sqlite + 统一路由器 | 同 generate_image |
+| `video_to_gif` | 视频转 GIF：FFmpeg 双遍 palettegen/paletteuse，宽度/FPS/抖动分档降级，默认 ≤10MB | FFmpeg（`FFMPEG_PATH` / PATH / 常见安装路径） | 无 |
+| `image_preview` | EXIF 归一化 ≤1024px 预览 + 尺寸报告（视觉检查/审阅页用，不读原始大图） | sharp | 无 |
+| 完成通知 | 答案生成完成时弹 Windows 托盘气泡 | `notify-toast.ps1` | 无（仅 Windows） |
+
+所有任务状态、锁、日志、注册库、项目/批次状态写入 **私有运行目录**
+`<workspace>/.dsh-media-private/`（对应 `.codex-image-private`），凭证走 DSH credentials
+系统，均不进入仓库或聊天。
 
 ## 安装
 
@@ -24,76 +35,73 @@ dsh plugin --profile <name> add github:lc303300-dev/dsh-media-plugins
 
 ```sh
 dsh plugin --profile <name> add dsh-media-plugins       # npm
-dsh plugin --profile <name> add ./dsh-media-plugins-0.1.0.tgz   # tarball
+dsh plugin --profile <name> add ./dsh-media-plugins-0.2.0.tgz   # tarball
 ```
 
-安装后 `dsh --profile <name> --dump-config` 应看到 `dsh-media-plugins` 层。
+安装后 `dsh --profile <name> --dump-config` 应看到 `dsh-media-plugins` 层及其全部工具。
 
-## 前置准备（三个功能各自的依赖）
+## 前置准备
 
 ### 1. 火山方舟（看图）
 
-在 `$DSH_HOME/settings.yaml` 配置视觉 provider（`llm-pi-ai` 已由 dsh 内置，只需补这一节）：
+`$DSH_HOME/settings.yaml` 配置 `llm-pi-ai.providers.volcengine`（见 `setup.ps1` 或旧版 README）。
+Key 写入 `$DSH_HOME/.credentials.yaml`。
 
-```yaml
-llm-pi-ai:
-  providers:
-    volcengine:
-      displayName: Volcengine
-      apiKeyEnv: VOLCANO_ENGINE_API_KEY
-      api: openai-completions
-      baseURL: https://ark.cn-beijing.volces.com/api/v3
-      models:
-        - id: doubao-seed-2-0-mini-260428
-          name: Doubao Seed 2.0 Mini
-          contextWindow: 256000
-          maxTokens: 8192
-          input: [text, image]
-```
+### 2. Comfly / APIMart / Gemini（生图回退链）
 
-Key 写入 `$DSH_HOME/.credentials.yaml`：
-
-```yaml
-VOLCANO_ENGINE_API_KEY: <火山方舟 Key>
-COMFLY_API_KEY: <Comfly Key>
-```
-
-### 2. Comfly（生图）
-
-- 需要 `COMFLY_API_KEY`（见上）。
+- `COMFLY_API_KEY`（必填，回退链 1–3 级共用）
+- `APIMART_API_KEY`（可选，第 4 级）
+- `GEMINI_API_KEY`（可选，第 5 级）
 - 需要 **VPN 代理**：`cordis.patch.yml` 里默认 `proxyUrl: 'http://127.0.0.1:7897'`，按本机代理端口改。
 
 ### 3. 即梦 Dreamina（生视频）
 
-- `dreamina.exe` 由 `setup.ps1` 从官方地址下载到本包 `bin/`（不随仓库分发）。
-- **OAuth 登录**：首次使用需在浏览器授权。`setup.ps1` 会引导，或手动执行：
+- `dreamina.exe` 由 `setup.ps1` 下载到本包 `bin/`（不随仓库分发）。
+- **OAuth 登录**：`.\bin\dreamina.exe login`，登录态存于 `~\.dreamina_cli\credential.json`。
 
-```sh
-.\bin\dreamina.exe login
-```
+### 4. FFmpeg（video_to_gif）
 
-登录态存于 `~\.dreamina_cli\credential.json`（官方固定位置，跨机器需重新登录）。
+`FFMPEG_PATH` 环境变量 > PATH > 常见安装路径（oopz / Topaz / Virtual Desktop Streamer）。
 
 ## 一键引导
-
-新机器上跑 `setup.ps1`，它会按提示完成：写 Key、配火山 provider、下载 dreamina.exe、引导登录。完成通知无需任何配置，随 bundle 自动启用。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
+会完成：写 Key（含 APIMART/GEMINI）→ 配火山 provider → 下载 dreamina.exe → 引导登录 →
+安装 6 个 Studio 技能到 `$DSH_HOME\skills\dsh-media-studio`（DSH 技能发现根，重启后生效）→ ffmpeg 检查。
+
 ## 使用
 
 ```text
-describe_image(file_path="D:\图.png", prompt="识别报错")
-generate_image(prompt="一只戴红围巾的橘猫", size="1:1", output="outputs/cat.png")
+generate_image(prompt="一只戴红围巾的橘猫", image_ratio="1:1", output="outputs/cat.png")
 generate_video(prompt="夜晚的未来城市，镜头缓慢推进", duration=8, ratio="16:9")
+generate_video(prompt="根据参考视频运镜，配合音乐节奏将静态图转为动态视频",
+               images=["D:\\素材\\主图.png"], videos=["D:\\素材\\运镜参考.mp4"],
+               audios=["D:\\素材\\音乐.mp3"], duration=8, model_version="2.5")
+skill_registry(command="ingest", package_dir="D:\\skills\\城市夜景短片")
+project_pipeline(command="create", skill_name="城市夜景短片", ratio="16:9", duration=8)
+dt_batch(command="init_batch", materials=["D:\\素材\\a.png", "D:\\素材\\b.png"], duration=8)
+batch_image(command="start", manifest={groups:[{id:"g1",prompt:"橘猫",candidates:4,image_ratio:"1:1"}]})
+video_to_gif(video="D:\\out\\clip.mp4")
 ```
 
-给 `generate_image` / `generate_video` 传 `output` 参数，返回路径会变成可点击的「打开文件」。
+## 安全契约（与指南一致）
 
-## 安全
+- Key / Cookie / 登录会话不进入 Git、日志与 Agent 回复；只记录脱敏 prompt（字符数 + sha256）。
+- 付费安全：默认人工确认；`needs_review` 绝不自动重试；`test_submit_only` 不轮询；批量需明确付费确认。
+- 输入安全：大图 EXIF 归一化与等比缩放（≤1920px）、不覆盖原图、素材顺序稳定、音频时长与文件存在性校验。
+- 状态可靠性：任务 id 幂等、状态原子写、跨进程锁、取消标记、提交前后持久化。
+- 并发控制：按 capacity key 限流；`seedance-cli` 图/视频共享容量。
 
-- Key 走 DSH credentials 系统（`.credentials.yaml` / 环境变量），**不进入本仓库**。
-- `bin/dreamina.exe` 与登录态**不进入 Git**（见 `.gitignore`）。
-- 火山/Comfly 仅在真正调用时请求外部服务；生视频走本地 CLI。
+## 开发与测试
+
+```sh
+pnpm build   # tsdown：src/*.ts → 包根 *.js（profile 用 link: 安装，改完重启 dsh 生效）
+pnpm test    # node --test（23 个离线单测，覆盖路由/失败分类/状态机/注册库/批量/锁）
+```
+
+## 完成通知
+
+无需配置，随 bundle 自动启用（仅 Windows）。

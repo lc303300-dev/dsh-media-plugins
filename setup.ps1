@@ -46,9 +46,13 @@ function Read-Key([string]$name, [string]$prompt, [string]$current) {
     }
 }
 $volcano = Read-Key "VOLCANO_ENGINE_API_KEY" "火山方舟 Key（看图，可留空跳过）" $creds["VOLCANO_ENGINE_API_KEY"]
-$comfly = Read-Key "COMFLY_API_KEY" "Comfly Key（生图，可留空跳过）" $creds["COMFLY_API_KEY"]
+$comfly = Read-Key "COMFLY_API_KEY" "Comfly Key（生图主通道，可留空跳过）" $creds["COMFLY_API_KEY"]
+$apimart = Read-Key "APIMART_API_KEY" "APIMart Key（生图回退 4 级，可留空跳过）" $creds["APIMART_API_KEY"]
+$gemini = Read-Key "GEMINI_API_KEY" "Google Gemini Key（生图回退 5 级，可留空跳过）" $creds["GEMINI_API_KEY"]
 if ($volcano) { $creds["VOLCANO_ENGINE_API_KEY"] = $volcano }
 if ($comfly) { $creds["COMFLY_API_KEY"] = $comfly }
+if ($apimart) { $creds["APIMART_API_KEY"] = $apimart }
+if ($gemini) { $creds["GEMINI_API_KEY"] = $gemini }
 $lines = $creds.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }
 $lines | Set-Content -LiteralPath $credFile -Encoding UTF8
 Write-Host "  已写入 $credFile" -ForegroundColor Green
@@ -83,7 +87,7 @@ llm-pi-ai:
 
 # 4. 引导 Dreamina 登录
 Write-Host ""
-Write-Host "[4/4] Dreamina 登录（生视频，OAuth 需浏览器授权）" -ForegroundColor Yellow
+Write-Host "[4/5] Dreamina 登录（生视频，OAuth 需浏览器授权）" -ForegroundColor Yellow
 Write-Host "  即将运行 $dreamina login" -ForegroundColor Gray
 Write-Host "  终端会打印 verification_uri 与 user_code，请在浏览器打开并授权。" -ForegroundColor Gray
 $doLogin = Read-Host "  现在登录？（y/n，回车=y）"
@@ -91,8 +95,33 @@ if ($doLogin -eq '' -or $doLogin -eq 'y') {
     & $dreamina login
 }
 
+# 5. 安装业务技能到 $DSH_HOME/skills（DSH 技能发现根，重启后生效）
+Write-Host ""
+Write-Host "[5/5] 安装 Studio 技能到 $DSH_HOME\skills" -ForegroundColor Yellow
+$skillRoot = Join-Path $DSH_HOME "skills\dsh-media-studio"
+$srcSkills = Join-Path $PSScriptRoot "skills"
+if (Test-Path $srcSkills) {
+    New-Item -ItemType Directory -Force -Path $skillRoot | Out-Null
+    Get-ChildItem $srcSkills -Directory | ForEach-Object {
+        Copy-Item $_.FullName (Join-Path $skillRoot $_.Name) -Recurse -Force
+        Write-Host "  技能: $($_.Name)" -ForegroundColor Green
+    }
+} else {
+    Write-Host "  skills 目录不存在，跳过" -ForegroundColor Yellow
+}
+
+# ffmpeg 检查（video_to_gif 需要）
+Write-Host ""
+$ffmpegFound = $false
+try { $null = Get-Command ffmpeg -ErrorAction Stop; $ffmpegFound = $true } catch {}
+if (-not $ffmpegFound -and -not (Test-Path "C:\Program Files\oopz\ffmpeg.exe")) {
+    Write-Host "  [提示] 未检测到 ffmpeg；video_to_gif 需要它（可安装或用 FFMPEG_PATH 指定路径）。" -ForegroundColor Yellow
+} else {
+    Write-Host "  ffmpeg 可用：video_to_gif 就绪" -ForegroundColor Green
+}
+
 Write-Host ""
 Write-Host "== 完成 ==" -ForegroundColor Cyan
 Write-Host "  1. 用 dsh plugin add 安装本 bundle（见 README）。"
 Write-Host "  2. 生图需 VPN 代理：按需改 cordis.patch.yml 的 proxyUrl。"
-Write-Host "  3. 重启 dsh 后即可使用 describe_image / generate_image / generate_video。"
+Write-Host "  3. 重启 dsh 后即可使用 generate_image / generate_video / describe_image / skill_registry / project_pipeline / dt_batch / batch_image / video_to_gif / image_preview 与 Studio 技能。"

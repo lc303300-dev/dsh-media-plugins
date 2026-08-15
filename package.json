@@ -1,7 +1,7 @@
 {
   "name": "dsh-media-plugins",
-  "version": "0.1.0",
-  "description": "DSH 媒体能力组合包：describe_image（火山方舟看图）、generate_image（Comfly Gemini 生图）、generate_video（即梦 Dreamina 生视频）、完成通知（Windows 托盘气泡）",
+  "version": "0.2.0",
+  "description": "DSH Studio 媒体能力包：generate_image（统一媒体路由器，多级串行回退）、generate_video（即梦 Seedance，含测试通道）、describe_image（火山方舟看图）、skill_registry（业务 Skill 治理，SQLite FTS5）、project_pipeline（项目状态机+哈希锁定）、dt_batch（批次/预览/审阅页）、batch_image（确定性批量调度器）、video_to_gif（FFmpeg 双遍）、image_preview（1024px 预览）、完成通知",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lc303300-dev/dsh-media-plugins.git"
@@ -16,18 +16,28 @@
     "./Ws_tool-image-gen": "./tool-image-gen.js",
     "./tool-video-gen": "./tool-video-gen.js",
     "./Ws_tool-video-gen": "./tool-video-gen.js",
+    "./tool-skill-registry": "./tool-skill-registry.js",
+    "./Ws_tool-skill-registry": "./tool-skill-registry.js",
+    "./tool-project": "./tool-project.js",
+    "./Ws_tool-project": "./tool-project.js",
+    "./tool-dt": "./tool-dt.js",
+    "./Ws_tool-dt": "./tool-dt.js",
+    "./tool-batch-image": "./tool-batch-image.js",
+    "./Ws_tool-batch-image": "./tool-batch-image.js",
+    "./tool-video-to-gif": "./tool-video-to-gif.js",
+    "./Ws_tool-video-to-gif": "./tool-video-to-gif.js",
+    "./tool-preview": "./tool-preview.js",
+    "./Ws_tool-preview": "./tool-preview.js",
     "./notify": "./notify.js",
     "./Ws_completion-notify": "./notify.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "index.js",
-    "tool-vision.js",
-    "tool-image-gen.js",
-    "tool-video-gen.js",
-    "notify.js",
+    "*.js",
     "cordis.patch.yml",
-    "scripts/notify-toast.ps1"
+    "skills/",
+    "refs/",
+    "scripts/"
   ],
   "dsh": {
     "bundle": {
@@ -36,9 +46,11 @@
   },
   "scripts": {
     "prepare": "tsdown",
-    "build": "tsdown"
+    "build": "tsdown",
+    "test": "node --test \"tests/*.test.mjs\""
   },
   "dependencies": {
+    "sharp": "^0.35.3",
     "undici": "^8.10.0"
   },
   "devDependencies": {

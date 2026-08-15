@@ -1,0 +1,454 @@
+/**
+ * Image adapters + serial image router.
+ *
+ * Contract (UNIFIED_MEDIA_TOOL_REFACTOR_BLUEPRINT §1.2/§9, media-router.defaults.json):
+ * - strictly serial per-adapter attempts, never parallel/hedged;
+ * - per-adapter budget default 120 s, whole-task default 300 s;
+ * - fallback only for FALLBACK_ALLOWED classes; indeterminate stops with needs_review;
+ * - default concurrency 6 per adapter; `seedance-cli` capacity shared by
+ *   dreamina image + video.
+ *
+ * @module dsh-media-plugins/shared/adapters
+ */
+
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import sharp from 'sharp'
+import { MediaError, mediaErrors, FALLBACK_ALLOWED, type AttemptRecord } from './failure.ts'
+import { openAiImageUrl, downloadImageTo, HttpStatusError, hasImageSignature, extensionFor } from './media-client.ts'
+import { acquireSlot, appendSafeLog, ensureDir, newTaskId, sha256Text } from './private-runtime.ts'
+
+const execFileAsync = promisify(execFile)
+
+/** The 8 supported image ratios (contract: never infer, never extend). */
+export const SUPPORTED_RATIOS: readonly string[] = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'] as const
+
+/** 1K-only pixel allowlist for the supported ratios. */
+export const RATIO_SIZES: Readonly<Record<string, string>> = {
+  '21:9': '1584x672',
+  '16:9': '1376x768',
+  '3:2': '1264x848',
+  '4:3': '1200x896',
+  '1:1': '1024x1024',
+  '3:4': '896x1200',
+  '2:3': '848x1264',
+  '9:16': '768x1376',
+}
+
+/** Resolve an explicit ratio to a pixel size; throws input_error otherwise. */
+export function ratioToSize(ratio: string): string {
+  const value = (ratio ?? '').trim()
+  const mapped = RATIO_SIZES[value]
+  if (mapped !== undefined) return mapped
+  throw mediaErrors.input(
+    `unsupported image_ratio "${value}"; supported values: ${SUPPORTED_RATIOS.join(', ')}`,
+  )
+}
+
+export interface RouterConfig {
+  comflyBaseURL: string
+  comflyApiKeyEnv: string
+  apimartBaseURL: string
+  apimartApiKeyEnv: string
+  geminiApiURL: string
+  geminiApiKeyEnv: string
+  dreaminaPath: string
+  proxyUrl: string
+  maxConcurrency: number
+  providerTimeoutMs: number
+  taskTimeoutMs: number
+  outputDir: string
+  enabled: string[]
+}
+
+export interface AdapterInput {
+  prompt: string
+  /** Normalized provider inputs (EXIF + resized, staged in the private runtime). */
+  images: string[]
+  size: string
+  privateRoot: string
+  proxyUrl?: string
+  signal?: AbortSignal
+  /** Whole-task remaining budget; the adapter must return within min(budget, adapterBudget). */
+  budgetMs: number
+}
+
+export interface ImageAdapter {
+  id: string
+  model: string
+  capacityKey: string
+  checkReady(): Promise<{ ready: boolean; reason?: string }>
+  execute(input: AdapterInput): Promise<{ outputPath: string }>
+}
+
+/** Classify an HTTP status into the failure taxonomy. */
+export function classifyHttp(status: number): MediaError {
+  switch (status) {
+    case 400:
+    case 422:
+      return mediaErrors.policy(`HTTP ${status}: request rejected by provider policy`)
+    case 401:
+    case 403:
+      return mediaErrors.auth(`HTTP ${status}: provider rejected credentials`)
+    case 402:
+    case 429:
+      return mediaErrors.quota(`HTTP ${status}: provider quota or rate limit`)
+    default:
+      if (status >= 500) return mediaErrors.provider(`HTTP ${status}: provider server error`)
+      return mediaErrors.provider(`HTTP ${status}: unexpected provider failure`)
+  }
+}
+
+function credentials(env: string): string | undefined {
+  return process.env[env] || undefined
+}
+
+/* ------------------------------------------------------------------ */
+/* Adapters                                                            */
+/* ------------------------------------------------------------------ */
+
+/** Comfly OpenAI-compatible adapter (one fixed model, one request). */
+function comflyAdapter(id: string, model: string, cfg: RouterConfig): ImageAdapter {
+  return {
+    id,
+    model,
+    capacityKey: id,
+    async checkReady() {
+      return { ready: Boolean(credentials(cfg.comflyApiKeyEnv)), reason: cfg.comflyApiKeyEnv }
+    },
+    async execute(input) {
+      const apiKey = credentials(cfg.comflyApiKeyEnv)
+      if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.comflyApiKeyEnv}`)
+      const url = await openAiImageUrl({
+        baseURL: cfg.comflyBaseURL,
+        apiKey,
+        model,
+        prompt: input.prompt,
+        size: input.size,
+        images: input.images,
+        proxyUrl: cfg.proxyUrl,
+        signal: input.signal,
+        timeoutMs: input.budgetMs,
+      })
+      const dest = join(input.privateRoot, 'jobs', '_router', 'outputs')
+      const path = await downloadImageTo(url, dest, {
+        proxyUrl: cfg.proxyUrl,
+        signal: input.signal,
+        timeoutMs: Math.min(input.budgetMs, 120000),
+      })
+      return { outputPath: path }
+    },
+  }
+}
+
+/** APIMart OpenAI-compatible adapter (references as base64 data URIs). */
+function apimartAdapter(cfg: RouterConfig): ImageAdapter {
+  const id = 'apimart-gpt-image-2'
+  const model = 'gpt-image-2'
+  return {
+    id,
+    model,
+    capacityKey: id,
+    async checkReady() {
+      return { ready: Boolean(credentials(cfg.apimartApiKeyEnv)), reason: cfg.apimartApiKeyEnv }
+    },
+    async execute(input) {
+      const apiKey = credentials(cfg.apimartApiKeyEnv)
+      if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.apimartApiKeyEnv}`)
+      const base = cfg.apimartBaseURL.replace(/\/+$/, '')
+      const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json; charset=utf-8' }
+      const body: Record<string, unknown> = { model, prompt: input.prompt, n: 1, size: input.size, response_format: 'url' }
+      if (input.images.length > 0) {
+        const image = input.images[0]
+        const data = await readFile(image)
+        const mime = `image/${image.split('.').pop()?.toLowerCase() === 'png' ? 'png' : 'jpeg'}`
+        body.image = `data:${mime};base64,${data.toString('base64')}`
+      }
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), input.budgetMs)
+      input.signal?.addEventListener('abort', () => controller.abort(), { once: true })
+      try {
+        const response = await fetch(`${base}/images/generations`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+        if (!response.ok) throw new HttpStatusError(response.status, `APIMart request failed with HTTP ${response.status}`)
+        const payload: any = await response.json()
+        const data = payload?.data
+        if (!Array.isArray(data) || !data[0]?.url) throw mediaErrors.download('APIMart response contains no image URL')
+        const dest = join(input.privateRoot, 'jobs', '_router', 'outputs')
+        return { outputPath: await downloadImageTo(data[0].url, dest, { proxyUrl: cfg.proxyUrl, signal: input.signal, timeoutMs: Math.min(input.budgetMs, 120000) }) }
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+  }
+}
+
+/** Official Google Gemini image adapter (interactions API, base64 output). */
+function geminiAdapter(cfg: RouterConfig): ImageAdapter {
+  const id = 'google-gemini-image'
+  const model = 'gemini-3.1-flash-image'
+  return {
+    id,
+    model,
+    capacityKey: id,
+    async checkReady() {
+      return { ready: Boolean(credentials(cfg.geminiApiKeyEnv)), reason: cfg.geminiApiKeyEnv }
+    },
+    async execute(input) {
+      const apiKey = credentials(cfg.geminiApiKeyEnv)
+      if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.geminiApiKeyEnv}`)
+      const ratioKey = Object.entries(RATIO_SIZES).find(([, px]) => px === input.size)?.[0] ?? '16:9'
+      const inputParts: Record<string, unknown>[] = [{ type: 'text', text: input.prompt }]
+      for (const path of input.images) {
+        const data = await readFile(path)
+        const mime = `image/${path.split('.').pop()?.toLowerCase() === 'png' ? 'png' : 'jpeg'}`
+        inputParts.push({ type: 'image', data: data.toString('base64'), mime_type: mime })
+      }
+      const body = {
+        model,
+        input: inputParts,
+        response_format: { type: 'image', mime_type: 'image/jpeg', aspect_ratio: ratioKey, image_size: '1K' },
+      }
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), input.budgetMs)
+      input.signal?.addEventListener('abort', () => controller.abort(), { once: true })
+      try {
+        const response = await fetch(cfg.geminiApiURL, {
+          method: 'POST',
+          headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+        if (!response.ok) throw new HttpStatusError(response.status, `Gemini request failed with HTTP ${response.status}`)
+        const payload: any = await response.json()
+        const found = extractGeminiImage(payload)
+        if (!found) throw mediaErrors.download('Gemini response contains no image data')
+        const bytes = Buffer.from(found.data, 'base64')
+        if (!hasImageSignature(new Uint8Array(bytes))) throw mediaErrors.download('Gemini image data failed signature check')
+        const dest = await ensureDir(join(input.privateRoot, 'jobs', '_router', 'outputs'))
+        const finalPath = join(dest, `gemini-${Date.now()}${extensionFor(new Uint8Array(bytes))}`)
+        await writeFile(finalPath, bytes)
+        return { outputPath: finalPath }
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+  }
+}
+
+/** Deep-walk a Gemini payload for the first base64 image. */
+function extractGeminiImage(payload: any): { data: string; mimeType?: string } | undefined {
+  const direct = [payload?.output_image, payload?.output?.image]
+  for (const item of direct) {
+    if (item && typeof item.data === 'string' && item.data.length > 0) {
+      return { data: item.data, mimeType: item.mime_type }
+    }
+  }
+  const walk = (value: any): { data: string; mimeType?: string } | undefined => {
+    if (Array.isArray(value)) {
+      for (const child of value) {
+        const found = walk(child)
+        if (found) return found
+      }
+      return undefined
+    }
+    if (value && typeof value === 'object') {
+      if (typeof value.data === 'string' && value.data.length > 0 && (value.type === 'image' || String(value.mime_type ?? '').startsWith('image/'))) {
+        return { data: value.data, mimeType: value.mime_type }
+      }
+      for (const key of Object.keys(value)) {
+        const found = walk(value[key])
+        if (found) return found
+      }
+    }
+    return undefined
+  }
+  return walk(payload)
+}
+
+/** Dreamina image adapter (best effort; last fallback, shared seedance-cli capacity). */
+function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
+  const id = 'dreamina-image'
+  const model = '4.0'
+  return {
+    id,
+    model,
+    capacityKey: 'seedance-cli',
+    async checkReady() {
+      try {
+        await execFileAsync(cfg.dreaminaPath, ['--help'], { timeout: 10000, windowsHide: true })
+        return { ready: true }
+      } catch {
+        return { ready: false, reason: `dreamina binary not usable: ${cfg.dreaminaPath}` }
+      }
+    },
+    async execute(input) {
+      const outDir = await ensureDir(join(input.privateRoot, 'jobs', '_router', 'outputs'))
+      const args = input.images.length > 0
+        ? ['image2image', `--prompt=${input.prompt}`, `--model_version=${model}`, ...input.images.map((p) => `--image=${p}`)]
+        : ['text2image', `--prompt=${input.prompt}`, `--model_version=${model}`]
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), input.budgetMs)
+      try {
+        await execFileAsync(cfg.dreaminaPath, args, { timeout: input.budgetMs, windowsHide: true })
+      } catch (error: any) {
+        if (controller.signal.aborted) throw mediaErrors.providerTimeout(`dreamina image timed out after ${Math.round(input.budgetMs / 1000)}s`)
+        throw mediaErrors.provider(`dreamina image failed: ${String(error?.stderr ?? error?.message ?? error).slice(0, 300)}`)
+      } finally {
+        clearTimeout(timer)
+      }
+      // find the newest image the CLI produced
+      const files = (await readdir(outDir)).filter((f) => /\.(png|jpe?g|webp)$/i.test(f)).map((f) => join(outDir, f))
+      if (files.length === 0) throw mediaErrors.provider('dreamina image produced no output file')
+      return { outputPath: files.sort((a, b) => b.length - a.length)[0] }
+    },
+  }
+}
+
+/** Build the default adapter chain in contract priority order. */
+export function defaultAdapters(cfg: RouterConfig): ImageAdapter[] {
+  const chain: ImageAdapter[] = [
+    comflyAdapter('comfly-gemini-lite', 'gemini-3.1-flash-image-preview', cfg),
+    comflyAdapter('comfly-gpt-image-2-all', 'gpt-image-2-all', cfg),
+    comflyAdapter('comfly-gpt-image-2', 'gpt-image-2', cfg),
+    apimartAdapter(cfg),
+    geminiAdapter(cfg),
+    dreaminaImageAdapter(cfg),
+  ]
+  if (!cfg.enabled || cfg.enabled.length === 0) return chain
+  return chain.filter((a) => cfg.enabled.includes(a.id))
+}
+
+export interface RouterOutcome {
+  outputPath: string
+  provider: string
+  model: string
+  attempts: AttemptRecord[]
+}
+
+export interface RouterOptions {
+  prompt: string
+  /** Raw local reference paths; the router normalizes them first. */
+  images: string[]
+  ratio: string
+  config: RouterConfig
+  workspaceRoot: string
+  privateRoot: string
+  signal?: AbortSignal
+  taskId?: string
+}
+
+/** Normalize references (EXIF + ≤1920 px) into the private inputs dir. */
+async function normalizeInputs(images: string[], privateRoot: string, taskId: string): Promise<string[]> {
+  const out: string[] = []
+  const dir = await ensureDir(join(privateRoot, 'jobs', taskId, 'inputs'))
+  for (const src of images) {
+    if (!src || src.trim().length === 0) throw mediaErrors.input('empty image path in reference list')
+    try {
+      const pipeline = sharp(src, { failOn: 'none' }).rotate()
+      const meta = await pipeline.metadata()
+      const w = meta.width ?? 0
+      const h = meta.height ?? 0
+      const longest = Math.max(w, h)
+      let target = pipeline
+      if (longest > 1920) {
+        target = pipeline.resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true })
+      }
+      const ext = (src.split('.').pop() ?? 'png').toLowerCase().replace('jpg', 'jpeg')
+      const dest = join(dir, `input-${out.length + 1}.${ext === 'jpeg' ? 'jpg' : ext}`)
+      await target.toFile(dest)
+      out.push(dest)
+    } catch (error: any) {
+      throw mediaErrors.input(`cannot read reference image ${src}: ${error?.message ?? error}`)
+    }
+  }
+  return out
+}
+
+/**
+ * Run the serial image router: normalize inputs, then attempt adapters in
+ * priority order with per-adapter budget = min(120s, remaining) and a
+ * 300 s whole-task deadline, honoring per-capacity slot leases.
+ */
+export async function runImageRouter(options: RouterOptions): Promise<RouterOutcome> {
+  const { prompt, images, ratio, config, privateRoot, signal, taskId = newTaskId() } = options
+  const size = ratioToSize(ratio)
+  const adapters = defaultAdapters(config)
+  const taskDeadline = Date.now() + config.taskTimeoutMs
+  const attempts: AttemptRecord[] = []
+  const startedAt = Date.now()
+
+  const normalized = await normalizeInputs(images, privateRoot, taskId)
+
+  for (const adapter of adapters) {
+    const remaining = taskDeadline - Date.now()
+    if (remaining <= 0) {
+      throw mediaErrors.taskTimeout(`image task exceeded ${Math.round(config.taskTimeoutMs / 1000)}s deadline`)
+    }
+    const adapterBudget = Math.min(config.providerTimeoutMs, remaining)
+    const attemptStart = Date.now()
+
+    // readiness gate: missing credentials / unusable binary skip without trying
+    const ready = await adapter.checkReady()
+    if (!ready.ready) {
+      attempts.push({ adapter: adapter.id, model: adapter.model, status: 'skipped', failureClass: 'auth_unavailable', reason: ready.reason ?? 'not ready' })
+      await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_skipped', adapter: adapter.id, reason: ready.reason })
+      continue
+    }
+
+    // cross-process capacity lease
+    let release: (() => Promise<void>) | undefined
+    try {
+      release = await acquireSlot(join(privateRoot, 'locks'), adapter.capacityKey, config.maxConcurrency, {
+        taskId,
+        timeoutMs: adapterBudget,
+      })
+    } catch (error: any) {
+      const reason = error?.message ?? 'slot busy'
+      attempts.push({ adapter: adapter.id, model: adapter.model, status: 'timeout', failureClass: 'provider_timeout', durationMs: Date.now() - attemptStart, reason })
+      continue
+    }
+
+    try {
+      const result = await adapter.execute({
+        prompt,
+        images: normalized,
+        size,
+        privateRoot,
+        proxyUrl: config.proxyUrl,
+        signal,
+        budgetMs: adapterBudget,
+      })
+      attempts.push({ adapter: adapter.id, model: adapter.model, status: 'success', durationMs: Date.now() - attemptStart })
+      await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_success', adapter: adapter.id, model: adapter.model, durationMs: Date.now() - attemptStart })
+      return { outputPath: result.outputPath, provider: adapter.id, model: adapter.model, attempts }
+    } catch (error: any) {
+      let cls = 'definite_provider_failure'
+      if (error instanceof MediaError) cls = error.cls
+      else if (error instanceof HttpStatusError) {
+        const classified = classifyHttp(error.status)
+        cls = classified.cls
+      }
+      const durationMs = Date.now() - attemptStart
+      attempts.push({ adapter: adapter.id, model: adapter.model, status: cls === 'provider_timeout' ? 'timeout' : 'failed', failureClass: cls, durationMs, reason: String(error?.message ?? error).slice(0, 300) })
+      await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_failed', adapter: adapter.id, failureClass: cls, durationMs })
+      if (!FALLBACK_ALLOWED.has(cls as any)) throw error
+      // allowed: continue to the next adapter
+    } finally {
+      await release?.()
+    }
+  }
+
+  throw mediaErrors.provider(
+    `all image providers failed after ${attempts.length} attempts (${Math.round((Date.now() - startedAt) / 1000)}s)`,
+  )
+}
+
+/** Re-export helpers used by tools. */
+export { sha256Text }

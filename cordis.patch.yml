@@ -1,10 +1,12 @@
-# dsh-media-plugins 组合层：注册三个媒体工具。
+# dsh-media-plugins 组合层：注册媒体与 Studio 工具。
 #
 # 依赖说明：
-# - describe_image 依赖火山方舟视觉 provider，需在 $DSH_HOME/settings.yaml
-#   配置 llm-pi-ai.providers.volcengine（见 README / setup.ps1）。
-# - generate_image / generate_video 的 Key 走 DSH credentials 系统
-#   （VOLCANO_ENGINE_API_KEY / COMFLY_API_KEY），由 setup 引导写入。
+# - describe_image 依赖火山方舟视觉 provider（settings.yaml llm-pi-ai.providers.volcengine）。
+# - generate_image / batch_image 的 Key 走 DSH credentials 系统
+#   （COMFLY_API_KEY / APIMART_API_KEY / GEMINI_API_KEY），由 setup 引导写入。
+# - generate_video 默认生产通道 seedance2.5/480p；test_submit_only 测试通道由工具参数控制。
+# - video_to_gif 需要 ffmpeg（FFMPEG_PATH 或 PATH 或常见安装路径）。
+# - 所有任务/锁/日志/注册库/项目状态写入 <workspace>/.dsh-media-private/。
 - insert:
     - id: Ws_tool-vision
       name: dsh-media-plugins/Ws_tool-vision
@@ -18,10 +20,30 @@
     - id: Ws_tool-video-gen
       name: dsh-media-plugins/Ws_tool-video-gen
       config:
-        # 测试专用线路：Seedance 2.0（非 VIP）+ 720p，仅提交不轮询，用户到官方后台查看进度。
-        model: 'seedance2.0'
-        resolution: '720p'
-        submitOnly: true
+        # 生产通道默认：seedance2.5 / 480p（契约要求）。
+        model: 'seedance2.5'
+        resolution: '480p'
+        executionMode: 'production'
+
+    - id: Ws_tool-skill-registry
+      name: dsh-media-plugins/Ws_tool-skill-registry
+
+    - id: Ws_tool-project
+      name: dsh-media-plugins/Ws_tool-project
+
+    - id: Ws_tool-dt
+      name: dsh-media-plugins/Ws_tool-dt
+
+    - id: Ws_tool-batch-image
+      name: dsh-media-plugins/Ws_tool-batch-image
+      config:
+        proxyUrl: 'http://127.0.0.1:7897'
+
+    - id: Ws_tool-video-to-gif
+      name: dsh-media-plugins/Ws_tool-video-to-gif
+
+    - id: Ws_tool-preview
+      name: dsh-media-plugins/Ws_tool-preview
 
     - id: Ws_completion-notify
       name: dsh-media-plugins/Ws_completion-notify
