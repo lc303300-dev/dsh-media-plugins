@@ -1,3 +1,5 @@
+import { a as plannedCount } from "./curator-core.js";
+import { join } from "node:path";
 import { createHash } from "node:crypto";
 //#region src/shared/project-core.ts
 /**
@@ -107,6 +109,112 @@ function validateVideoSettings(ratio, duration) {
 	if (!VIDEO_RATIOS.includes(ratio)) throw new Error(`unsupported video ratio ${ratio}; supported: ${VIDEO_RATIOS.join(", ")}`);
 	if (!Number.isInteger(duration) || duration < 4 || duration > 30) throw new Error(`duration must be an integer between 4 and 30 seconds, got ${duration}`);
 }
+/** Media-type file extensions for slot scanning. */
+function mediaExtensions(mediaType) {
+	switch (mediaType) {
+		case "video": return [
+			".mp4",
+			".mov",
+			".webm",
+			".mkv",
+			".avi"
+		];
+		case "audio": return [
+			".mp3",
+			".wav",
+			".m4a",
+			".aac",
+			".flac",
+			".ogg"
+		];
+		default: return [
+			".png",
+			".jpg",
+			".jpeg",
+			".webp",
+			".gif"
+		];
+	}
+}
+/**
+* Plan per-slot material collection from the skill contract references and
+* the confirmed duration: planned_count derived from each slot's count_rule
+* (clamped to min/max), source/final directories under slotsRoot.
+*/
+function planSlots(contractRefs, duration, slotsRoot) {
+	return (contractRefs ?? []).map((ref) => {
+		const rule = ref.count_rule ?? {
+			type: "bounded_recommendation",
+			enforcement: "recommended"
+		};
+		const min = Number(ref.min_count ?? 0);
+		const max = ref.max_count === null || ref.max_count === void 0 ? null : Number(ref.max_count);
+		let count = min;
+		if (rule.type === "fixed") count = Number(rule.fixed_count ?? min);
+		else if ([
+			"duration_formula",
+			"duration_lookup",
+			"bounded_recommendation"
+		].includes(rule.type)) count = Math.max(min, plannedCount(rule, duration));
+		if (max !== null) count = Math.min(count, max);
+		return {
+			slot: String(ref.id),
+			role: String(ref.role ?? ""),
+			media_type: String(ref.media_type ?? "image"),
+			min,
+			max,
+			planned_count: count,
+			count_enforcement: rule.enforcement === "required" ? "required" : "recommended",
+			source_dir: join(slotsRoot, String(ref.id), "source"),
+			final_dir: join(slotsRoot, String(ref.id), "final"),
+			locked: false
+		};
+	});
+}
+/**
+* Assess slot collection against the plan: required slots must hold exactly
+* planned_count final files (the audit rule); recommended slots only warn.
+* Pure: takes per-slot found counts.
+*/
+function assessSlotCounts(slotPlans, found) {
+	return (slotPlans ?? []).map((plan) => {
+		const count = found[plan.slot] ?? 0;
+		if (plan.count_enforcement === "required" && count !== plan.planned_count) return {
+			slot: plan.slot,
+			planned: plan.planned_count,
+			found: count,
+			ok: false,
+			issue: `required slot ${plan.slot} needs exactly ${plan.planned_count} file(s), found ${count}`
+		};
+		return {
+			slot: plan.slot,
+			planned: plan.planned_count,
+			found: count,
+			ok: true
+		};
+	});
+}
+/** Lock final materials (from final_dir files) into the project state. */
+function lockFinalMaterials(state, finalItems) {
+	const locked = {};
+	for (const item of finalItems) locked[`${item.slot}:${item.path}`] = item.hash;
+	const slotPlans = (state.slotPlans ?? []).map((plan) => finalItems.some((item) => item.slot === plan.slot) ? {
+		...plan,
+		locked: true
+	} : plan);
+	return {
+		...state,
+		materials: finalItems.map((item) => ({
+			slot: item.slot,
+			path: item.path,
+			hash: item.hash,
+			addedAt: (/* @__PURE__ */ new Date()).toISOString()
+		})),
+		lockedMaterialHashes: locked,
+		slotPlans,
+		updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+	};
+}
 /**
 * Add a material to a slot; verifies the current stage allows collection
 * and enforces slot min/max from the skill contract when provided.
@@ -145,6 +253,9 @@ function verifyMaterialsUnchanged(state, currentHashes) {
 function addPrompt(state, text, source) {
 	const clean = (text ?? "").trim();
 	if (clean.length === 0) throw new Error("prompt must not be empty");
+	if (state.prompts.length === 0 && source !== "skill_v1") throw new Error("首版提示词必须由 CS Skill 生成（source=skill_v1）；Codex_DT 只负责用户提出修改后的受约束修订");
+	if (state.prompts.length === 0 && source === "skill_v1" && state.status !== "final_images_ready" && state.status !== "authoring_prompt") throw new Error(`cannot author prompt V1 in status ${state.status}`);
+	if (state.prompts.length > 0 && source === "skill_v1") throw new Error("CS Skill 只生成首版提示词；后续版本必须使用 dt_revision");
 	const nextVersion = state.prompts.length + 1;
 	const now = (/* @__PURE__ */ new Date()).toISOString();
 	const prompt = {
@@ -211,4 +322,4 @@ function buildSubmissionPayload(state, currentHashes) {
 	};
 }
 //#endregion
-export { confirmPrompt as a, validateVideoSettings as c, buildSubmissionPayload as i, addMaterial as n, createProject as o, addPrompt as r, transition as s, VIDEO_RATIOS as t };
+export { buildSubmissionPayload as a, lockFinalMaterials as c, transition as d, validateVideoSettings as f, assessSlotCounts as i, mediaExtensions as l, addMaterial as n, confirmPrompt as o, addPrompt as r, createProject as s, VIDEO_RATIOS as t, planSlots as u };

@@ -15,16 +15,21 @@ import { join, isAbsolute } from 'node:path'
 import {
   addMaterial,
   addPrompt,
+  assessSlotCounts,
   buildSubmissionPayload,
   confirmPrompt,
   createProject,
+  lockFinalMaterials,
+  mediaExtensions,
+  planSlots,
   transition,
   validateVideoSettings,
   type ProjectState,
+  type SlotPlan,
 } from './shared/project-core.ts'
 import { SkillRegistry, type SlotContract } from './shared/registry-core.ts'
 import { buildRevisionRequest } from './shared/revision-core.ts'
-import { atomicWriteJson, readJsonSafe, resolvePrivateRoot, sha256File } from './shared/private-runtime.ts'
+import { atomicWriteJson, ensureDir, readJsonSafe, resolvePrivateRoot, sha256File } from './shared/private-runtime.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-project'
@@ -40,6 +45,74 @@ export const Config: z<Config> = z.object({
 
 type ResolvedConfig = Required<Config>
 
+/**
+ * Build per-slot collection plans from the skill's published contract
+ * (read from the registry package) and create source/final directories.
+ */
+async function applySlotPlans(
+  state: ProjectState,
+  duration: number,
+  privateRoot: string,
+  projectsRoot: string,
+  workspaceRoot: string,
+): Promise<ProjectState> {
+  const { readFileSync } = await import('node:fs')
+  if (!state.skillName || !state.duration) return state
+  const registry = new SkillRegistry(join(privateRoot, 'registry', 'registry.db'))
+  try {
+    const rec = registry.get(state.skillName)
+    if (!rec?.packageRoot) return state
+    const contract = JSON.parse(readFileSync(join(rec.packageRoot, 'contract.json'), 'utf8'))
+    const refs = Array.isArray(contract.references) ? contract.references : []
+    if (refs.length === 0) return state
+    const slotsRoot = join(projectsRoot, state.projectId, 'slots')
+    const plans = planSlots(refs, Number(duration), slotsRoot)
+    for (const plan of plans) {
+      await ensureDir(plan.source_dir)
+      await ensureDir(plan.final_dir)
+    }
+    return { ...state, slotPlans: plans }
+  } finally {
+    registry.close()
+  }
+}
+
+/** Count files in a slot's final dir matching the media type. */
+async function countSlotFiles(plan: SlotPlan): Promise<number> {
+  const { readdir } = await import('node:fs/promises')
+  const exts = mediaExtensions(plan.media_type)
+  try {
+    const entries = await readdir(plan.final_dir)
+    return entries.filter((name) => exts.includes(name.slice(name.lastIndexOf('.')).toLowerCase())).length
+  } catch {
+    return 0
+  }
+}
+
+/** Copy source files into a slot's final dir (use-source lock). */
+async function copySourceToFinal(plan: SlotPlan): Promise<string[]> {
+  const { readdir, copyFile, mkdir } = await import('node:fs/promises')
+  const exts = mediaExtensions(plan.media_type)
+  const copied: string[] = []
+  await mkdir(plan.final_dir, { recursive: true })
+  const sources = await readdir(plan.source_dir).catch(() => [] as string[])
+  const media = sources.filter((name) => exts.includes(name.slice(name.lastIndexOf('.')).toLowerCase()))
+  for (const name of media) {
+    const dest = join(plan.final_dir, name)
+    await copyFile(join(plan.source_dir, name), dest)
+    copied.push(dest)
+  }
+  return copied
+}
+
+/** List media files already present in a slot's final dir. */
+async function listFinalFiles(plan: SlotPlan): Promise<string[]> {
+  const { readdir } = await import('node:fs/promises')
+  const exts = mediaExtensions(plan.media_type)
+  const entries = await readdir(plan.final_dir).catch(() => [] as string[])
+  return entries.filter((name) => exts.includes(name.slice(name.lastIndexOf('.')).toLowerCase())).map((name) => join(plan.final_dir, name))
+}
+
 function apply(ctx: Context, config: ResolvedConfig): void {
   ctx.tools.register(
     defineTool({
@@ -51,7 +124,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           type: 'string',
           enum: [
             'create', 'confirm_skill', 'set_settings', 'choose_image_stage',
-            'add_material', 'finalize_materials', 'set_prompt', 'request_revision',
+            'add_material', 'finalize_materials', 'scan_materials', 'lock_final',
+            'set_prompt', 'request_revision',
             'begin_revision', 'confirm_prompt', 'build_payload', 'start_video',
             'complete', 'get', 'list',
           ],
@@ -69,6 +143,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         source: { type: 'string', enum: ['skill_v1', 'dt_revision', 'user'], description: 'set_prompt 用：提示词来源。' },
         revision_type: { type: 'string', enum: ['explicit_local', 'ambiguous_creative', 'structural_rewrite'], description: 'request_revision 用：修订类型（与 feedback 二选一）。' },
         feedback: { type: 'string', description: 'request_revision 用：用户修改意见原文；提供后自动分类并生成受约束修订请求。' },
+        use_source: { type: 'boolean', description: 'lock_final 用：true 表示把 source 目录素材复制到 final 并锁定（用户供图）；false 用 final 目录已有生成结果。' },
+        external_result: { type: 'string', description: 'complete 用：视频生成结果引用。' },
       },
       output: {
         schema: {
@@ -117,6 +193,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             state = transition(state, 'awaiting_video_settings', 'skill confirmed')
             state = transition(state, 'project_initialized', 'settings set')
             state = { ...state, ratio: args.ratio, duration: Number(args.duration) }
+            state = await applySlotPlans(state, args.duration, privateRoot, projectsRoot, workspaceRoot)
           }
           await save(state)
           return { ok: true, message: `project ${id} created (${state.status})`, project: state }
@@ -133,8 +210,9 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           }
           case 'set_settings': {
             validateVideoSettings(args.ratio, Number(args.duration))
-            const next = { ...transition(state, 'project_initialized', 'settings set'), ratio: args.ratio, duration: Number(args.duration) }
-            return { ok: true, message: `status -> ${next.status}`, project: await save(next) }
+            let next = { ...transition(state, 'project_initialized', 'settings set'), ratio: args.ratio, duration: Number(args.duration) }
+            next = await applySlotPlans(next, args.duration, privateRoot, projectsRoot, workspaceRoot)
+            return { ok: true, message: `status -> ${next.status}（${next.slotPlans?.length ?? 0} 个素材槽已规划）`, project: await save(next) }
           }
           case 'choose_image_stage': {
             const stage = args.stage === 'generating_images' ? 'generating_images' : 'collecting_user_materials'
@@ -162,6 +240,29 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           case 'finalize_materials': {
             const next = transition(state, 'final_images_ready', 'materials finalized')
             return { ok: true, message: `status -> ${next.status} (${next.materials.length} material(s))`, project: await save(next) }
+          }
+          case 'scan_materials': {
+            const found: Record<string, number> = {}
+            for (const plan of state.slotPlans ?? []) found[plan.slot] = await countSlotFiles(plan)
+            const assessment = assessSlotCounts(state.slotPlans ?? [], found)
+            return { ok: assessment.every((a) => a.ok), message: assessment.every((a) => a.ok) ? 'all required slots match planned_count' : `${assessment.filter((a) => !a.ok).length} slot(s) mismatch`, scan: assessment }
+          }
+          case 'lock_final': {
+            const plans = state.slotPlans ?? []
+            if (plans.length === 0) return { ok: false, message: 'no slot plans; run set_settings with the confirmed skill first' }
+            const finalItems: Array<{ slot: string; path: string; hash: string }> = []
+            const found: Record<string, number> = {}
+            for (const plan of plans) {
+              const finals = args.use_source ? await copySourceToFinal(plan) : (await countSlotFiles(plan) >= 0 ? await listFinalFiles(plan) : [])
+              found[plan.slot] = finals.length
+              for (const path of finals) finalItems.push({ slot: plan.slot, path, hash: await sha256File(path) })
+            }
+            const assessment = assessSlotCounts(plans, found)
+            const failing = assessment.filter((a) => !a.ok)
+            if (failing.length > 0) return { ok: false, message: `lock refused: ${failing.map((a) => a.issue).join('; ')}`, scan: assessment }
+            let next = lockFinalMaterials(state, finalItems)
+            next = transition(next, 'final_images_ready', `final materials locked (${finalItems.length})`)
+            return { ok: true, message: `locked ${finalItems.length} final material(s) across ${plans.length} slot(s)`, project: await save(next), scan: assessment }
           }
           case 'set_prompt': {
             if (!args.text) return { ok: false, message: 'text is required' }
@@ -217,7 +318,10 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             return { ok: true, message: `status -> generating_video`, project: await save(next) }
           }
           case 'complete': {
-            const next = transition(state, 'completed', 'project completed')
+            const next = {
+              ...transition(state, 'completed', 'project completed'),
+              generationResult: { status: 'completed', external_result: args.external_result, completed_at: new Date().toISOString() },
+            }
             return { ok: true, message: 'project completed', project: await save(next) }
           }
           case 'get':

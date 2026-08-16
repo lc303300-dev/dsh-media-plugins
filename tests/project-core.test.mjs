@@ -9,6 +9,10 @@ import {
   confirmPrompt,
   addPrompt,
   buildSubmissionPayload,
+  planSlots,
+  assessSlotCounts,
+  lockFinalMaterials,
+  mediaExtensions,
 } from '../src/shared/project-core.ts'
 
 test('state machine follows the guide sequence', () => {
@@ -84,4 +88,65 @@ test('buildSubmissionPayload rejects changed material hashes (unconfirmed versio
   // build before prompt_confirmed → refused
   const notConfirmed = { ...p, status: 'authoring_prompt' }
   assert.throws(() => buildSubmissionPayload(notConfirmed, { 'hero:D:/a.png': 'hash-v1' }), /prompt_confirmed/)
+})
+
+test('CS 独享 V1：首版必须 skill_v1，后续必须 dt_revision', () => {
+  let p = createProject('cs-only')
+  p = transition(p, 'awaiting_video_settings')
+  p = transition(p, 'project_initialized')
+  p = transition(p, 'awaiting_image_stage_choice')
+  p = transition(p, 'collecting_user_materials')
+  p = transition(p, 'final_images_ready')
+  // V1 用非 skill_v1 来源 → 拒绝
+  assert.throws(() => addPrompt(p, '首版', 'user'), /首版提示词必须由 CS Skill/)
+  assert.throws(() => addPrompt(p, '首版', 'dt_revision'), /首版提示词必须由 CS Skill/)
+  p = addPrompt(p, 'CS Skill 生成的首版', 'skill_v1')
+  assert.equal(p.prompts[0].source, 'skill_v1')
+  // 第二个 skill_v1 → 拒绝
+  assert.throws(() => addPrompt(p, '再来一版', 'skill_v1'), /只生成首版/)
+  // 修订走 dt_revision
+  p = transition(p, 'awaiting_prompt_confirmation')
+  p = transition(p, 'revision_requested')
+  p = transition(p, 'dt_revision')
+  p = addPrompt(p, 'DT 修订版', 'dt_revision')
+  assert.equal(p.prompts[1].source, 'dt_revision')
+})
+
+test('planSlots derives planned_count from count_rule and creates dirs', () => {
+  const refs = [
+    { id: 'hero', media_type: 'image', role: 'identity', min_count: 1, max_count: 1, count_rule: { type: 'fixed', enforcement: 'required', fixed_count: 1, seconds_per_item: null, rounding: null, duration_share: 1, duration_to_count: [], provenance: 'source_explicit', confidence: 'high', rationale: '固定身份一张。' } },
+    { id: 'scenes', media_type: 'image', role: 'scene', min_count: 2, max_count: 6, count_rule: { type: 'duration_formula', enforcement: 'required', fixed_count: null, seconds_per_item: 3, rounding: 'ceil', duration_share: 1, duration_to_count: [], provenance: 'source_explicit', confidence: 'high', rationale: '约三秒一景。' } },
+  ]
+  const plans = planSlots(refs, 10, 'D:/slots')
+  assert.equal(plans[0].planned_count, 1)
+  assert.equal(plans[1].planned_count, 4) // ceil(10/3) = 4，clamp ≤ max 6
+  assert.ok(plans[1].source_dir.endsWith('scenes/source') || plans[1].source_dir.endsWith('scenes\\source'))
+  assert.ok(plans[1].final_dir.endsWith('scenes/final') || plans[1].final_dir.endsWith('scenes\\final'))
+  assert.equal(mediaExtensions('image').includes('.png'), true)
+  assert.equal(mediaExtensions('video').includes('.mp4'), true)
+})
+
+test('assessSlotCounts enforces exact planned_count on required slots', () => {
+  const plans = planSlots(
+    [{ id: 'hero', media_type: 'image', role: 'identity', min_count: 1, max_count: 1, count_rule: { type: 'fixed', enforcement: 'required', fixed_count: 1, seconds_per_item: null, rounding: null, duration_share: 1, duration_to_count: [], provenance: 'source_explicit', confidence: 'high', rationale: '固定。' } }],
+    5,
+    'D:/slots',
+  )
+  assert.equal(assessSlotCounts(plans, { hero: 1 })[0].ok, true)
+  assert.equal(assessSlotCounts(plans, { hero: 0 })[0].ok, false)
+  assert.equal(assessSlotCounts(plans, { hero: 2 })[0].ok, false)
+})
+
+test('lockFinalMaterials locks final hashes and marks slots locked', () => {
+  let p = createProject('lock')
+  const plans = planSlots(
+    [{ id: 'hero', media_type: 'image', role: 'identity', min_count: 1, max_count: 1, count_rule: { type: 'fixed', enforcement: 'required', fixed_count: 1, seconds_per_item: null, rounding: null, duration_share: 1, duration_to_count: [], provenance: 'source_explicit', confidence: 'high', rationale: '固定。' } }],
+    5,
+    'D:/slots',
+  )
+  p = { ...p, slotPlans: plans }
+  const next = lockFinalMaterials(p, [{ slot: 'hero', path: 'D:/slots/hero/final/a.png', hash: 'h1' }])
+  assert.equal(next.materials.length, 1)
+  assert.equal(next.lockedMaterialHashes['hero:D:/slots/hero/final/a.png'], 'h1')
+  assert.equal(next.slotPlans[0].locked, true)
 })

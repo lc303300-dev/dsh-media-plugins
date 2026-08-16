@@ -1,6 +1,6 @@
 import { t as SkillRegistry } from "./registry-core.js";
-import { i as atomicWriteJson, l as resolvePrivateRoot, s as readJsonSafe, u as sha256File } from "./private-runtime.js";
-import { a as confirmPrompt, c as validateVideoSettings, i as buildSubmissionPayload, n as addMaterial, o as createProject, r as addPrompt, s as transition } from "./project-core.js";
+import { a as ensureDir, i as atomicWriteJson, l as resolvePrivateRoot, s as readJsonSafe, u as sha256File } from "./private-runtime.js";
+import { a as buildSubmissionPayload, c as lockFinalMaterials, d as transition, f as validateVideoSettings, i as assessSlotCounts, l as mediaExtensions, n as addMaterial, o as confirmPrompt, r as addPrompt, s as createProject, u as planSlots } from "./project-core.js";
 import { t as buildRevisionRequest } from "./revision-core.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
@@ -11,6 +11,64 @@ import { isAbsolute, join } from "node:path";
 const name = "Ws_tool-project";
 const inject = ["tools"];
 const Config = z.object({ privateDir: z.string().default("") });
+/**
+* Build per-slot collection plans from the skill's published contract
+* (read from the registry package) and create source/final directories.
+*/
+async function applySlotPlans(state, duration, privateRoot, projectsRoot, workspaceRoot) {
+	const { readFileSync } = await import("node:fs");
+	if (!state.skillName || !state.duration) return state;
+	const registry = new SkillRegistry(join(privateRoot, "registry", "registry.db"));
+	try {
+		const rec = registry.get(state.skillName);
+		if (!rec?.packageRoot) return state;
+		const contract = JSON.parse(readFileSync(join(rec.packageRoot, "contract.json"), "utf8"));
+		const refs = Array.isArray(contract.references) ? contract.references : [];
+		if (refs.length === 0) return state;
+		const slotsRoot = join(projectsRoot, state.projectId, "slots");
+		const plans = planSlots(refs, Number(duration), slotsRoot);
+		for (const plan of plans) {
+			await ensureDir(plan.source_dir);
+			await ensureDir(plan.final_dir);
+		}
+		return {
+			...state,
+			slotPlans: plans
+		};
+	} finally {
+		registry.close();
+	}
+}
+/** Count files in a slot's final dir matching the media type. */
+async function countSlotFiles(plan) {
+	const { readdir } = await import("node:fs/promises");
+	const exts = mediaExtensions(plan.media_type);
+	try {
+		return (await readdir(plan.final_dir)).filter((name) => exts.includes(name.slice(name.lastIndexOf(".")).toLowerCase())).length;
+	} catch {
+		return 0;
+	}
+}
+/** Copy source files into a slot's final dir (use-source lock). */
+async function copySourceToFinal(plan) {
+	const { readdir, copyFile, mkdir } = await import("node:fs/promises");
+	const exts = mediaExtensions(plan.media_type);
+	const copied = [];
+	await mkdir(plan.final_dir, { recursive: true });
+	const media = (await readdir(plan.source_dir).catch(() => [])).filter((name) => exts.includes(name.slice(name.lastIndexOf(".")).toLowerCase()));
+	for (const name of media) {
+		const dest = join(plan.final_dir, name);
+		await copyFile(join(plan.source_dir, name), dest);
+		copied.push(dest);
+	}
+	return copied;
+}
+/** List media files already present in a slot's final dir. */
+async function listFinalFiles(plan) {
+	const { readdir } = await import("node:fs/promises");
+	const exts = mediaExtensions(plan.media_type);
+	return (await readdir(plan.final_dir).catch(() => [])).filter((name) => exts.includes(name.slice(name.lastIndexOf(".")).toLowerCase())).map((name) => join(plan.final_dir, name));
+}
 function apply(ctx, config) {
 	ctx.tools.register(defineTool({
 		name: "project_pipeline",
@@ -25,6 +83,8 @@ function apply(ctx, config) {
 					"choose_image_stage",
 					"add_material",
 					"finalize_materials",
+					"scan_materials",
+					"lock_final",
 					"set_prompt",
 					"request_revision",
 					"begin_revision",
@@ -92,6 +152,14 @@ function apply(ctx, config) {
 			feedback: {
 				type: "string",
 				description: "request_revision 用：用户修改意见原文；提供后自动分类并生成受约束修订请求。"
+			},
+			use_source: {
+				type: "boolean",
+				description: "lock_final 用：true 表示把 source 目录素材复制到 final 并锁定（用户供图）；false 用 final 目录已有生成结果。"
+			},
+			external_result: {
+				type: "string",
+				description: "complete 用：视频生成结果引用。"
 			}
 		},
 		output: {
@@ -163,6 +231,7 @@ function apply(ctx, config) {
 						ratio: args.ratio,
 						duration: Number(args.duration)
 					};
+					state = await applySlotPlans(state, args.duration, privateRoot, projectsRoot, workspaceRoot);
 				}
 				await save(state);
 				return {
@@ -198,14 +267,15 @@ function apply(ctx, config) {
 				}
 				case "set_settings": {
 					validateVideoSettings(args.ratio, Number(args.duration));
-					const next = {
+					let next = {
 						...transition(state, "project_initialized", "settings set"),
 						ratio: args.ratio,
 						duration: Number(args.duration)
 					};
+					next = await applySlotPlans(next, args.duration, privateRoot, projectsRoot, workspaceRoot);
 					return {
 						ok: true,
-						message: `status -> ${next.status}`,
+						message: `status -> ${next.status}（${next.slotPlans?.length ?? 0} 个素材槽已规划）`,
 						project: await save(next)
 					};
 				}
@@ -251,6 +321,49 @@ function apply(ctx, config) {
 						ok: true,
 						message: `status -> ${next.status} (${next.materials.length} material(s))`,
 						project: await save(next)
+					};
+				}
+				case "scan_materials": {
+					const found = {};
+					for (const plan of state.slotPlans ?? []) found[plan.slot] = await countSlotFiles(plan);
+					const assessment = assessSlotCounts(state.slotPlans ?? [], found);
+					return {
+						ok: assessment.every((a) => a.ok),
+						message: assessment.every((a) => a.ok) ? "all required slots match planned_count" : `${assessment.filter((a) => !a.ok).length} slot(s) mismatch`,
+						scan: assessment
+					};
+				}
+				case "lock_final": {
+					const plans = state.slotPlans ?? [];
+					if (plans.length === 0) return {
+						ok: false,
+						message: "no slot plans; run set_settings with the confirmed skill first"
+					};
+					const finalItems = [];
+					const found = {};
+					for (const plan of plans) {
+						const finals = args.use_source ? await copySourceToFinal(plan) : await countSlotFiles(plan) >= 0 ? await listFinalFiles(plan) : [];
+						found[plan.slot] = finals.length;
+						for (const path of finals) finalItems.push({
+							slot: plan.slot,
+							path,
+							hash: await sha256File(path)
+						});
+					}
+					const assessment = assessSlotCounts(plans, found);
+					const failing = assessment.filter((a) => !a.ok);
+					if (failing.length > 0) return {
+						ok: false,
+						message: `lock refused: ${failing.map((a) => a.issue).join("; ")}`,
+						scan: assessment
+					};
+					let next = lockFinalMaterials(state, finalItems);
+					next = transition(next, "final_images_ready", `final materials locked (${finalItems.length})`);
+					return {
+						ok: true,
+						message: `locked ${finalItems.length} final material(s) across ${plans.length} slot(s)`,
+						project: await save(next),
+						scan: assessment
 					};
 				}
 				case "set_prompt": {
@@ -334,7 +447,14 @@ function apply(ctx, config) {
 				case "complete": return {
 					ok: true,
 					message: "project completed",
-					project: await save(transition(state, "completed", "project completed"))
+					project: await save({
+						...transition(state, "completed", "project completed"),
+						generationResult: {
+							status: "completed",
+							external_result: args.external_result,
+							completed_at: (/* @__PURE__ */ new Date()).toISOString()
+						}
+					})
 				};
 				case "get": return {
 					ok: true,

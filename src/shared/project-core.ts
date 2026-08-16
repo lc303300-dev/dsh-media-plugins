@@ -15,6 +15,8 @@
  */
 
 import { createHash } from 'node:crypto'
+import { join } from 'node:path'
+import { plannedCount } from './curator-core.ts'
 
 export type ProjectStatus =
   | 'awaiting_skill_confirmation'
@@ -49,6 +51,19 @@ export interface PromptVersion {
   confirmed: boolean
 }
 
+export interface SlotPlan {
+  slot: string
+  role?: string
+  media_type: string
+  min: number
+  max: number | null
+  planned_count: number
+  count_enforcement: 'required' | 'recommended'
+  source_dir: string
+  final_dir: string
+  locked: boolean
+}
+
 export interface ProjectState {
   projectId: string
   status: ProjectStatus
@@ -57,6 +72,8 @@ export interface ProjectState {
   duration?: number
   imageStage?: 'user_materials' | 'generating_images'
   materials: MaterialItem[]
+  /** Per-slot collection plan (dirs + planned counts from the skill contract). */
+  slotPlans?: SlotPlan[]
   /** Hash of the material set locked at confirmation time. */
   lockedMaterialHashes?: Record<string, string>
   prompts: PromptVersion[]
@@ -64,6 +81,7 @@ export interface ProjectState {
   submissionPayload?: Record<string, unknown>
   /** Constrained revision request emitted by the DT classifier (feedback → request). */
   revisionRequest?: Record<string, unknown>
+  generationResult?: { status: string; external_result?: string; completed_at: string }
   history: Array<{ at: string; from: ProjectStatus; to: ProjectStatus; note?: string }>
   createdAt: string
   updatedAt: string
@@ -134,6 +152,91 @@ export function validateVideoSettings(ratio: string, duration: number): void {
   }
 }
 
+/** Media-type file extensions for slot scanning. */
+export function mediaExtensions(mediaType: string): string[] {
+  switch (mediaType) {
+    case 'video':
+      return ['.mp4', '.mov', '.webm', '.mkv', '.avi']
+    case 'audio':
+      return ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg']
+    case 'image':
+    default:
+      return ['.png', '.jpg', '.jpeg', '.webp', '.gif']
+  }
+}
+
+/**
+ * Plan per-slot material collection from the skill contract references and
+ * the confirmed duration: planned_count derived from each slot's count_rule
+ * (clamped to min/max), source/final directories under slotsRoot.
+ */
+export function planSlots(
+  contractRefs: Array<Record<string, any>>,
+  duration: number,
+  slotsRoot: string,
+): SlotPlan[] {
+  return (contractRefs ?? []).map((ref) => {
+    const rule = ref.count_rule ?? { type: 'bounded_recommendation', enforcement: 'recommended' }
+    const min = Number(ref.min_count ?? 0)
+    const max = ref.max_count === null || ref.max_count === undefined ? null : Number(ref.max_count)
+    let count = min
+    if (rule.type === 'fixed') count = Number(rule.fixed_count ?? min)
+    else if (['duration_formula', 'duration_lookup', 'bounded_recommendation'].includes(rule.type)) {
+      count = Math.max(min, plannedCount(rule, duration))
+    }
+    if (max !== null) count = Math.min(count, max)
+    return {
+      slot: String(ref.id),
+      role: String(ref.role ?? ''),
+      media_type: String(ref.media_type ?? 'image'),
+      min,
+      max,
+      planned_count: count,
+      count_enforcement: rule.enforcement === 'required' ? 'required' : 'recommended',
+      source_dir: join(slotsRoot, String(ref.id), 'source'),
+      final_dir: join(slotsRoot, String(ref.id), 'final'),
+      locked: false,
+    }
+  })
+}
+
+/**
+ * Assess slot collection against the plan: required slots must hold exactly
+ * planned_count final files (the audit rule); recommended slots only warn.
+ * Pure: takes per-slot found counts.
+ */
+export function assessSlotCounts(
+  slotPlans: SlotPlan[],
+  found: Record<string, number>,
+): Array<{ slot: string; planned: number; found: number; ok: boolean; issue?: string }> {
+  return (slotPlans ?? []).map((plan) => {
+    const count = found[plan.slot] ?? 0
+    if (plan.count_enforcement === 'required' && count !== plan.planned_count) {
+      return { slot: plan.slot, planned: plan.planned_count, found: count, ok: false, issue: `required slot ${plan.slot} needs exactly ${plan.planned_count} file(s), found ${count}` }
+    }
+    return { slot: plan.slot, planned: plan.planned_count, found: count, ok: true }
+  })
+}
+
+/** Lock final materials (from final_dir files) into the project state. */
+export function lockFinalMaterials(
+  state: ProjectState,
+  finalItems: Array<{ slot: string; path: string; hash: string }>,
+): ProjectState {
+  const locked: Record<string, string> = {}
+  for (const item of finalItems) locked[`${item.slot}:${item.path}`] = item.hash
+  const slotPlans = (state.slotPlans ?? []).map((plan) =>
+    finalItems.some((item) => item.slot === plan.slot) ? { ...plan, locked: true } : plan,
+  )
+  return {
+    ...state,
+    materials: finalItems.map((item) => ({ slot: item.slot, path: item.path, hash: item.hash, addedAt: new Date().toISOString() })),
+    lockedMaterialHashes: locked,
+    slotPlans,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
 /**
  * Add a material to a slot; verifies the current stage allows collection
  * and enforces slot min/max from the skill contract when provided.
@@ -180,6 +283,16 @@ export function verifyMaterialsUnchanged(state: ProjectState, currentHashes: Rec
 export function addPrompt(state: ProjectState, text: string, source: PromptVersion['source']): ProjectState {
   const clean = (text ?? '').trim()
   if (clean.length === 0) throw new Error('prompt must not be empty')
+  // CS 独享首版：V1 只能由业务 Skill（source=skill_v1）生成；后续版本走 DT 修订
+  if (state.prompts.length === 0 && source !== 'skill_v1') {
+    throw new Error('首版提示词必须由 CS Skill 生成（source=skill_v1）；Codex_DT 只负责用户提出修改后的受约束修订')
+  }
+  if (state.prompts.length === 0 && source === 'skill_v1' && state.status !== 'final_images_ready' && state.status !== 'authoring_prompt') {
+    throw new Error(`cannot author prompt V1 in status ${state.status}`)
+  }
+  if (state.prompts.length > 0 && source === 'skill_v1') {
+    throw new Error('CS Skill 只生成首版提示词；后续版本必须使用 dt_revision')
+  }
   const nextVersion = state.prompts.length + 1
   const now = new Date().toISOString()
   const prompt: PromptVersion = {
