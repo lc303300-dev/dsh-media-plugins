@@ -241,7 +241,12 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           }
           case 'choose_image_stage': {
             const stage = args.stage === 'generating_images' ? 'generating_images' : 'collecting_user_materials'
-            const next = { ...transition(state, stage, `stage ${stage}`), imageStage: args.stage === 'generating_images' ? 'generating_images' : 'user_materials' }
+            // 必须经过 awaiting_image_stage_choice（project_initialized 或缺省确认后自动补跳）
+            let base = state
+            if (base.status === 'project_initialized') {
+              base = transition(base, 'awaiting_image_stage_choice', 'image stage choice')
+            }
+            const next = { ...transition(base, stage, `stage ${stage}`), imageStage: args.stage === 'generating_images' ? 'generating_images' : 'user_materials' }
             return { ok: true, message: `status -> ${next.status}`, project: await save(next) }
           }
           case 'add_material': {

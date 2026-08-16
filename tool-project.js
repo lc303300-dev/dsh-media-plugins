@@ -306,8 +306,10 @@ function apply(ctx, config) {
 				}
 				case "choose_image_stage": {
 					const stage = args.stage === "generating_images" ? "generating_images" : "collecting_user_materials";
+					let base = state;
+					if (base.status === "project_initialized") base = transition(base, "awaiting_image_stage_choice", "image stage choice");
 					const next = {
-						...transition(state, stage, `stage ${stage}`),
+						...transition(base, stage, `stage ${stage}`),
 						imageStage: args.stage === "generating_images" ? "generating_images" : "user_materials"
 					};
 					return {
