@@ -12,6 +12,8 @@ export default defineConfig({
     'tool-dt': 'src/tool-dt.ts',
     'tool-revision': 'src/tool-revision.ts',
     'tool-curator': 'src/tool-curator.ts',
+    'tool-image-skill-curator': 'src/tool-image-skill-curator.ts',
+    'tool-image-skill-pipeline': 'src/tool-image-skill-pipeline.ts',
     'tool-batch-image': 'src/tool-batch-image.ts',
     'tool-video-to-gif': 'src/tool-video-to-gif.ts',
     'tool-preview': 'src/tool-preview.ts',

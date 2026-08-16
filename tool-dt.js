@@ -1,4 +1,4 @@
-import { a as ensureDir, i as atomicWriteJson, l as resolvePrivateRoot, o as newTaskId, s as readJsonSafe, u as sha256File } from "./private-runtime.js";
+import { a as ensureDir, c as readJsonSafe, d as resolvePrivateRoot, f as sha256File, i as atomicWriteJson, s as newTaskId } from "./private-runtime.js";
 import { t as VIDEO_RATIOS } from "./project-core.js";
 import { n as makePreview } from "./image-ops.js";
 import { n as searchCorpus } from "./corpus-core.js";
@@ -71,7 +71,7 @@ const Config = z.object({
 function apply(ctx, config) {
 	ctx.tools.register(defineTool({
 		name: "dt_batch",
-		description: "DT 批次工作台（Codex_DT 的 DSH 重建）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1024px 预览、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径）、子代理任务清单（subagent_tasks）与分发/结果记录（record_dispatch/record_result）、逐素材写入可执行中文提示词、生成 review/index.html 供用户逐项确认、确认后生成提交计划（run_batch）、语料匹配写回 manifest（update_forge_matches）。最终执行只调用统一媒体工具，不直接调用供应商。",
+		description: "DT 批次工作台（Codex_DT 的 DSH 重建）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1024px 预览、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径/photo_type/surface/mode/resolution）、set_visuals 逐素材写入拍摄信息（photo_type/visual/motion_plan）、子代理任务清单（subagent_tasks）与分发/结果记录（record_dispatch/record_result）、逐素材写入可执行中文提示词、生成 review/index.html 供用户逐项确认、确认后生成提交计划（run_batch，含 asset_manifest 标签绑定）、语料匹配写回 manifest（update_forge_matches）。set_prompts 写作前若对应业务 Skill 存在，先读取其 references（含 examples 提示词范例）对照组织方式，范例不改变素材契约、不覆盖用户指令。最终执行只调用统一媒体工具，不直接调用供应商。",
 		parameters: {
 			command: {
 				type: "string",
@@ -80,6 +80,7 @@ function apply(ctx, config) {
 					"new_batch",
 					"import_images",
 					"prepare_previews",
+					"set_visuals",
 					"set_prompts",
 					"finalize_review",
 					"subagent_tasks",
@@ -115,6 +116,19 @@ function apply(ctx, config) {
 				type: "string",
 				description: "init/new_batch 用：模型选择证据（如 seedance2.5）。"
 			},
+			model_selection_evidence: {
+				type: "string",
+				description: "init/new_batch 用：模型选择的证据说明（如 cli_option）。"
+			},
+			model_user_text: {
+				type: "string",
+				description: "init/new_batch 用：用户点名模型的原文（selection_source=user_explicit 时记录）。"
+			},
+			photo_types: {
+				type: "array",
+				items: { type: "string" },
+				description: "init/new_batch 用：按素材顺序的 photo_type（如 main_scene / reference / first_frame）。"
+			},
 			user_requirements: {
 				type: "string",
 				description: "init/new_batch 用：用户运镜/镜头/时长要求。"
@@ -144,6 +158,14 @@ function apply(ctx, config) {
 					additionalProperties: true
 				},
 				description: "set_prompts 用：[{material, prompt}] 逐素材中文提示词。"
+			},
+			items: {
+				type: "array",
+				items: {
+					type: "object",
+					additionalProperties: true
+				},
+				description: "set_visuals 用：[{material, photo_type?, visual?, motion_plan?}] 逐素材写入拍摄信息。"
 			},
 			task_id: {
 				type: "string",
@@ -229,11 +251,14 @@ function apply(ctx, config) {
 				};
 				const materials = [];
 				const inputDir = await ensureDir(join(dir, "inputs"));
-				for (const p of args.materials ?? []) {
+				const photoTypes = Array.isArray(args.photo_types) ? args.photo_types.map((p) => String(p)) : [];
+				for (let i = 0; i < (args.materials ?? []).length; i += 1) {
+					const p = args.materials[i];
 					const abs = isAbsolute(p) ? p : join(workspaceRoot, p);
 					materials.push({
 						path: abs,
-						hash: await sha256File(abs)
+						hash: await sha256File(abs),
+						photo_type: photoTypes[i] ?? void 0
 					});
 				}
 				const manifest = {
@@ -243,7 +268,17 @@ function apply(ctx, config) {
 					ratio,
 					model: args.model ?? "seedance2.5",
 					model_evidence: args.model ?? "seedance2.5",
+					model_selection: {
+						requested: args.model ?? "seedance2.5",
+						selection_source: args.model ? "user_explicit" : "default",
+						selection_evidence: args.model_selection_evidence ?? "",
+						user_text: args.model_user_text ?? ""
+					},
 					user_requirements: args.user_requirements ?? "",
+					surface: "jimeng-zh",
+					mode: "first-frame",
+					preview_max_long_edge: 1024,
+					video_resolution: "480p",
 					materials,
 					prompts: [],
 					created_at: (/* @__PURE__ */ new Date()).toISOString()
@@ -484,6 +519,9 @@ function apply(ctx, config) {
 						return {
 							material: m.path,
 							hash: m.hash,
+							photo_type: m.photo_type,
+							visual: m.visual,
+							motion_plan: m.motion_plan,
 							prompt,
 							ready: Boolean(prompt.trim())
 						};
@@ -508,7 +546,20 @@ function apply(ctx, config) {
 							prompt: item.prompt,
 							duration: manifest.duration,
 							ratio: manifest.ratio,
-							model_version: manifest.model
+							model_version: manifest.model,
+							asset_manifest: { assets: [{
+								modality: "image",
+								index: 1,
+								tag: "图片1",
+								source: item.material,
+								transport_role: "reference_image",
+								primary_role: "first_frame_reference"
+							}] },
+							prompt_binding: "ordered_cli_image_arguments",
+							surface: manifest.surface ?? "jimeng-zh",
+							mode: manifest.mode ?? "first-frame",
+							model_selection: manifest.model_selection,
+							resolution: manifest.video_resolution ?? "480p"
 						}))
 					};
 				}
@@ -552,11 +603,41 @@ function apply(ctx, config) {
 							width: prev.width,
 							height: prev.height
 						});
+						m.preview = prev.path;
 					}
 					await atomicWriteJson(join(dir, "previews.json"), mapping);
+					await atomicWriteJson(join(dir, "manifest.json"), manifest);
 					return {
 						ok: true,
 						message: `${mapping.length} preview(s) ready (≤1024px)`,
+						batch_id: batchId
+					};
+				}
+				case "set_visuals": {
+					const items = (args.items ?? []).map((v) => ({
+						material: String(v.material),
+						photo_type: v.photo_type !== void 0 ? String(v.photo_type) : void 0,
+						visual: v.visual !== void 0 ? v.visual : void 0,
+						motion_plan: v.motion_plan !== void 0 ? v.motion_plan : void 0
+					}));
+					if (items.length === 0) return {
+						ok: false,
+						message: "items is required: [{material, photo_type?, visual?, motion_plan?}]"
+					};
+					for (const item of items) {
+						const m = manifest.materials.find((x) => x.path === item.material);
+						if (!m) return {
+							ok: false,
+							message: `unknown material ${item.material}`
+						};
+						if (item.photo_type !== void 0) m.photo_type = item.photo_type;
+						if (item.visual !== void 0) m.visual = item.visual;
+						if (item.motion_plan !== void 0) m.motion_plan = item.motion_plan;
+					}
+					await atomicWriteJson(join(dir, "manifest.json"), manifest);
+					return {
+						ok: true,
+						message: `visuals updated for ${items.length} material(s)`,
 						batch_id: batchId
 					};
 				}

@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "status": "published",
+  "skill_id": "scene-storyboard-grid",
+  "display_name": "场景一致性九宫格分镜",
+  "sources": [
+    {
+      "name": "Codex_IS_搭建蓝图.md",
+      "sha256": "a5653bc46d19c7a70f59ef05e0fb5a9a4dad8ed6abf3c708b5fd0ae84a29463a"
+    }
+  ],
+  "duplicate_check": {
+    "status": "manual_review_required",
+    "checked_at": "2026-08-16T09:45:11.941951+00:00"
+  },
+  "extraction_summary": {
+    "contract_facts": "reviewed",
+    "workflow_rules": "reviewed",
+    "creative_guidance": "reviewed",
+    "examples_define_contract": false
+  },
+  "reference_summary": [
+    {
+      "id": "scene-base",
+      "role": "scene",
+      "scope": "scene",
+      "required": true,
+      "min_count": 1,
+      "max_count": 1
+    },
+    {
+      "id": "identity-design",
+      "role": "identity",
+      "scope": "scene",
+      "required": false,
+      "min_count": 0,
+      "max_count": 1
+    }
+  ],
+  "output_summary": {
+    "supported_ratios": [
+      "21:9",
+      "16:9",
+      "3:2",
+      "4:3",
+      "1:1",
+      "3:4",
+      "2:3",
+      "9:16"
+    ],
+    "business_constraints": {
+      "layout": "3x3",
+      "panel_count": 9,
+      "single_sheet": true,
+      "equal_panels": true,
+      "panel_orientation_source": "scene-base",
+      "panel_orientation_values": [
+        "portrait",
+        "landscape",
+        "square"
+      ],
+      "uniform_panel_orientation": true,
+      "outer_ratio_independent_from_panel_orientation": true,
+      "closed_world_required": true,
+      "temporal_mode": "same_scene_same_moment",
+      "requires_per_scene_fact_ledger": true,
+      "shot_selection_strategy": "evidence_conditioned"
+    }
+  },
+  "isolated_content": [],
+  "contract_conflicts": [],
+  "blocking_questions": [],
+  "validation_issues": [],
+  "experience_preservation": {
+    "creative_guidance": true,
+    "failure_cases": true,
+    "examples": true
+  },
+  "reviewed_core_sha256": "caa02e3d60a1797f1c9a58fb9038341c92967c1703eb6d27bdc00404b424ab12",
+  "user_approval": {
+    "required": true,
+    "approved": true,
+    "approved_by": "user",
+    "approved_at": "2026-08-16T09:45:12.261650+00:00"
+  }
+}

@@ -24,6 +24,7 @@ var __exportAll = (all, no_symbols) => {
 * @module dsh-media-plugins/shared/registry-core
 */
 var registry_core_exports = /* @__PURE__ */ __exportAll({
+	IMAGE_RATIOS: () => IMAGE_RATIOS,
 	ROUTING_FIELDS: () => ROUTING_FIELDS,
 	SkillRegistry: () => SkillRegistry,
 	TAXONOMY: () => TAXONOMY,
@@ -177,6 +178,17 @@ const VIDEO_RATIOS = [
 	"9:16",
 	"21:9"
 ];
+/** Supported image ratios (Codex_IS image Skill output contract). */
+const IMAGE_RATIOS = [
+	"21:9",
+	"16:9",
+	"3:2",
+	"4:3",
+	"1:1",
+	"3:4",
+	"2:3",
+	"9:16"
+];
 /** Structural validation of a Skill contract; throws on violation. */
 function validateContract(raw) {
 	const c = raw ?? {};
@@ -188,6 +200,21 @@ function validateContract(raw) {
 		if (Array.isArray(c.video.ratios)) {
 			for (const r of c.video.ratios) if (!VIDEO_RATIOS.includes(r)) throw new Error(`contract.video.ratios contains unsupported ratio: ${r}`);
 		}
+	}
+	if (c.image !== void 0) {
+		if (c.image.input_mode !== void 0 && c.image.input_mode !== "text_only" && c.image.input_mode !== "reference_conditioned") throw new Error("contract.image.input_mode must be text_only or reference_conditioned");
+		if (Array.isArray(c.image.supported_ratios)) {
+			for (const r of c.image.supported_ratios) if (!IMAGE_RATIOS.includes(r)) throw new Error(`contract.image.supported_ratios contains unsupported ratio: ${r}`);
+		}
+		for (const key of ["scene_count", "candidate_count_per_scene"]) {
+			const range = c.image[key];
+			if (range !== void 0) {
+				if (!Number.isInteger(range.min) || range.min < 1) throw new Error(`contract.image.${key}.min must be an integer >= 1`);
+				if (range.max !== null && range.max !== void 0 && (!Number.isInteger(range.max) || range.max < 1)) throw new Error(`contract.image.${key}.max must be null or an integer >= 1`);
+				if (range.max !== null && range.max !== void 0 && range.min > range.max) throw new Error(`contract.image.${key}: min > max`);
+			}
+		}
+		if (c.image.batch_allowed !== void 0 && typeof c.image.batch_allowed !== "boolean") throw new Error("contract.image.batch_allowed must be boolean");
 	}
 	if (c.slots !== void 0) {
 		if (!Array.isArray(c.slots)) throw new Error("contract.slots must be an array");
@@ -208,6 +235,7 @@ function validateContract(raw) {
 		description: typeof c.description === "string" ? c.description : "",
 		taxonomy: Array.isArray(c.taxonomy) ? c.taxonomy.map(String) : [],
 		video: c.video,
+		image: c.image,
 		slots: c.slots,
 		prompt: c.prompt
 	};

@@ -141,7 +141,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'project_pipeline',
       description:
-        '项目管线状态机（Codex_CS project-pipeline 的 DSH 重建）：从确认业务 Skill 到生成最终 submission_payload 的显式生命周期。状态：awaiting_skill_confirmation → awaiting_video_settings → project_initialized → awaiting_image_stage_choice → collecting_user_materials|generating_images → final_images_ready → authoring_prompt → awaiting_prompt_confirmation → revision_requested → dt_revision（可循环）→ prompt_confirmed → generating_video → completed。确认提示词时锁定最终素材清单（sha256）与提示词哈希；build_payload 提交前重新校验素材哈希未变，防止未确认版本被生成。状态持久化在私有运行目录，跨会话可恢复。',
+        '项目管线状态机（Codex_CS project-pipeline 的 DSH 重建）：从确认业务 Skill 到生成最终 submission_payload 的显式生命周期。状态：awaiting_skill_confirmation → awaiting_video_settings → project_initialized → awaiting_image_stage_choice → collecting_user_materials|generating_images → final_images_ready → authoring_prompt → awaiting_prompt_confirmation → revision_requested → dt_revision（可循环）→ prompt_confirmed → generating_video → completed。authoring_prompt（V1）创作前必须完整加载业务 Skill 的 contract.json + SKILL.md + references/ 全部 4 个文件（creative-guidance / community-experience / failure-cases / examples 提示词范例），按范例组织方式写作、逐张声明场景唯一语义、按 count_rule 推导时间轴并追加"不生成音乐，仅生成音效。"；未完整加载知识不得 set_prompt。确认提示词时锁定最终素材清单（sha256）与提示词哈希；build_payload 提交前重新校验素材哈希未变，防止未确认版本被生成。状态持久化在私有运行目录，跨会话可恢复。',
       parameters: {
         command: {
           type: 'string',

@@ -1,20 +1,22 @@
 # dsh-media-plugins
 
-DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 10 个工具、6 个技能与一个完成通知，
-覆盖 Codex_Wsstudio 指南（P0–P4 + DT 修订系统）在 DSH 平台上的重建：
+DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 12 个工具、8 个技能与一个完成通知，
+覆盖 Codex_Wsstudio 指南（P0–P4 + DT 修订系统 + Codex_IS 受治理图片业务 Skill 层）在 DSH 平台上的重建：
 
 | 功能 | 说明 | 底层 | 凭证 |
 |---|---|---|---|
-| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 值，6 级适配器严格串行回退（comfly×3 → apimart → google gemini → dreamina-image），单适配器 120s / 整任务 300s，失败分类 + needs_review 禁重试，EXIF 归一化 + 最长边 1920px，跨进程容量锁（默认 6，dreamina 图/视频共享 `seedance-cli`） | Comfly / APIMart / Google Gemini / Dreamina CLI | `COMFLY_API_KEY`、`APIMART_API_KEY`、`GEMINI_API_KEY` + VPN 代理 |
+| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 值、`image_resolution`（1K/2K/4K，Gemini 默认 2K / GPT 4K / Dreamina 1K）、`image_provider` 显式线路直达不回退；5 级适配器严格串行回退（comfly-gemini-flash-preview → comfly-gpt-image-2 → apimart → google gemini → dreamina-image），单适配器 120s / 整任务 300s，失败分类 + needs_review 禁重试 + 每适配器连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px，跨进程容量锁（默认 6，dreamina 图/视频共享 `seedance-cli`） | Comfly / APIMart / Google Gemini / Dreamina CLI | `COMFLY_API_KEY`、`APIMART_API_KEY`、`GEMINI_API_KEY` + VPN 代理 |
 | `generate_video` | 生视频：默认 seedance2.5 / 480p；text2video / multimodal2video；`video_execution_mode`：production（提交+轮询+下载）、production_submit_only（仅提交）、test_submit_only（强制非 VIP 2.0/720p，仅返回 submit_id，到即梦后台查看） | 即梦 Dreamina 本地 CLI（`dreamina.exe`） | OAuth 登录态 |
 | `describe_image` | 看图（识别/描述本地图片） | 火山方舟 Doubao（`doubao-seed-2-0-mini`） | `VOLCANO_ENGINE_API_KEY` |
 | `skill_registry` | 业务 Skill 治理（Codex_CS）：ingest/search/get/publish/deprecate/list，contract 校验、name@version 去重、内容哈希防漂移、FTS5 trigram 中文检索 | node:sqlite + FTS5（零原生依赖） | 无 |
 | `project_pipeline` | 项目状态机（Codex_CS）：显式状态流转、素材槽 min/max 校验、素材/提示词 sha256 锁定、`build_payload` 提交前哈希复核防未确认版本 | 原子 JSON 状态（私有运行目录） | 无 |
 | `dt_batch` | DT 批次工作台：init_batch / prepare_previews（≤1024px）/ set_prompts / finalize_review（审阅 HTML） | sharp | 无 |
 | `prompt_revision` | 提示词修订系统（Codex_DT）：classify 确定性分类（explicit_local/ambiguous_creative/structural_rewrite）+ 规范哈希修订契约；search_corpus 内置 seedance-forge 全量语料（2477 条，≤3 上限、保留 provenance、语料模型版本绝不用于选模型）；validate_result 校验（locked_context_sha256 回显、explicit_local 禁语料） | 内置语料 `refs/forge-index.jsonl` | 无 |
-| `batch_image` | 确定性批量生图调度器：manifest 校验、稳定 job key、SQLite 状态、≤10 并发、≥1s 间隔、硬截止（默认 ceil(总数÷并发)×60s×1.5）、截止后永久 abandoned、编号联系表；重复提交被 job key 幂等拒绝 | node:sqlite + 统一路由器 | 同 generate_image |
-| `video_to_gif` | 视频转 GIF：FFmpeg 双遍 palettegen/paletteuse，宽度/FPS/抖动分档降级，默认 ≤10MB | FFmpeg（`FFMPEG_PATH` / PATH / 常见安装路径） | 无 |
+| `batch_image` | 确定性批量生图调度器：manifest 校验（支持组级 `reference_images`/`original_image` 槽 0）、稳定 job key、SQLite 状态、≤10 并发、≥1s 间隔、分派截止（默认 ceil(总数÷并发)×60s×1.5，可配 `deadline_seconds`）、完成宽限期（`completion_grace_seconds` 默认/上限 120s，可缩短不可延长）：截止后未启动任务永久 abandoned（`batch_deadline_not_submitted`）、运行中任务宽限期内落地照常收集、超时标记 failed（`batch_completion_grace_timeout`）；编号联系表（HTML，槽 0 原图）；重复提交被 job key 幂等拒绝 | node:sqlite + 统一路由器 | 同 generate_image |
+| `video_to_gif` | 视频转 GIF：FFmpeg 双遍 palettegen/paletteuse，宽度/FPS/颜色/抖动分档降级，默认 ≤10MB；可选 strict/quality 模式、denoise、anti-moire、palette stats/diff 模式、bayer_scale、gifsicle lossy 优化、max_duration_sec 截断、input_dir 批量 + CSV 转换报告 | FFmpeg（`FFMPEG_PATH` / PATH / 常见安装路径）+ 可选 gifsicle | 无 |
 | `image_preview` | EXIF 归一化 ≤1024px 预览 + 尺寸报告（视觉检查/审阅页用，不读原始大图） | sharp | 无 |
+| `image_skill_curator` | 图片业务 Skill 录入治理（Codex_IS image-skill-curator）：scaffold（image-skill-template 骨架）/ audit（validator 2.0.0 intake-report：契约/路由/收据 schema、反泛化与反污染扫描、来源哈希）/ approve（approved_by=user）/ validate / publish（staging 原子发布 + 注册表重建，禁覆盖）/ upgrade（备份+回滚原子升级）/ seed_library（同步插件自带正式图片 Skill 库） | 内置模板 `refs/image-skill-template/` + 正式库 `refs/image-skill-library/` | 无 |
+| `image_skill_pipeline` | 图片业务 Skill 项目管线（Codex_IS project-pipeline）：create 校验已发布包收据/包哈希 + 比例/场景数/候选数契约门禁，按 references 逐场景建素材槽；add_material 只收 allowed_slot_ids 声明槽并校验每场景参考图上限；lock_materials sha256 快照锁定（变化作废提示词）；set_prompt/confirm_prompt 哈希绑定确认；多场景或多候选须 confirm_paid_batch 付费批次确认；start_generation --dry-run 生成执行清单（单候选 generate_image / 多候选 batch-image-generation） | 原子 JSON 状态（私有运行目录 `<private>/image-projects/`） | 无 |
 | 完成通知 | 答案生成完成时弹 Windows 托盘气泡 | `notify-toast.ps1` | 无（仅 Windows） |
 
 所有任务状态、锁、日志、注册库、项目/批次状态写入 **私有运行目录**
@@ -88,6 +90,28 @@ batch_image(command="start", manifest={groups:[{id:"g1",prompt:"橘猫",candidat
 video_to_gif(video="D:\\out\\clip.mp4")
 ```
 
+## Codex_IS：受治理图片业务 Skill 层
+
+内置正式图片业务 Skill 库（`refs/image-skill-library/`），首包 `scene-storyboard-grid`（场景一致性九宫格分镜，双槽 scene-base + identity-design、3×3 单张输出、事实账本选镜）。用 `image_skill_curator` 的 `seed_library` 同步进私有库并注册，之后走 `image-skill-router` 技能流程：
+
+```text
+image_skill_curator(command="seed_library")
+skill_registry(command="search", query="九宫格分镜")
+image_skill_pipeline(command="create", skill_id="scene-storyboard-grid",
+                     display_name="场景一致性九宫格分镜", ratio="16:9",
+                     candidate_count=1, scene_count=1, skill_confirmed=true)
+image_skill_pipeline(command="add_material", project_id=..., slot="scene-base", path="D:\\素材\\底图.png")
+image_skill_pipeline(command="lock_materials", project_id=..., use_source=true)
+image_skill_pipeline(command="set_prompt", project_id=..., text="<业务 Skill 产出的提示词 V1>")
+image_skill_pipeline(command="confirm_prompt", project_id=...)
+image_skill_pipeline(command="start_generation", project_id=..., dry_run=true)
+```
+
+- 单场景单候选 → 统一 `generate_image`；多场景或多候选 → 先 `confirm_paid_batch` 付费批次确认再交 `batch_image`。
+- 入库新图片业务 Skill：`image_skill_curator` `scaffold` → 补全删除 `CURATOR-REQUIRED` → `audit`（sources 必填）→ `approve`（approved_by=user）→ `publish`（approved=true）；已发布包修订走 `upgrade`。
+- 项目状态在 `<workspace>/.dsh-media-private/image-projects/`，正式图片 Skill 库在 `<workspace>/.dsh-media-private/image-skill-library/`。
+- 新技能：`image-skill-router`（路由工作流）与 `image-skill-curator`（入库治理）随 `skills/` 一并安装到 `$DSH_HOME\skills\dsh-media-studio`。
+
 ## 安全契约（与指南一致）
 
 - Key / Cookie / 登录会话不进入 Git、日志与 Agent 回复；只记录脱敏 prompt（字符数 + sha256）。
@@ -100,8 +124,19 @@ video_to_gif(video="D:\\out\\clip.mp4")
 
 ```sh
 pnpm build   # tsdown：src/*.ts → 包根 *.js（profile 用 link: 安装，改完重启 dsh 生效）
-pnpm test    # node --test（23 个离线单测，覆盖路由/失败分类/状态机/注册库/批量/锁）
+pnpm test    # node --test（103 个离线单测，覆盖路由/失败分类/熔断/状态机/注册库/批量/锁/GIF/修订/图片 Skill 治理与项目管线）
 ```
+
+## 部署与运维脚本（`scripts/`）
+
+| 脚本 | 对应 Codex | 用途 |
+|---|---|---|
+| `scripts/deploy.ps1` | new-machine-deploy / bootstrap-new-machine | 一键部署：前置检查 → 结构校验 → pnpm install+build → setup.ps1 引导 → verify-deployment |
+| `scripts/verify-deployment.ps1` | verify-deployment.ps1 | 部署验证：包结构/构建产物/技能/语料/dreamina/ffmpeg/DSH 宿主侧 |
+| `scripts/start-task.ps1` | scripts/maintenance/start-task.ps1 | 任务开始前检查：结构校验 + git 状态 + 安全 fast-forward 更新（仅干净工作树） |
+| `scripts/configure-keys.ps1` | configure-api-key.ps1 | 隐藏式写 API Key 到 `$DSH_HOME/.credentials.yaml`，值不回显 |
+
+运行时就绪详情用 `media_status` 工具的 `status` / `verify` 命令。
 
 ## 完成通知
 

@@ -40,6 +40,12 @@
     - id: Ws_tool-curator
       name: dsh-media-plugins/Ws_tool-curator
 
+    - id: Ws_tool-image-skill-curator
+      name: dsh-media-plugins/Ws_tool-image-skill-curator
+
+    - id: Ws_tool-image-skill-pipeline
+      name: dsh-media-plugins/Ws_tool-image-skill-pipeline
+
     - id: Ws_tool-batch-image
       name: dsh-media-plugins/Ws_tool-batch-image
       config:

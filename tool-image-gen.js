@@ -1,6 +1,6 @@
 import { r as mediaErrors } from "./failure.js";
-import { n as ratioToSize, r as runImageRouter, t as SUPPORTED_RATIOS } from "./adapters.js";
-import { a as ensureDir, c as redactPrompt, l as resolvePrivateRoot, o as newTaskId, r as appendSafeLog, t as TaskStore } from "./private-runtime.js";
+import { a as ratioToSize, i as SUPPORTED_RESOLUTIONS, n as SUPPORTED_IMAGE_PROVIDERS, o as runImageRouter, r as SUPPORTED_RATIOS } from "./adapters.js";
+import { a as ensureDir, d as resolvePrivateRoot, r as appendSafeLog, s as newTaskId, t as TaskStore, u as redactPrompt } from "./private-runtime.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
@@ -56,7 +56,7 @@ async function stageOutput(source, outputDir, requested, workspaceRoot) {
 function apply(ctx, config) {
 	ctx.tools.register(defineTool({
 		name: "generate_image",
-		description: "用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。图片按配置顺序严格串行尝试适配器（comfly-gemini-flash-preview → comfly-gpt-image-2-all → comfly-gpt-image-2 → apimart-gpt-image-2 → google-gemini-image → dreamina-image），单适配器最多 120 秒、整任务最多 300 秒；仅明确可回退的失败才进入下一适配器，提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。",
+		description: "用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。image_resolution 可选（1K/2K/4K）：缺省时 Gemini 线路默认 2K、GPT 线路默认 4K、Dreamina 默认 1K。image_provider 可选：仅当用户明确点名某条受支持线路时传入，指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前拒绝。图片按配置顺序严格串行尝试适配器（comfly-gemini-flash-preview → comfly-gpt-image-2 → apimart-gpt-image-2 → google-gemini-image → dreamina-image），单适配器最多 120 秒、整任务最多 300 秒；仅明确可回退的失败才进入下一适配器，提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。",
 		parameters: {
 			prompt: {
 				type: "string",
@@ -67,6 +67,16 @@ function apply(ctx, config) {
 				type: "string",
 				enum: [...SUPPORTED_RATIOS],
 				description: "必填：图片输出比例，仅支持 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16；不得从参考图/提示词推断。"
+			},
+			image_resolution: {
+				type: "string",
+				enum: [...SUPPORTED_RESOLUTIONS],
+				description: "可选：图片输出分辨率（1K/2K/4K）。缺省时 GPT 图片线路默认 4K、Gemini 图片线路默认 2K、Dreamina 默认 1K。"
+			},
+			image_provider: {
+				type: "string",
+				enum: [...SUPPORTED_IMAGE_PROVIDERS, "comfly-gemini-lite"],
+				description: "可选：用户明确点名的图片线路。comfly-gemini-lite 是 comfly-gemini-flash-preview 的兼容别名。指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前以 input_error 拒绝。"
 			},
 			image: {
 				type: "array",
@@ -103,6 +113,7 @@ function apply(ctx, config) {
 						type: "number",
 						required: true
 					},
+					resolution: { type: "string" },
 					needs_review: { type: "boolean" }
 				}
 			},
@@ -152,6 +163,8 @@ function apply(ctx, config) {
 				prompt: redactPrompt(prompt),
 				ratio,
 				size,
+				resolution: args.image_resolution ?? null,
+				imageProvider: args.image_provider ?? null,
 				images: args.image ?? []
 			};
 			await store.create("image", taskId, "image", request);
@@ -161,6 +174,8 @@ function apply(ctx, config) {
 					prompt,
 					images: args.image ?? [],
 					ratio,
+					resolution: args.image_resolution,
+					imageProvider: args.image_provider,
 					config: routerConfig,
 					workspaceRoot,
 					privateRoot,
@@ -195,6 +210,7 @@ function apply(ctx, config) {
 					model: outcome.model,
 					provider: outcome.provider,
 					attempts: outcome.attempts.length,
+					resolution: args.image_resolution ?? void 0,
 					needs_review: false
 				};
 			} catch (error) {

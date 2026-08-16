@@ -76,12 +76,12 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'dt_batch',
       description:
-        'DT 批次工作台（Codex_DT 的 DSH 重建）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1024px 预览、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径）、子代理任务清单（subagent_tasks）与分发/结果记录（record_dispatch/record_result）、逐素材写入可执行中文提示词、生成 review/index.html 供用户逐项确认、确认后生成提交计划（run_batch）、语料匹配写回 manifest（update_forge_matches）。最终执行只调用统一媒体工具，不直接调用供应商。',
+'DT 批次工作台（Codex_DT 的 DSH 重建）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1024px 预览、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径/photo_type/surface/mode/resolution）、set_visuals 逐素材写入拍摄信息（photo_type/visual/motion_plan）、子代理任务清单（subagent_tasks）与分发/结果记录（record_dispatch/record_result）、逐素材写入可执行中文提示词、生成 review/index.html 供用户逐项确认、确认后生成提交计划（run_batch，含 asset_manifest 标签绑定）、语料匹配写回 manifest（update_forge_matches）。set_prompts 写作前若对应业务 Skill 存在，先读取其 references（含 examples 提示词范例）对照组织方式，范例不改变素材契约、不覆盖用户指令。最终执行只调用统一媒体工具，不直接调用供应商。',
       parameters: {
         command: {
           type: 'string',
           enum: [
-            'init_batch', 'new_batch', 'import_images', 'prepare_previews', 'set_prompts',
+            'init_batch', 'new_batch', 'import_images', 'prepare_previews', 'set_visuals', 'set_prompts',
             'finalize_review', 'subagent_tasks', 'record_dispatch', 'record_result',
             'pipeline_status', 'run_batch', 'wait_batch', 'update_forge_matches', 'get_manifest', 'list',
           ],
@@ -93,12 +93,16 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         duration: { type: 'integer', description: 'init/new_batch 用：视频时长 4-30 秒。' },
         ratio: { type: 'string', description: 'init/new_batch 用：视频比例。' },
         model: { type: 'string', description: 'init/new_batch 用：模型选择证据（如 seedance2.5）。' },
+        model_selection_evidence: { type: 'string', description: 'init/new_batch 用：模型选择的证据说明（如 cli_option）。' },
+        model_user_text: { type: 'string', description: 'init/new_batch 用：用户点名模型的原文（selection_source=user_explicit 时记录）。' },
+        photo_types: { type: 'array', items: { type: 'string' }, description: 'init/new_batch 用：按素材顺序的 photo_type（如 main_scene / reference / first_frame）。' },
         user_requirements: { type: 'string', description: 'init/new_batch 用：用户运镜/镜头/时长要求。' },
         user_request: { type: 'string', description: 'new_batch 用：原始用户请求（写入 request.json）。' },
         auto_generate: { type: 'boolean', description: 'new_batch 用：记录全自动生成意图（审阅后跳过人工确认）。' },
         materials: { type: 'array', items: { type: 'string' }, description: 'init/new_batch 用：本地素材路径列表（顺序即素材编号）。' },
         images: { type: 'array', items: { type: 'string' }, description: 'import_images 用：对话附件路径列表（等待稳定后复制）。' },
         prompts: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_prompts 用：[{material, prompt}] 逐素材中文提示词。' },
+        items: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_visuals 用：[{material, photo_type?, visual?, motion_plan?}] 逐素材写入拍摄信息。' },
         task_id: { type: 'string', description: 'record_dispatch/record_result 用：子代理任务 id。' },
         agent_id: { type: 'string', description: 'record_dispatch 用：子代理会话 id。' },
         prompt: { type: 'string', description: 'record_result 用：该素材生成的中文提示词。' },
@@ -146,11 +150,13 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           const dir = await ensureDir(join(dtRoot, batchId))
           const ratio = args.ratio ?? '16:9'
           if (!VIDEO_RATIOS.includes(ratio as any)) return { ok: false, message: `unsupported ratio ${ratio}` }
-          const materials: Array<{ path: string; hash: string }> = []
+          const materials: Array<{ path: string; hash: string; photo_type?: string; visual?: unknown; motion_plan?: unknown; preview?: string }> = []
           const inputDir = await ensureDir(join(dir, 'inputs'))
-          for (const p of args.materials ?? []) {
+          const photoTypes = Array.isArray(args.photo_types) ? args.photo_types.map((p: unknown) => String(p)) : []
+          for (let i = 0; i < (args.materials ?? []).length; i += 1) {
+            const p = (args.materials as string[])[i]
             const abs = isAbsolute(p) ? p : join(workspaceRoot, p)
-            materials.push({ path: abs, hash: await sha256File(abs) })
+            materials.push({ path: abs, hash: await sha256File(abs), photo_type: photoTypes[i] ?? undefined })
           }
           const manifest = {
             schema_version: 1,
@@ -159,7 +165,17 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             ratio,
             model: args.model ?? 'seedance2.5',
             model_evidence: args.model ?? 'seedance2.5',
+            model_selection: {
+              requested: args.model ?? 'seedance2.5',
+              selection_source: args.model ? 'user_explicit' : 'default',
+              selection_evidence: args.model_selection_evidence ?? '',
+              user_text: args.model_user_text ?? '',
+            },
             user_requirements: args.user_requirements ?? '',
+            surface: 'jimeng-zh',
+            mode: 'first-frame',
+            preview_max_long_edge: 1024,
+            video_resolution: '480p',
             materials,
             prompts: [] as Array<{ material: string; prompt: string }>,
             created_at: new Date().toISOString(),
@@ -334,7 +350,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             // submission plan only; actual paid calls go through the unified generate_video tool
             const plan = (manifest.materials ?? []).map((m: any) => {
               const prompt = (manifest.prompts ?? []).find((p: any) => p.material === m.path)?.prompt ?? ''
-              return { material: m.path, hash: m.hash, prompt, ready: Boolean(prompt.trim()) }
+              return { material: m.path, hash: m.hash, photo_type: m.photo_type, visual: m.visual, motion_plan: m.motion_plan, prompt, ready: Boolean(prompt.trim()) }
             })
             const ready = plan.filter((item: any) => item.ready).length
             if (!args.confirm) return { ok: false, message: `run_batch requires confirm=true; ${ready}/${plan.length} ready`, plan }
@@ -343,7 +359,28 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             return {
               ok: true,
               message: `submission plan ready (${plan.length} item(s)): call generate_video per item with images=[material], prompt, duration=${manifest.duration}, ratio=${manifest.ratio}, model_version=${manifest.model}`,
-              plan: plan.map((item: any) => ({ images: [item.material], prompt: item.prompt, duration: manifest.duration, ratio: manifest.ratio, model_version: manifest.model })),
+              plan: plan.map((item: any) => ({
+                images: [item.material],
+                prompt: item.prompt,
+                duration: manifest.duration,
+                ratio: manifest.ratio,
+                model_version: manifest.model,
+                asset_manifest: {
+                  assets: [{
+                    modality: 'image',
+                    index: 1,
+                    tag: '图片1',
+                    source: item.material,
+                    transport_role: 'reference_image',
+                    primary_role: 'first_frame_reference',
+                  }],
+                },
+                prompt_binding: 'ordered_cli_image_arguments',
+                surface: manifest.surface ?? 'jimeng-zh',
+                mode: manifest.mode ?? 'first-frame',
+                model_selection: manifest.model_selection,
+                resolution: manifest.video_resolution ?? '480p',
+              })),
             }
           }
           case 'update_forge_matches': {
@@ -368,9 +405,29 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             for (const m of manifest.materials) {
               const prev = await makePreview(m.path, previewsDir, 1024)
               mapping.push({ material: m.path, preview: prev.path, width: prev.width, height: prev.height })
+              m.preview = prev.path
             }
             await atomicWriteJson(join(dir, 'previews.json'), mapping)
+            await atomicWriteJson(join(dir, 'manifest.json'), manifest)
             return { ok: true, message: `${mapping.length} preview(s) ready (≤1024px)`, batch_id: batchId }
+          }
+          case 'set_visuals': {
+            const items = (args.items ?? []).map((v: any) => ({
+              material: String(v.material),
+              photo_type: v.photo_type !== undefined ? String(v.photo_type) : undefined,
+              visual: v.visual !== undefined ? v.visual : undefined,
+              motion_plan: v.motion_plan !== undefined ? v.motion_plan : undefined,
+            }))
+            if (items.length === 0) return { ok: false, message: 'items is required: [{material, photo_type?, visual?, motion_plan?}]' }
+            for (const item of items) {
+              const m = manifest.materials.find((x: any) => x.path === item.material)
+              if (!m) return { ok: false, message: `unknown material ${item.material}` }
+              if (item.photo_type !== undefined) m.photo_type = item.photo_type
+              if (item.visual !== undefined) m.visual = item.visual
+              if (item.motion_plan !== undefined) m.motion_plan = item.motion_plan
+            }
+            await atomicWriteJson(join(dir, 'manifest.json'), manifest)
+            return { ok: true, message: `visuals updated for ${items.length} material(s)`, batch_id: batchId }
           }
           case 'set_prompts': {
             const prompts = (args.prompts ?? []).map((p: any) => ({ material: String(p.material), prompt: String(p.prompt ?? '') }))

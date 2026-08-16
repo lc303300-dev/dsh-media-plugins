@@ -1,5 +1,5 @@
-import { r as runImageRouter, t as SUPPORTED_RATIOS } from "./adapters.js";
-import { a as ensureDir, l as resolvePrivateRoot, r as appendSafeLog } from "./private-runtime.js";
+import { i as SUPPORTED_RESOLUTIONS, n as SUPPORTED_IMAGE_PROVIDERS, o as runImageRouter, r as SUPPORTED_RATIOS, t as ADAPTER_ALIASES } from "./adapters.js";
+import { a as ensureDir, d as resolvePrivateRoot, r as appendSafeLog } from "./private-runtime.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
@@ -9,24 +9,6 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-//#region src/shared/batch-core.ts
-/**
-* Batch image scheduler domain (Codex_Batch_Image rebuild, all-JS):
-* manifest validation, stable job keys, deadline math and contact-sheet
-* HTML. Deterministic — no paid calls here; the tool orchestrates.
-*
-* Contract (guide §3.4 / §4.3):
-* - manifest UTF-8 JSON; image_ratio required; group ids unique;
-*   each group prompt non-empty, candidates >= 1;
-* - concurrency 1..10 (default 10), real submissions >= 1 s apart;
-* - default deadline = ceil(planned candidates / concurrency) * 60 s * 1.5,
-*   overridable via explicit deadline_seconds;
-* - after deadline, unfinished tasks are permanently abandoned (no query,
-*   no retry); only landed successes are collected;
-* - stable job key prevents re-submitting the same candidate.
-*
-* @module dsh-media-plugins/shared/batch-core
-*/
 /** Structural validation; throws with a precise message. */
 function validateManifest(raw) {
 	const m = raw ?? {};
@@ -41,10 +23,23 @@ function validateManifest(raw) {
 		if (!Number.isInteger(g.candidates) || g.candidates < 1) throw new Error(`group ${g.id}: candidates must be an integer >= 1`);
 		const ratio = g.image_ratio ?? m.image_ratio;
 		if (!ratio || !SUPPORTED_RATIOS.includes(ratio)) throw new Error(`group ${g.id}: image_ratio is required and must be one of ${SUPPORTED_RATIOS.join(", ")}`);
+		if (g.reference_images !== void 0) {
+			if (!Array.isArray(g.reference_images) || g.reference_images.some((p) => typeof p !== "string" || p.trim().length === 0)) throw new Error(`group ${g.id}: reference_images must be a non-empty array of paths`);
+		}
+		if (g.original_image !== void 0 && (typeof g.original_image !== "string" || g.original_image.trim().length === 0)) throw new Error(`group ${g.id}: original_image must be a path string`);
 		total += g.candidates;
 	}
 	const concurrency = m.concurrency ?? 10;
 	if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 10) throw new Error(`concurrency must be an integer 1..10, got ${concurrency}`);
+	if (m.image_resolution !== void 0 && !SUPPORTED_RESOLUTIONS.includes(m.image_resolution)) throw new Error(`image_resolution must be one of ${SUPPORTED_RESOLUTIONS.join(", ")}, got ${m.image_resolution}`);
+	if (m.image_provider !== void 0) {
+		const canonical = ADAPTER_ALIASES[m.image_provider] ?? m.image_provider;
+		if (!SUPPORTED_IMAGE_PROVIDERS.includes(canonical)) throw new Error(`image_provider must be a supported unified image route, got ${m.image_provider}`);
+	}
+	if (m.completion_grace_seconds !== void 0) {
+		const grace = m.completion_grace_seconds;
+		if (!Number.isFinite(grace) || grace <= 0 || grace > 120) throw new Error(`completion_grace_seconds must be > 0 and <= 120, got ${grace}`);
+	}
 	return m;
 }
 /** Stable job key: sha256 of the normalized manifest (order-insensitive groups). */
@@ -54,28 +49,36 @@ function jobKeyFor(manifest) {
 			id: g.id,
 			prompt: g.prompt.trim(),
 			candidates: g.candidates,
-			image_ratio: g.image_ratio ?? manifest.image_ratio
+			image_ratio: g.image_ratio ?? manifest.image_ratio,
+			reference_images: g.reference_images ?? null,
+			original_image: g.original_image ?? null
 		})).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+		image_resolution: manifest.image_resolution ?? null,
+		image_provider: manifest.image_provider ?? null,
 		concurrency: manifest.concurrency ?? 10
 	};
 	return createHash("sha256").update(JSON.stringify(normalized)).digest("hex").slice(0, 24);
 }
-/** Deadline math: ceil(total/concurrency)*60s*1.5, or explicit override. */
+/** Deadline math: dispatch cutoff = ceil(total/concurrency)*60s*1.5 (or explicit
+*  override); completion grace follows it (default 120 s, max 120 s). */
 function computeDeadline(manifest, now = Date.now()) {
 	const total = manifest.groups.reduce((acc, g) => acc + g.candidates, 0);
 	const concurrency = manifest.concurrency ?? 10;
 	const estimateSeconds = Math.ceil(total / concurrency) * 60;
 	const deadlineSeconds = manifest.deadline_seconds ?? Math.ceil(estimateSeconds * 1.5);
+	const completionGraceSeconds = manifest.completion_grace_seconds ?? 120;
 	return {
 		jobKey: jobKeyFor(manifest),
 		total,
 		concurrency,
 		estimateSeconds,
 		deadlineSeconds,
+		completionGraceSeconds,
+		maxRuntimeSeconds: deadlineSeconds + completionGraceSeconds,
 		deadlineAtMs: now + deadlineSeconds * 1e3
 	};
 }
-/** Contact sheet HTML: fixed numbered slots per group with landed images. */
+/** Contact sheet HTML: slot 0 shows the group's original/reference image, then fixed numbered candidate slots. */
 function buildContactSheetHtml(plan, groups, landed) {
 	const byGroup = /* @__PURE__ */ new Map();
 	for (const item of landed) {
@@ -90,6 +93,7 @@ function buildContactSheetHtml(plan, groups, landed) {
 	for (const group of groups) {
 		const items = byGroup.get(group.id) ?? /* @__PURE__ */ new Map();
 		const cells = [];
+		if (group.original_image !== void 0) cells.push(`<td><img src="${relPath(group.original_image)}" alt="original"><div class="slot">${group.id} · 原始图</div></td>`);
 		for (let slot = 1; slot <= group.candidates; slot += 1) {
 			const item = items.get(slot);
 			cells.push(item ? `<td><img src="${relPath(item.path)}" alt="slot ${slot}"><div class="slot">${group.id} · #${slot} ✓</div></td>` : `<td style="color:#bbb"><div>—</div><div class="slot">${group.id} · #${slot} ∅</div></td>`);
@@ -99,9 +103,11 @@ function buildContactSheetHtml(plan, groups, landed) {
 	rows.push("</body></html>");
 	return rows.join("\n");
 }
-/** Relative path from the HTML file's directory (forward slashes). */
+/** Relative path from the HTML file's directory (forward slashes); the sheet
+ *  lives in <outputDir>/contact-<key>.html and outputs sit under
+ *  <outputDir>/<jobKey>/..., so strip the workspace-root "outputs" segment. */
 function relPath(p) {
-	return p.split("\\").join("/").replace(/^.*\/outputs\//, "outputs/");
+	return p.split("\\").join("/").replace(/^.*\/outputs\//, "");
 }
 /** Flatten the manifest into one task descriptor per candidate. */
 function flattenTasks(manifest) {
@@ -112,7 +118,10 @@ function flattenTasks(manifest) {
 			groupId: g.id,
 			slot: i,
 			prompt: g.prompt.trim(),
-			ratio
+			ratio,
+			resolution: manifest.image_resolution,
+			imageProvider: manifest.image_provider,
+			references: g.reference_images ?? void 0
 		});
 	}
 	return tasks;
@@ -146,18 +155,22 @@ function openDb(dbPath) {
 	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`
     CREATE TABLE IF NOT EXISTS jobs (
-      job_key TEXT PRIMARY KEY, manifest_json TEXT NOT NULL, status TEXT NOT NULL,
+      job_key TEXT PRIMARY KEY, manifest_json TEXT NOT NULL, manifest_base TEXT, status TEXT NOT NULL,
       total INTEGER NOT NULL, concurrency INTEGER NOT NULL, estimate_seconds INTEGER NOT NULL,
-      deadline_seconds INTEGER NOT NULL, landed INTEGER DEFAULT 0, abandoned INTEGER DEFAULT 0,
+      deadline_seconds INTEGER NOT NULL, completion_grace_seconds INTEGER NOT NULL DEFAULT 120,
+      landed INTEGER DEFAULT 0, abandoned INTEGER DEFAULT 0,
       created_at TEXT NOT NULL, finished_at TEXT
     );
     CREATE TABLE IF NOT EXISTS tasks (
       job_key TEXT NOT NULL, task_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, slot INTEGER NOT NULL,
-      prompt TEXT NOT NULL, ratio TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-      started_at TEXT, finished_at TEXT, output_path TEXT, error TEXT, provider TEXT, model TEXT
+      prompt TEXT NOT NULL, ratio TEXT NOT NULL, resolution TEXT, provider TEXT, status TEXT NOT NULL DEFAULT 'pending',
+      started_at TEXT, finished_at TEXT, output_path TEXT, error TEXT, model TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_job ON tasks(job_key);
   `);
+	const columns = db.prepare("PRAGMA table_info(jobs)").all().map((c) => c.name);
+	if (!columns.includes("completion_grace_seconds")) db.exec("ALTER TABLE jobs ADD COLUMN completion_grace_seconds INTEGER NOT NULL DEFAULT 120");
+	if (!columns.includes("manifest_base")) db.exec("ALTER TABLE jobs ADD COLUMN manifest_base TEXT");
 	return db;
 }
 function sleep(ms) {
@@ -194,7 +207,7 @@ function apply(ctx, config) {
 	}
 	ctx.tools.register(defineTool({
 		name: "batch_image",
-		description: "确定性批量图片调度器（Codex_Batch_Image 的 DSH 重建）：manifest（组 id 唯一、每组 prompt 非空、candidates ≥ 1、image_ratio 必填 8 值之一）→ 稳定 job key → SQLite 状态 → 最多 10 路并发、真实提交间隔 ≥ 1 秒 → 硬截止（默认 ceil(总数÷并发)×60 秒×1.5，可用 deadline_seconds 覆盖）→ 截止后未完成任务永久 abandoned（不查询、不重试），只收集已落地成功 → 生成固定槽位编号联系表供人工选图。付费执行全部走统一媒体路由器；同一候选绝不重复提交（job key + 任务 id 幂等）。",
+		description: "确定性批量图片调度器（Codex_Batch_Image 的 DSH 重建）：manifest（组 id 唯一、每组 prompt 非空、candidates ≥ 1、image_ratio 必填 8 值之一；可选批次级 image_resolution 1K/2K/4K、image_provider 单线路、completion_grace_seconds 完成宽限期）→ 稳定 job key → SQLite 状态 → 最多 10 路并发、真实提交间隔 ≥ 1 秒 → 分派截止（默认 ceil(总数÷并发)×60 秒×1.5，可用 deadline_seconds 覆盖）：截止后不再启动新任务，未启动任务永久 abandoned（batch_deadline_not_submitted，不查询、不重试）；已在运行的任务最多再等 completion_grace_seconds（默认 120 秒、上限 120 秒、可缩短不可延长），宽限期内落地成功照常收集，超时仍未完成的运行中任务终止并标记 failed（batch_completion_grace_timeout）→ 生成固定槽位编号联系表供人工选图。付费执行全部走统一媒体路由器；同一候选绝不重复提交（job key + 任务 id 幂等）。",
 		parameters: {
 			command: {
 				type: "string",
@@ -210,7 +223,7 @@ function apply(ctx, config) {
 			manifest: {
 				type: "object",
 				additionalProperties: true,
-				description: "start 用：{groups: [{id, prompt, candidates, image_ratio}], concurrency?, deadline_seconds?}；或传 manifest_path。"
+				description: "start 用：{groups: [{id, prompt, candidates, image_ratio, reference_images?, original_image?}], image_resolution?, image_provider?, concurrency?, deadline_seconds?, completion_grace_seconds?}；reference_images 为该组所有候选的参考图（相对 manifest 所在目录解析），original_image 作为联系表槽 0 素材/风格参考；或传 manifest_path。"
 			},
 			manifest_path: {
 				type: "string",
@@ -267,11 +280,16 @@ function apply(ctx, config) {
 				}
 				if (command === "start") {
 					let raw;
+					let manifestBase;
 					if (args.manifest_path) {
 						const path = isAbsolute(args.manifest_path) ? args.manifest_path : join(workspaceRoot, args.manifest_path);
 						const { readFile } = await import("node:fs/promises");
 						raw = JSON.parse(await readFile(path, "utf8"));
-					} else raw = args.manifest;
+						manifestBase = dirname(path);
+					} else {
+						raw = args.manifest;
+						manifestBase = workspaceRoot;
+					}
 					const manifest = validateManifest(raw);
 					const plan = computeDeadline(manifest);
 					const existing = db.prepare("SELECT * FROM jobs WHERE job_key = ?").get(plan.jobKey);
@@ -282,14 +300,14 @@ function apply(ctx, config) {
 						summary: existing
 					};
 					const now = (/* @__PURE__ */ new Date()).toISOString();
-					db.prepare("INSERT INTO jobs (job_key, manifest_json, status, total, concurrency, estimate_seconds, deadline_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(plan.jobKey, JSON.stringify(manifest), "running", plan.total, plan.concurrency, plan.estimateSeconds, plan.deadlineSeconds, now);
-					const insertTask = db.prepare("INSERT OR IGNORE INTO tasks (job_key, task_id, group_id, slot, prompt, ratio, status) VALUES (?, ?, ?, ?, ?, ?, ?)");
-					for (const t of flattenTasks(manifest)) insertTask.run(plan.jobKey, `${plan.jobKey}-${t.groupId}-${t.slot}`, t.groupId, t.slot, t.prompt, t.ratio, "pending");
+					db.prepare("INSERT INTO jobs (job_key, manifest_json, manifest_base, status, total, concurrency, estimate_seconds, deadline_seconds, completion_grace_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(plan.jobKey, JSON.stringify(manifest), manifestBase, "running", plan.total, plan.concurrency, plan.estimateSeconds, plan.deadlineSeconds, plan.completionGraceSeconds, now);
+					const insertTask = db.prepare("INSERT OR IGNORE INTO tasks (job_key, task_id, group_id, slot, prompt, ratio, resolution, provider, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+					for (const t of flattenTasks(manifest)) insertTask.run(plan.jobKey, `${plan.jobKey}-${t.groupId}-${t.slot}`, t.groupId, t.slot, t.prompt, t.ratio, t.resolution ?? null, t.imageProvider ?? null, "pending");
 					const routerConfig = {
 						...baseRouterConfig,
 						credentials: await resolveCredentials()
 					};
-					runScheduler(db, plan.jobKey, manifest, plan.deadlineAtMs, privateRoot, routerConfig, config.outputDir, workspaceRoot).catch((error) => {
+					runScheduler(db, plan.jobKey, manifest, manifestBase, plan.deadlineAtMs, privateRoot, routerConfig, config.outputDir, workspaceRoot).catch((error) => {
 						db.prepare("UPDATE jobs SET status = 'failed', finished_at = ? WHERE job_key = ?").run((/* @__PURE__ */ new Date()).toISOString(), plan.jobKey);
 						appendSafeLog(privateRoot, "batch_image", {
 							jobKey: plan.jobKey,
@@ -299,14 +317,16 @@ function apply(ctx, config) {
 					});
 					return {
 						ok: true,
-						message: `batch ${plan.jobKey} started: ${plan.total} candidate(s), concurrency ${plan.concurrency}, estimate ${plan.estimateSeconds}s, deadline ${plan.deadlineSeconds}s; scheduler runs in background, poll status`,
+						message: `batch ${plan.jobKey} started: ${plan.total} candidate(s), concurrency ${plan.concurrency}, estimate ${plan.estimateSeconds}s, dispatch deadline ${plan.deadlineSeconds}s, completion grace ${plan.completionGraceSeconds}s (max runtime ${plan.maxRuntimeSeconds}s); scheduler runs in background, poll status`,
 						job_key: plan.jobKey,
 						plan: {
 							jobKey: plan.jobKey,
 							total: plan.total,
 							concurrency: plan.concurrency,
 							estimateSeconds: plan.estimateSeconds,
-							deadlineSeconds: plan.deadlineSeconds
+							deadlineSeconds: plan.deadlineSeconds,
+							completionGraceSeconds: plan.completionGraceSeconds,
+							maxRuntimeSeconds: plan.maxRuntimeSeconds
 						}
 					};
 				}
@@ -330,21 +350,29 @@ function apply(ctx, config) {
 							...summary,
 							landed: job.landed,
 							abandoned: job.abandoned,
-							status: job.status
+							status: job.status,
+							completion_grace_seconds: job.completion_grace_seconds
 						}
 					};
 				}
 				if (command === "contact_sheet") {
 					const manifest = JSON.parse(job.manifest_json);
-					const landed = db.prepare("SELECT group_id, slot, output_path AS path FROM tasks WHERE job_key = ? AND status = 'success'").all(args.job_key);
+					const base = job.manifest_base ?? workspaceRoot;
+					const landed = db.prepare("SELECT group_id AS groupId, slot, output_path AS path FROM tasks WHERE job_key = ? AND status = 'success'").all(args.job_key);
 					const plan = computeDeadline(manifest, 0);
 					const outDir = join(workspaceRoot, config.outputDir);
 					await ensureDir(outDir);
+					const groups = manifest.groups.map((g) => ({
+						id: g.id,
+						candidates: g.candidates,
+						image_ratio: g.image_ratio ?? manifest.image_ratio ?? "",
+						original_image: g.original_image ? resolveBatchPath(g.original_image, base) : g.reference_images?.[0] ? resolveBatchPath(g.reference_images[0], base) : void 0
+					}));
 					const sheetPath = join(outDir, `contact-${args.job_key}.html`);
 					await writeFile(sheetPath, buildContactSheetHtml({
 						...plan,
 						deadlineAtMs: job.deadline_seconds
-					}, manifest.groups, landed), "utf8");
+					}, groups, landed), "utf8");
 					return {
 						ok: true,
 						message: `contact sheet: ${sheetPath}`,
@@ -366,32 +394,43 @@ function apply(ctx, config) {
 		}
 	}));
 }
+/** Resolve a manifest-relative path against the batch base directory. */
+function resolveBatchPath(value, base) {
+	const p = value.trim();
+	return isAbsolute(p) ? p : join(base, p);
+}
 /** Detached scheduler loop (runs after the tool call returns). */
-async function runScheduler(_db, jobKey, manifest, deadlineAtMs, privateRoot, routerConfig, outputDir, workspaceRoot) {
+async function runScheduler(_db, jobKey, manifest, manifestBase, deadlineAtMs, privateRoot, routerConfig, outputDir, workspaceRoot) {
 	const db = openDb(join(privateRoot, "batch", "batch.db"));
 	try {
-		await runSchedulerWith(db, jobKey, manifest, deadlineAtMs, privateRoot, routerConfig, outputDir, workspaceRoot);
+		await runSchedulerWith(db, jobKey, manifest, manifestBase, deadlineAtMs, privateRoot, routerConfig, outputDir, workspaceRoot);
 	} finally {
 		try {
 			db.close();
 		} catch {}
 	}
 }
-async function runSchedulerWith(db, jobKey, manifest, deadlineAtMs, privateRoot, routerConfig, outputDir, workspaceRoot) {
+async function runSchedulerWith(db, jobKey, manifest, manifestBase, deadlineAtMs, privateRoot, routerConfig, outputDir, workspaceRoot) {
 	const plan = computeDeadline(manifest);
-	const pending = db.prepare("SELECT task_id, group_id, slot, prompt, ratio FROM tasks WHERE job_key = ? AND status = 'pending' ORDER BY rowid").all(jobKey);
+	const graceMs = plan.completionGraceSeconds * 1e3;
+	const pending = db.prepare("SELECT task_id, group_id, slot, prompt, ratio, resolution, provider FROM tasks WHERE job_key = ? AND status = 'pending' ORDER BY rowid").all(jobKey);
 	const inFlight = /* @__PURE__ */ new Map();
+	const controllers = /* @__PURE__ */ new Map();
 	let nextSubmitAt = Date.now();
-	const runOne = async (task) => {
+	const runOne = async (task, controller) => {
 		db.prepare("UPDATE tasks SET status = 'running', started_at = ? WHERE task_id = ?").run((/* @__PURE__ */ new Date()).toISOString(), task.task_id);
 		try {
+			const references = (manifest.groups.find((g) => g.id === task.group_id)?.reference_images ?? []).map((p) => resolveBatchPath(p, manifestBase));
 			const outcome = await runImageRouter({
 				prompt: task.prompt,
-				images: [],
+				images: references,
 				ratio: task.ratio,
+				resolution: task.resolution ?? void 0,
+				imageProvider: task.provider ?? void 0,
 				config: routerConfig,
 				workspaceRoot,
 				privateRoot,
+				signal: controller.signal,
 				taskId: `batch-${jobKey}-${task.group_id}-${task.slot}`
 			});
 			const destDir = join(workspaceRoot, outputDir, jobKey, task.group_id);
@@ -409,20 +448,37 @@ async function runSchedulerWith(db, jobKey, manifest, deadlineAtMs, privateRoot,
 	try {
 		while ((pending.length > 0 || inFlight.size > 0) && Date.now() < deadlineAtMs) {
 			while (inFlight.size < plan.concurrency && pending.length > 0 && Date.now() < deadlineAtMs) {
+				const wait = nextSubmitAt - Date.now();
+				if (wait > 0) await sleep(wait);
+				if (Date.now() >= deadlineAtMs) break;
 				const task = pending.shift();
 				const settled = db.prepare("SELECT status FROM tasks WHERE task_id = ?").get(task.task_id);
 				if (settled && settled.status !== "pending") continue;
-				const wait = nextSubmitAt - Date.now();
-				if (wait > 0) await sleep(wait);
-				const promise = runOne(task).finally(() => inFlight.delete(task.task_id));
+				const controller = new AbortController();
+				const promise = runOne(task, controller).finally(() => {
+					inFlight.delete(task.task_id);
+					controllers.delete(task.task_id);
+				});
 				inFlight.set(task.task_id, promise);
+				controllers.set(task.task_id, controller);
 				nextSubmitAt = Date.now() + 1e3;
 			}
 			if (inFlight.size > 0) await Promise.race([...inFlight.values()]);
 		}
-		const abandoned = db.prepare("UPDATE tasks SET status = 'abandoned', finished_at = ? WHERE job_key = ? AND status IN ('pending', 'running')").run((/* @__PURE__ */ new Date()).toISOString(), jobKey).changes;
-		if (abandoned > 0) db.prepare("UPDATE jobs SET abandoned = abandoned + ? WHERE job_key = ?").run(abandoned, jobKey);
-		if (inFlight.size > 0) await Promise.allSettled([...inFlight.values()]);
+		const abandonedCount = db.prepare("UPDATE tasks SET status = 'abandoned', finished_at = ?, error = ? WHERE job_key = ? AND status = 'pending'").run((/* @__PURE__ */ new Date()).toISOString(), "batch_deadline_not_submitted", jobKey).changes;
+		if (abandonedCount > 0) db.prepare("UPDATE jobs SET abandoned = abandoned + ? WHERE job_key = ?").run(abandonedCount, jobKey);
+		if (inFlight.size > 0) {
+			const graceTimer = setTimeout(() => {
+				for (const controller of controllers.values()) controller.abort();
+			}, graceMs);
+			try {
+				await Promise.allSettled([...inFlight.values()]);
+			} finally {
+				clearTimeout(graceTimer);
+			}
+			const timedOut = db.prepare("UPDATE tasks SET status = 'failed', finished_at = ?, error = ? WHERE job_key = ? AND status = 'running'").run((/* @__PURE__ */ new Date()).toISOString(), "batch_completion_grace_timeout", jobKey).changes;
+			if (timedOut > 0) db.prepare("UPDATE jobs SET abandoned = abandoned + ? WHERE job_key = ?").run(timedOut, jobKey);
+		}
 		db.prepare("UPDATE jobs SET status = 'finished', finished_at = ? WHERE job_key = ?").run((/* @__PURE__ */ new Date()).toISOString(), jobKey);
 		const landed = db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE job_key = ? AND status = 'success'").get(jobKey).n;
 		db.prepare("UPDATE jobs SET landed = ? WHERE job_key = ?").run(landed, jobKey);
@@ -430,7 +486,7 @@ async function runSchedulerWith(db, jobKey, manifest, deadlineAtMs, privateRoot,
 			jobKey,
 			event: "finished",
 			landed,
-			abandoned: db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE job_key = ? AND status = 'abandoned'").get(jobKey).n
+			abandoned: db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE job_key = ? AND status IN ('failed','abandoned')").get(jobKey).n
 		});
 	} finally {}
 }

@@ -215,9 +215,54 @@ async function appendSafeLog(privateRoot, name, entry) {
 	})}\n`;
 	await writeFile(path, line, { flag: "a" });
 }
+/** Cooldown while the circuit stays open (contract: 60 s). */
+const CIRCUIT_COOLDOWN_MS = 6e4;
+function circuitPath(privateRoot, adapterId) {
+	return join(privateRoot, "providers", adapterId, "circuit.json");
+}
+/** Read the current circuit state for one adapter (undefined = never tripped). */
+async function readCircuit(privateRoot, adapterId) {
+	return readJsonSafe(circuitPath(privateRoot, adapterId));
+}
+/**
+* Record one execution outcome. Success resets the counter; every failure
+* increments it, and the circuit opens once the threshold is reached
+* (openedAt is kept on the first trip until a success resets it).
+*/
+async function recordProviderOutcome(privateRoot, adapterId, ok) {
+	const current = await readCircuit(privateRoot, adapterId) ?? { failures: 0 };
+	const now = (/* @__PURE__ */ new Date()).toISOString();
+	const next = ok ? {
+		failures: 0,
+		lastSuccessAt: now
+	} : {
+		failures: current.failures + 1,
+		lastFailureAt: now,
+		...current.failures + 1 >= 3 ? { openedAt: current.openedAt ?? now } : {}
+	};
+	await atomicWriteJson(circuitPath(privateRoot, adapterId), next);
+	return next;
+}
+/** True when the adapter is in cooldown (tripped and less than 60 s elapsed). */
+async function isCircuitOpen(privateRoot, adapterId, now = Date.now()) {
+	const state = await readCircuit(privateRoot, adapterId);
+	if (!state || state.failures < 3) return {
+		open: false,
+		state
+	};
+	const opened = state.openedAt ? Date.parse(state.openedAt) : NaN;
+	if (!Number.isFinite(opened)) return {
+		open: false,
+		state
+	};
+	return {
+		open: now - opened < CIRCUIT_COOLDOWN_MS,
+		state
+	};
+}
 /** Allocate a stable task id (uuid without dashes). */
 function newTaskId() {
 	return randomUUID().replaceAll("-", "");
 }
 //#endregion
-export { ensureDir as a, redactPrompt as c, atomicWriteJson as i, resolvePrivateRoot as l, acquireSlot as n, newTaskId as o, appendSafeLog as r, readJsonSafe as s, TaskStore as t, sha256File as u };
+export { ensureDir as a, readJsonSafe as c, resolvePrivateRoot as d, sha256File as f, atomicWriteJson as i, recordProviderOutcome as l, acquireSlot as n, isCircuitOpen as o, appendSafeLog as r, newTaskId as s, TaskStore as t, redactPrompt as u };

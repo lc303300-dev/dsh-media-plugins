@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ratioToSize, SUPPORTED_RATIOS, classifyHttp, runImageRouter, defaultAdapters } from '../src/shared/adapters.ts'
+import { ratioToSize, SUPPORTED_RATIOS, SUPPORTED_RESOLUTIONS, SUPPORTED_IMAGE_PROVIDERS, classifyHttp, runImageRouter, defaultAdapters, geminiSizeFor, gptImage2SizeFor, GPT_IMAGE_2_SIZES, GEMINI_MODELS_BY_RESOLUTION } from '../src/shared/adapters.ts'
 import { MediaError, FALLBACK_ALLOWED, mediaErrors } from '../src/shared/failure.ts'
 import { hasImageSignature, extensionFor } from '../src/shared/media-client.ts'
 
@@ -8,11 +8,40 @@ test('SUPPORTED_RATIOS is exactly the 8 contract values', () => {
   assert.deepEqual(SUPPORTED_RATIOS, ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'])
 })
 
+test('SUPPORTED_RESOLUTIONS and SUPPORTED_IMAGE_PROVIDERS match the contract', () => {
+  assert.deepEqual(SUPPORTED_RESOLUTIONS, ['1K', '2K', '4K'])
+  assert.deepEqual(SUPPORTED_IMAGE_PROVIDERS, ['comfly-gemini-flash-preview', 'comfly-gpt-image-2', 'apimart-gpt-image-2', 'google-gemini-image', 'dreamina-image'])
+  assert.ok(!SUPPORTED_IMAGE_PROVIDERS.includes('comfly-gpt-image-2-all'), 'retired comfly-gpt-image-2-all must not be a public route')
+})
+
 test('ratioToSize maps all 8 ratios and rejects others with input_error', () => {
   assert.equal(ratioToSize('1:1'), '1024x1024')
   assert.equal(ratioToSize('16:9'), '1376x768')
   assert.throws(() => ratioToSize('4:5'), (e) => e instanceof MediaError && e.cls === 'input_error')
   assert.throws(() => ratioToSize(''), (e) => e instanceof MediaError && e.cls === 'input_error')
+})
+
+test('geminiSizeFor scales the 1K allowlist by the resolution class', () => {
+  assert.equal(geminiSizeFor('16:9', '1K'), '1376x768')
+  assert.equal(geminiSizeFor('16:9', '2K'), '2752x1536')
+  assert.equal(geminiSizeFor('1:1', '4K'), '4096x4096')
+  assert.throws(() => geminiSizeFor('16:9', '8K'), (e) => e instanceof MediaError && e.cls === 'input_error')
+  assert.throws(() => geminiSizeFor('5:7', '1K'), (e) => e instanceof MediaError && e.cls === 'input_error')
+})
+
+test('gptImage2SizeFor resolves the GPT Image 2 pixel table per ratio x resolution', () => {
+  assert.equal(gptImage2SizeFor('16:9', '1K'), '1280x720')
+  assert.equal(gptImage2SizeFor('16:9', '2K'), '2048x1152')
+  assert.equal(gptImage2SizeFor('9:16', '4K'), '2160x3840')
+  assert.equal(GPT_IMAGE_2_SIZES['4K']['1:1'], '2880x2880')
+  assert.throws(() => gptImage2SizeFor('16:9', '8K'), (e) => e instanceof MediaError && e.cls === 'input_error')
+  assert.throws(() => gptImage2SizeFor('5:7', '1K'), (e) => e instanceof MediaError && e.cls === 'input_error')
+})
+
+test('GEMINI_MODELS_BY_RESOLUTION routes 1K/2K/4K to the resolution-specific models', () => {
+  assert.equal(GEMINI_MODELS_BY_RESOLUTION['1K'], 'gemini-3.1-flash-image-preview')
+  assert.equal(GEMINI_MODELS_BY_RESOLUTION['2K'], 'gemini-3.1-flash-image-preview-2k')
+  assert.equal(GEMINI_MODELS_BY_RESOLUTION['4K'], 'gemini-3.1-flash-image-preview-4k')
 })
 
 test('classifyHttp maps status codes to taxonomy classes', () => {
@@ -44,14 +73,14 @@ test('image signature detection', () => {
   assert.equal(extensionFor(new Uint8Array([0xff, 0xd8, 0xff])), '.jpg')
 })
 
-test('defaultAdapters respects enabled filter and contract order', () => {
+test('defaultAdapters respects enabled filter and contract order (no retired gpt-image-2-all)', () => {
   const cfg = {
     comflyBaseURL: 'x', comflyApiKeyEnv: 'K', apimartBaseURL: 'x', apimartApiKeyEnv: 'K',
     geminiApiURL: 'x', geminiApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
     maxConcurrency: 6, providerTimeoutMs: 120000, taskTimeoutMs: 300000, outputDir: 'o', enabled: [],
   }
   const all = defaultAdapters(cfg)
-  assert.deepEqual(all.map((a) => a.id), ['comfly-gemini-flash-preview', 'comfly-gpt-image-2-all', 'comfly-gpt-image-2', 'apimart-gpt-image-2', 'google-gemini-image', 'dreamina-image'])
+  assert.deepEqual(all.map((a) => a.id), ['comfly-gemini-flash-preview', 'comfly-gpt-image-2', 'apimart-gpt-image-2', 'google-gemini-image', 'dreamina-image'])
   const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gemini-flash-preview'] })
   assert.equal(filtered.length, 1)
   assert.equal(filtered[0].id, 'comfly-gemini-flash-preview')

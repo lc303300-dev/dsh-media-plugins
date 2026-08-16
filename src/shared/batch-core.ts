@@ -17,7 +17,13 @@
  */
 
 import { createHash } from 'node:crypto'
-import { SUPPORTED_RATIOS, RATIO_SIZES } from './adapters.ts'
+import {
+  SUPPORTED_RATIOS,
+  RATIO_SIZES,
+  SUPPORTED_RESOLUTIONS,
+  SUPPORTED_IMAGE_PROVIDERS,
+  ADAPTER_ALIASES,
+} from './adapters.ts'
 
 export interface BatchGroup {
   id: string
@@ -25,6 +31,10 @@ export interface BatchGroup {
   candidates: number
   image_ratio: string
   slot_prefix?: string
+  /** Optional ordered reference images for every candidate in this group. */
+  reference_images?: string[]
+  /** Explicit material/style reference for contact-sheet slot 0 (recommended with multiple references). */
+  original_image?: string
 }
 
 export interface BatchManifest {
@@ -32,9 +42,15 @@ export interface BatchManifest {
   groups: BatchGroup[]
   /** Optional global ratio when all groups share one. */
   image_ratio?: string
+  /** Optional batch-wide explicit resolution class (1K/2K/4K). */
+  image_resolution?: string
+  /** Optional batch-wide user-explicit image route (single-route, no fallback). */
+  image_provider?: string
   concurrency?: number
-  /** Explicit hard deadline in seconds; overrides the auto estimate. */
+  /** Explicit dispatch cutoff in seconds; overrides the auto estimate. */
   deadline_seconds?: number
+  /** Completion grace after the dispatch deadline, in seconds (> 0, <= 120, default 120). */
+  completion_grace_seconds?: number
 }
 
 export interface BatchPlan {
@@ -43,8 +59,13 @@ export interface BatchPlan {
   concurrency: number
   estimateSeconds: number
   deadlineSeconds: number
+  completionGraceSeconds: number
+  maxRuntimeSeconds: number
   deadlineAtMs: number
 }
+
+/** Default completion grace after the dispatch deadline (contract: default and maximum 120 s). */
+export const DEFAULT_COMPLETION_GRACE_SECONDS = 120
 
 /** Structural validation; throws with a precise message. */
 export function validateManifest(raw: unknown): BatchManifest {
@@ -64,11 +85,34 @@ export function validateManifest(raw: unknown): BatchManifest {
     if (!ratio || !SUPPORTED_RATIOS.includes(ratio)) {
       throw new Error(`group ${g.id}: image_ratio is required and must be one of ${SUPPORTED_RATIOS.join(', ')}`)
     }
+    if (g.reference_images !== undefined) {
+      if (!Array.isArray(g.reference_images) || g.reference_images.some((p) => typeof p !== 'string' || p.trim().length === 0)) {
+        throw new Error(`group ${g.id}: reference_images must be a non-empty array of paths`)
+      }
+    }
+    if (g.original_image !== undefined && (typeof g.original_image !== 'string' || g.original_image.trim().length === 0)) {
+      throw new Error(`group ${g.id}: original_image must be a path string`)
+    }
     total += g.candidates
   }
   const concurrency = m.concurrency ?? 10
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 10) {
     throw new Error(`concurrency must be an integer 1..10, got ${concurrency}`)
+  }
+  if (m.image_resolution !== undefined && !SUPPORTED_RESOLUTIONS.includes(m.image_resolution)) {
+    throw new Error(`image_resolution must be one of ${SUPPORTED_RESOLUTIONS.join(', ')}, got ${m.image_resolution}`)
+  }
+  if (m.image_provider !== undefined) {
+    const canonical = ADAPTER_ALIASES[m.image_provider] ?? m.image_provider
+    if (!SUPPORTED_IMAGE_PROVIDERS.includes(canonical)) {
+      throw new Error(`image_provider must be a supported unified image route, got ${m.image_provider}`)
+    }
+  }
+  if (m.completion_grace_seconds !== undefined) {
+    const grace = m.completion_grace_seconds
+    if (!Number.isFinite(grace) || grace <= 0 || grace > DEFAULT_COMPLETION_GRACE_SECONDS) {
+      throw new Error(`completion_grace_seconds must be > 0 and <= ${DEFAULT_COMPLETION_GRACE_SECONDS}, got ${grace}`)
+    }
   }
   return m
 }
@@ -77,33 +121,46 @@ export function validateManifest(raw: unknown): BatchManifest {
 export function jobKeyFor(manifest: BatchManifest): string {
   const normalized = {
     groups: [...manifest.groups]
-      .map((g) => ({ id: g.id, prompt: g.prompt.trim(), candidates: g.candidates, image_ratio: g.image_ratio ?? manifest.image_ratio }))
+      .map((g) => ({
+        id: g.id,
+        prompt: g.prompt.trim(),
+        candidates: g.candidates,
+        image_ratio: g.image_ratio ?? manifest.image_ratio,
+        reference_images: g.reference_images ?? null,
+        original_image: g.original_image ?? null,
+      }))
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+    image_resolution: manifest.image_resolution ?? null,
+    image_provider: manifest.image_provider ?? null,
     concurrency: manifest.concurrency ?? 10,
   }
   return createHash('sha256').update(JSON.stringify(normalized)).digest('hex').slice(0, 24)
 }
 
-/** Deadline math: ceil(total/concurrency)*60s*1.5, or explicit override. */
+/** Deadline math: dispatch cutoff = ceil(total/concurrency)*60s*1.5 (or explicit
+ *  override); completion grace follows it (default 120 s, max 120 s). */
 export function computeDeadline(manifest: BatchManifest, now = Date.now()): BatchPlan {
   const total = manifest.groups.reduce((acc, g) => acc + g.candidates, 0)
   const concurrency = manifest.concurrency ?? 10
   const estimateSeconds = Math.ceil(total / concurrency) * 60
   const deadlineSeconds = manifest.deadline_seconds ?? Math.ceil(estimateSeconds * 1.5)
+  const completionGraceSeconds = manifest.completion_grace_seconds ?? DEFAULT_COMPLETION_GRACE_SECONDS
   return {
     jobKey: jobKeyFor(manifest),
     total,
     concurrency,
     estimateSeconds,
     deadlineSeconds,
+    completionGraceSeconds,
+    maxRuntimeSeconds: deadlineSeconds + completionGraceSeconds,
     deadlineAtMs: now + deadlineSeconds * 1000,
   }
 }
 
-/** Contact sheet HTML: fixed numbered slots per group with landed images. */
+/** Contact sheet HTML: slot 0 shows the group's original/reference image, then fixed numbered candidate slots. */
 export function buildContactSheetHtml(
   plan: BatchPlan,
-  groups: BatchGroup[],
+  groups: Array<Pick<BatchGroup, 'id' | 'candidates' | 'image_ratio' | 'original_image'>>,
   landed: Array<{ groupId: string; slot: number; path: string; width?: number; height?: number }>,
 ): string {
   const byGroup = new Map<string, Map<number, (typeof landed)[number]>>()
@@ -119,6 +176,11 @@ export function buildContactSheetHtml(
   for (const group of groups) {
     const items = byGroup.get(group.id) ?? new Map()
     const cells: string[] = []
+    if (group.original_image !== undefined) {
+      cells.push(
+        `<td><img src="${relPath(group.original_image)}" alt="original"><div class="slot">${group.id} · 原始图</div></td>`,
+      )
+    }
     for (let slot = 1; slot <= group.candidates; slot += 1) {
       const item = items.get(slot)
       cells.push(
@@ -133,18 +195,30 @@ export function buildContactSheetHtml(
   return rows.join('\n')
 }
 
-/** Relative path from the HTML file's directory (forward slashes). */
+/** Relative path from the HTML file's directory (forward slashes); the sheet
+ *  lives in <outputDir>/contact-<key>.html and outputs sit under
+ *  <outputDir>/<jobKey>/..., so strip the workspace-root "outputs" segment. */
 function relPath(p: string): string {
-  return p.split('\\').join('/').replace(/^.*\/outputs\//, 'outputs/')
+  return p.split('\\').join('/').replace(/^.*\/outputs\//, '')
 }
 
 /** Flatten the manifest into one task descriptor per candidate. */
-export function flattenTasks(manifest: BatchManifest): Array<{ groupId: string; slot: number; prompt: string; ratio: string }> {
-  const tasks: Array<{ groupId: string; slot: number; prompt: string; ratio: string }> = []
+export function flattenTasks(
+  manifest: BatchManifest,
+): Array<{ groupId: string; slot: number; prompt: string; ratio: string; resolution?: string; imageProvider?: string; references?: string[] }> {
+  const tasks: Array<{ groupId: string; slot: number; prompt: string; ratio: string; resolution?: string; imageProvider?: string; references?: string[] }> = []
   for (const g of manifest.groups) {
     const ratio = g.image_ratio ?? manifest.image_ratio!
     for (let i = 1; i <= g.candidates; i += 1) {
-      tasks.push({ groupId: g.id, slot: i, prompt: g.prompt.trim(), ratio })
+      tasks.push({
+        groupId: g.id,
+        slot: i,
+        prompt: g.prompt.trim(),
+        ratio,
+        resolution: manifest.image_resolution,
+        imageProvider: manifest.image_provider,
+        references: g.reference_images ?? undefined,
+      })
     }
   }
   return tasks

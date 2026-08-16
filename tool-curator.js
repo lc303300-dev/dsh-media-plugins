@@ -1,5 +1,5 @@
 import { r as validateContract } from "./registry-core.js";
-import { l as resolvePrivateRoot } from "./private-runtime.js";
+import { d as resolvePrivateRoot } from "./private-runtime.js";
 import { a as plannedCount, c as validatePackage, i as packageSha256, l as validateScaffoldInput, n as buildIntakeReceipt, o as readIntakeSources, r as compileChecklist, s as sealSources, t as addMissingCountRules } from "./curator-core.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
@@ -65,7 +65,7 @@ function parseFrontmatterName(text) {
 function apply(ctx, config) {
 	ctx.tools.register(defineTool({
 		name: "skill_curator",
-		description: "业务 Skill 录入治理（Codex_CS codex-cs-skill-curator 的 DSH 重建）：把用户上传的 Skill Markdown、旧版 Skill 包、社区经验文档或提示词资料整理为可审计、可验证、可发布的标准业务 Skill 包。scaffold 用标准模板生成骨架（contract.json/routing.json/SKILL.md/agents/references）；add_count_rules 为素材槽补齐审计式 count_rule（固定角色固定数量、其余默认每约 5 秒一项）；validate 按 validator 1.1.0 校验（必需文件、占位符/密钥/终端输出/绝对路径扫描、执行层泄漏、禁止 text2video、authoring 策略、intake-receipt 哈希绑定）；planned_counts 按确认时长推导各槽素材计划数；migrate 从旧版 Markdown 迁移；publish 生成 intake-receipt 并发布到注册库。全程 provider-neutral，不选择模型、不提交媒体。",
+		description: "业务 Skill 录入治理（Codex_CS codex-cs-skill-curator 的 DSH 重建）：把用户上传的 Skill Markdown、旧版 Skill 包、社区经验文档或提示词资料整理为可审计、可验证、可发布的标准业务 Skill 包。scaffold 用标准模板生成骨架（contract.json/routing.json/SKILL.md/agents/references）；add_count_rules 为素材槽补齐审计式 count_rule（固定角色固定数量、其余默认每约 5 秒一项）；validate 按 validator 1.2.0 校验（必需文件、占位符/密钥/终端输出/绝对路径扫描、执行层泄漏、禁止 text2video、authoring 策略、intake-receipt 哈希绑定）；planned_counts 按确认时长推导各槽素材计划数；migrate 从旧版 Markdown 迁移；publish 生成 intake-receipt 并发布到注册库。全程 provider-neutral，不选择模型、不提交媒体。",
 		parameters: {
 			command: {
 				type: "string",

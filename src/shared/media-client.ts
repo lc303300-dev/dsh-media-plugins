@@ -80,6 +80,9 @@ export interface OpenAiImageOptions {
   model: string
   prompt: string
   size: string
+  /** Resolution class (1K/2K/4K); sent as the provider-specific `resolution`
+   *  field for Gemini models only — GPT Image 2 never receives it. */
+  resolution?: string
   images?: string[]
   proxyUrl?: string
   signal?: AbortSignal
@@ -91,7 +94,7 @@ export interface OpenAiImageOptions {
  * multipart) and return the remote image URL.
  */
 export async function openAiImageUrl(options: OpenAiImageOptions): Promise<string> {
-  const { baseURL, apiKey, model, prompt, size, images = [], proxyUrl, signal, timeoutMs = 120000 } = options
+  const { baseURL, apiKey, model, prompt, size, resolution, images = [], proxyUrl, signal, timeoutMs = 120000 } = options
   const dispatcher = proxyDispatcher(proxyUrl)
   const auth = { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' }
   const controller = new AbortController()
@@ -113,13 +116,17 @@ export async function openAiImageUrl(options: OpenAiImageOptions): Promise<strin
       // proxy ("model is required"), while an explicitly bounded body works.
       const boundary = `----DshMedia${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`
       const chunks: Buffer[] = []
-      for (const [fieldName, fieldValue] of [
+      const fields: Array<[string, string]> = [
         ['model', model],
         ['prompt', prompt],
         ['n', '1'],
         ['size', size],
-        ['response_format', 'url'],
-      ] as Array<[string, string]>) {
+      ]
+      if (model !== 'gpt-image-2' && resolution !== undefined) {
+        fields.push(['resolution', resolution.toLowerCase()])
+      }
+      fields.push(['response_format', 'url'])
+      for (const [fieldName, fieldValue] of fields) {
         chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"\r\n\r\n${fieldValue}\r\n`, 'utf8'))
       }
       const fs = await import('node:fs/promises')
@@ -140,10 +147,14 @@ export async function openAiImageUrl(options: OpenAiImageOptions): Promise<strin
         ...common,
       })
     } else {
+      const payload: Record<string, unknown> = { model, prompt, n: 1, size, response_format: 'url' }
+      if (model !== 'gpt-image-2' && resolution !== undefined) {
+        payload.resolution = resolution.toLowerCase()
+      }
       response = await fetch(`${baseURL.replace(/\/+$/, '')}/images/generations`, {
         method: 'POST',
         headers: { ...auth, 'Content-Type': 'application/json; charset=utf-8' },
-        body: JSON.stringify({ model, prompt, n: 1, size, response_format: 'url' }),
+        body: JSON.stringify(payload),
         ...common,
       })
     }

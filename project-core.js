@@ -249,10 +249,32 @@ function verifyMaterialsUnchanged(state, currentHashes) {
 	for (const [key, hash] of Object.entries(state.lockedMaterialHashes)) if (currentHashes[key] !== hash) return false;
 	return true;
 }
+/** 从 final 素材路径提取内部文件名/别名（codex-cs project_pipeline 移植）：
+*  stem 长度 ≥3 且非纯数字才视为可泄漏别名。 */
+function materialPromptAliases(state) {
+	const aliases = [];
+	for (const item of state.materials) {
+		const name = String(item.path ?? "").split(/[\\/]/).pop() ?? "";
+		const dot = name.lastIndexOf(".");
+		const stem = dot > 0 ? name.slice(0, dot) : name;
+		if (stem.length >= 3 && !/^\d+$/.test(stem)) aliases.push(stem);
+	}
+	return [...new Set(aliases)].sort((a, b) => a.toLowerCase() < b.toLowerCase() ? -1 : a.toLowerCase() > b.toLowerCase() ? 1 : 0);
+}
+/** 校验提示词内容（codex-cs project_pipeline validate_prompt_content 移植）：
+*  1) 不得泄漏内部素材文件名/别名（只能用 图片1、图片2 等有序标签）；
+*  2) 不得使用管道符分镜标题（须写自然标题如 "0.0-4.0 秒，第一段，参考图片2。"）。 */
+function validatePromptContent(state, content) {
+	const text = String(content ?? "");
+	const leaked = materialPromptAliases(state).filter((alias) => alias && text.includes(alias));
+	if (leaked.length > 0) throw new Error(`prompt leaks internal material filename or alias: ${leaked.slice(0, 5).join(", ")}; use only ordered labels such as 图片1, 图片2`);
+	if (/^\s*\d+(?:\.\d+)?\s*[–-]\s*\d+(?:\.\d+)?\s*秒\s*｜[^｜\n]+｜\s*图片\d+\s*$/gm.test(text)) throw new Error("prompt contains an invalid storyboard heading; write natural headings such as '0.0-4.0 秒，第一段，参考图片2。'");
+}
 /** Add a prompt version (skill V1 or DT revision). */
 function addPrompt(state, text, source) {
 	const clean = (text ?? "").trim();
 	if (clean.length === 0) throw new Error("prompt must not be empty");
+	validatePromptContent(state, clean);
 	if (state.prompts.length === 0 && source !== "skill_v1") throw new Error("首版提示词必须由 CS Skill 生成（source=skill_v1）；Codex_DT 只负责用户提出修改后的受约束修订");
 	if (state.prompts.length === 0 && source === "skill_v1" && state.status !== "final_images_ready" && state.status !== "authoring_prompt") throw new Error(`cannot author prompt V1 in status ${state.status}`);
 	if (state.prompts.length > 0 && source === "skill_v1") throw new Error("CS Skill 只生成首版提示词；后续版本必须使用 dt_revision");
@@ -279,6 +301,7 @@ function addPrompt(state, text, source) {
 function confirmPrompt(state) {
 	const current = state.prompts[state.prompts.length - 1];
 	if (!current) throw new Error("no prompt to confirm");
+	validatePromptContent(state, current.text);
 	const now = (/* @__PURE__ */ new Date()).toISOString();
 	let next = {
 		...state,
@@ -303,6 +326,7 @@ function buildSubmissionPayload(state, currentHashes) {
 	const prompt = state.prompts[state.prompts.length - 1];
 	if (!prompt?.confirmed) throw new Error("prompt is not confirmed");
 	if (prompt.hash !== state.lockedPromptHash) throw new Error("locked prompt hash mismatch");
+	validatePromptContent(state, prompt.text);
 	if (!verifyMaterialsUnchanged(state, currentHashes)) throw new Error("material hashes changed since confirmation; re-confirm before submission");
 	return {
 		project_id: state.projectId,

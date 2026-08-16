@@ -5,10 +5,14 @@
  * Contract:
  * - `image_ratio` is required (8 supported values); missing or unsupported
  *   fails as input_error before any provider is called (never inferred).
+ * - `image_resolution` is optional (1K/2K/4K); when omitted, Gemini routes
+ *   default to 2K, GPT image routes to 4K, and Dreamina to 1K.
  * - Adapters run strictly serially: comfly-gemini-flash-preview →
- *   comfly-gpt-image-2-all → comfly-gpt-image-2 → apimart-gpt-image-2 →
- *   google-gemini-image → dreamina-image. Fallback only for allowed
- *   failure classes; indeterminate submissions never retry.
+ *   comfly-gpt-image-2 → apimart-gpt-image-2 → google-gemini-image →
+ *   dreamina-image. Fallback only for allowed failure classes;
+ *   indeterminate submissions never retry.
+ * - `image_provider` (restricted enum) pins the run to exactly one route
+ *   with no cross-route fallback; unknown/disabled routes are input_error.
  * - Per-adapter budget 120 s, whole-task 300 s; cross-process capacity
  *   lease per adapter (default 6; dreamina shares `seedance-cli`).
  * - Reference images are EXIF-normalized and capped at 1920 px long edge
@@ -28,6 +32,8 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   SUPPORTED_RATIOS,
+  SUPPORTED_RESOLUTIONS,
+  SUPPORTED_IMAGE_PROVIDERS,
   runImageRouter,
   ratioToSize,
   type RouterConfig,
@@ -120,7 +126,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'generate_image',
       description:
-        '用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。图片按配置顺序严格串行尝试适配器（comfly-gemini-flash-preview → comfly-gpt-image-2-all → comfly-gpt-image-2 → apimart-gpt-image-2 → google-gemini-image → dreamina-image），单适配器最多 120 秒、整任务最多 300 秒；仅明确可回退的失败才进入下一适配器，提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。',
+        '用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。image_resolution 可选（1K/2K/4K）：缺省时 Gemini 线路默认 2K、GPT 线路默认 4K、Dreamina 默认 1K。image_provider 可选：仅当用户明确点名某条受支持线路时传入，指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前拒绝。图片按配置顺序严格串行尝试适配器（comfly-gemini-flash-preview → comfly-gpt-image-2 → apimart-gpt-image-2 → google-gemini-image → dreamina-image），单适配器最多 120 秒、整任务最多 300 秒；仅明确可回退的失败才进入下一适配器，提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。',
       parameters: {
         prompt: {
           type: 'string',
@@ -131,6 +137,16 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           type: 'string',
           enum: [...SUPPORTED_RATIOS],
           description: '必填：图片输出比例，仅支持 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16；不得从参考图/提示词推断。',
+        },
+        image_resolution: {
+          type: 'string',
+          enum: [...SUPPORTED_RESOLUTIONS],
+          description: '可选：图片输出分辨率（1K/2K/4K）。缺省时 GPT 图片线路默认 4K、Gemini 图片线路默认 2K、Dreamina 默认 1K。',
+        },
+        image_provider: {
+          type: 'string',
+          enum: [...SUPPORTED_IMAGE_PROVIDERS, 'comfly-gemini-lite'],
+          description: '可选：用户明确点名的图片线路。comfly-gemini-lite 是 comfly-gemini-flash-preview 的兼容别名。指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前以 input_error 拒绝。',
         },
         image: {
           type: 'array',
@@ -152,6 +168,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             model: { type: 'string', required: true },
             provider: { type: 'string', required: true },
             attempts: { type: 'number', required: true },
+            resolution: { type: 'string' },
             needs_review: { type: 'boolean' },
           },
         },
@@ -205,7 +222,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           credentials,
         }
 
-        const request = { prompt: redactPrompt(prompt), ratio, size, images: args.image ?? [] }
+        const request = { prompt: redactPrompt(prompt), ratio, size, resolution: args.image_resolution ?? null, imageProvider: args.image_provider ?? null, images: args.image ?? [] }
         await store.create('image', taskId, 'image', request)
         await store.transition('image', taskId, 'running')
 
@@ -214,6 +231,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             prompt,
             images: args.image ?? [],
             ratio,
+            resolution: args.image_resolution,
+            imageProvider: args.image_provider,
             config: routerConfig,
             workspaceRoot,
             privateRoot,
@@ -241,6 +260,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             model: outcome.model,
             provider: outcome.provider,
             attempts: outcome.attempts.length,
+            resolution: args.image_resolution ?? undefined,
             needs_review: false,
           }
         } catch (error: any) {

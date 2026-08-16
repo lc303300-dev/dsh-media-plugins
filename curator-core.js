@@ -5,7 +5,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 /**
 * Skill Curator domain (Codex_CS codex-cs-skill-curator port, all-JS):
 * scaffold standard business-Skill packages, per-slot count rules,
-* package validation (validator 1.1.0 semantics), intake receipts with
+* package validation (validator 1.2.0 semantics), intake receipts with
 * package-hash binding, and planned-count derivation from duration.
 * Pure domain — no DSH imports, no provider/model selection.
 *
@@ -314,7 +314,7 @@ function add(issues, code, message, path) {
 		path
 	});
 }
-/** Validate a skill package directory (validator 1.1.0 semantics). */
+/** Validate a skill package directory (validator 1.2.0 semantics). */
 function validatePackage(root, requireReceipt = false) {
 	const issues = [];
 	let stat;

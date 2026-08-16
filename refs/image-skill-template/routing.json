@@ -1,0 +1,1 @@
+{"schema_version":1,"skill_id":"{{skill_id}}","aliases":[],"user_intents":["CURATOR-REQUIRED"],"subjects":[],"styles":[],"narrative_patterns":[],"negative_intents":["CURATOR-REQUIRED"],"priority":50}

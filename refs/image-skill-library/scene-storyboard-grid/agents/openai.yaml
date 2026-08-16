@@ -1,0 +1,5 @@
+interface:
+  display_name: "场景一致性九宫格分镜"
+  short_description: "依据场景与可选设定图编写严格一致的 3×3 九宫格提示词"
+  default_prompt: "Use $scene-storyboard-grid to author a consistent 3×3 storyboard prompt from my scene reference."
+

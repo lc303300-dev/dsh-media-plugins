@@ -1,5 +1,6 @@
 import { r as validateContract, t as SkillRegistry } from "./registry-core.js";
-import { l as resolvePrivateRoot } from "./private-runtime.js";
+import { d as resolvePrivateRoot } from "./private-runtime.js";
+import { i as imageContractToRegistryContract } from "./image-skill-core.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { readFile, stat } from "node:fs/promises";
@@ -129,14 +130,15 @@ function apply(ctx, config) {
 							message: `contract.json not found in ${dir}`
 						};
 						const fm = parseFrontmatter(skillMd);
-						const contract = validateContract(contractRaw);
+						const isImageSkill = typeof contractRaw.skill_id === "string" && "input_mode" in contractRaw && !("name" in contractRaw);
+						const contract = isImageSkill ? imageContractToRegistryContract(contractRaw, routingRaw ?? {}, String(args.version ?? "1.0.0")) : validateContract(contractRaw);
 						if (!contract.description && fm.description) contract.description = fm.description;
 						if (!contract.taxonomy?.length && fm.name) contract.taxonomy = [fm.name];
 						const record = registry.ingest({
 							contract,
 							routing: routingRaw ?? {},
 							packageRoot: dir,
-							provenance: skillMd ? "SKILL.md+contract.json" : "contract.json"
+							provenance: isImageSkill ? "SKILL.md+contract.json (image)" : skillMd ? "SKILL.md+contract.json" : "contract.json"
 						}, { force: Boolean(args.force) });
 						return {
 							ok: true,

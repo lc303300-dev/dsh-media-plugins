@@ -13,6 +13,8 @@ import {
   assessSlotCounts,
   lockFinalMaterials,
   mediaExtensions,
+  materialPromptAliases,
+  validatePromptContent,
 } from '../src/shared/project-core.ts'
 
 test('state machine follows the guide sequence', () => {
@@ -149,4 +151,56 @@ test('lockFinalMaterials locks final hashes and marks slots locked', () => {
   assert.equal(next.materials.length, 1)
   assert.equal(next.lockedMaterialHashes['hero:D:/slots/hero/final/a.png'], 'h1')
   assert.equal(next.slotPlans[0].locked, true)
+})
+
+// ---- prompt content guards (codex-cs d741efa port) ----
+
+function namedMaterialsState() {
+  let p = createProject('leak')
+  p = transition(p, 'awaiting_video_settings')
+  p = transition(p, 'project_initialized')
+  p = transition(p, 'awaiting_image_stage_choice')
+  p = transition(p, 'collecting_user_materials')
+  const slots = [{ id: 'identity', min: 1, max: 2 }, { id: 'scenes', min: 1, max: 6 }]
+  p = addMaterial(p, 'identity', 'D:/materials/Logo_设定图.png', 'h-logo', slots)
+  p = addMaterial(p, 'scenes', 'D:/materials/Tu_001.png', 'h-1', slots)
+  p = addMaterial(p, 'scenes', 'D:/materials/Tu_002.png', 'h-2', slots)
+  p = transition(p, 'final_images_ready')
+  return p
+}
+
+test('prompt rejects internal material filename leaks', () => {
+  const p = namedMaterialsState()
+  assert.deepEqual(materialPromptAliases(p), ['Logo_设定图', 'Tu_001', 'Tu_002'])
+  assert.throws(() => addPrompt(p, '图片2是 Tu_001：第一段场景参考。', 'skill_v1'), /internal material filename or alias.*Tu_001/s)
+  assert.throws(() => addPrompt(p, 'Logo_设定图 作为主体。', 'skill_v1'), /internal material filename or alias.*Logo_设定图/s)
+  // 有序标签不构成泄漏
+  const ok = addPrompt(p, '图片2 是第一段场景参考，画面完全依据图片2建立空间。', 'skill_v1')
+  assert.equal(ok.prompts[0].version, 1)
+})
+
+test('prompt rejects pipe storyboard headings', () => {
+  const p = namedMaterialsState()
+  const bad = '0.0-4.0 秒｜第一段｜图片2\n完全依据图片2建立空间。'
+  assert.throws(() => addPrompt(p, bad, 'skill_v1'), /invalid storyboard heading/)
+  const good = addPrompt(p, '0.0-4.0 秒，第一段，参考图片2。依据图片2建立空间。', 'skill_v1')
+  assert.equal(good.prompts[0].version, 1)
+  assert.equal(good.prompts[0].confirmed, false)
+})
+
+test('validatePromptContent is re-checked at confirmation and payload build', () => {
+  let p = namedMaterialsState()
+  p = addPrompt(p, '完全依据图片2建立空间。', 'skill_v1')
+  // 绕过 addPrompt 直接篡改提示词为泄漏内容 → confirm/build 仍拒绝
+  const tampered = {
+    ...p,
+    prompts: [{ ...p.prompts[0], text: 'Tu_001 是第一段。', hash: p.prompts[0].hash }],
+  }
+  assert.throws(() => confirmPrompt(tampered), /internal material filename or alias/)
+  const confirmed = confirmPrompt(p)
+  const payloadState = {
+    ...confirmed,
+    prompts: [{ ...confirmed.prompts[0], text: '0.0-4.0 秒｜第一段｜图片2' }],
+  }
+  assert.throws(() => buildSubmissionPayload(payloadState, { 'identity:D:/materials/Logo_设定图.png': 'h-logo', 'scenes:D:/materials/Tu_001.png': 'h-1', 'scenes:D:/materials/Tu_002.png': 'h-2' }), /invalid storyboard heading/)
 })

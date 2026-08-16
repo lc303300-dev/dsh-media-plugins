@@ -14,6 +14,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { join, isAbsolute } from 'node:path'
 import { SkillRegistry, validateContract, type SkillContract, type SkillStatus } from './shared/registry-core.ts'
 import { resolvePrivateRoot } from './shared/private-runtime.ts'
+import { imageContractToRegistryContract } from './shared/image-skill-core.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-skill-registry'
@@ -126,11 +127,17 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               ])
               if (!contractRaw) return { ok: false, message: `contract.json not found in ${dir}` }
               const fm = parseFrontmatter(skillMd)
-              const contract = validateContract(contractRaw)
+              // Codex_IS governed image Skill packages use the image contract
+              // shape (skill_id + input_mode + references + workload + output)
+              // without a registry name/version — convert them automatically.
+              const isImageSkill = typeof contractRaw.skill_id === 'string' && 'input_mode' in contractRaw && !('name' in contractRaw)
+              const contract: SkillContract = isImageSkill
+                ? imageContractToRegistryContract(contractRaw, routingRaw ?? {}, String(args.version ?? '1.0.0'))
+                : validateContract(contractRaw)
               if (!contract.description && fm.description) contract.description = fm.description
               if (!contract.taxonomy?.length && fm.name) contract.taxonomy = [fm.name]
               const record = registry.ingest(
-                { contract, routing: routingRaw ?? {}, packageRoot: dir, provenance: skillMd ? 'SKILL.md+contract.json' : 'contract.json' },
+                { contract, routing: routingRaw ?? {}, packageRoot: dir, provenance: isImageSkill ? 'SKILL.md+contract.json (image)' : skillMd ? 'SKILL.md+contract.json' : 'contract.json' },
                 { force: Boolean(args.force) },
               )
               return { ok: true, message: `ingested ${record.name}@${record.version} as ${record.status}`, skill: record }

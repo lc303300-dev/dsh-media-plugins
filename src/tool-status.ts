@@ -176,12 +176,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
 
         const providers = {
-          'comfly-gemini-flash-preview': { ready: creds.COMFLY_API_KEY, reason: creds.COMFLY_API_KEY ? 'ok' : 'missing COMFLY_API_KEY' },
-          'comfly-gpt-image-2-all': { ready: creds.COMFLY_API_KEY, reason: creds.COMFLY_API_KEY ? 'ok' : 'missing COMFLY_API_KEY' },
-          'comfly-gpt-image-2': { ready: creds.COMFLY_API_KEY, reason: creds.COMFLY_API_KEY ? 'ok' : 'missing COMFLY_API_KEY' },
-          'apimart-gpt-image-2': { ready: creds.APIMART_API_KEY, reason: creds.APIMART_API_KEY ? 'ok' : 'missing APIMART_API_KEY (回退链第 4 级跳过)' },
-          'google-gemini-image': { ready: creds.GEMINI_API_KEY, reason: creds.GEMINI_API_KEY ? 'ok' : 'missing GEMINI_API_KEY (回退链第 5 级跳过)' },
-          'dreamina-image': { ready: dreaminaBinary && dreaminaLogin, reason: dreaminaBinary && dreaminaLogin ? 'ok' : 'dreamina 未就绪（共享 seedance-cli 容量）' },
+          'comfly-gemini-flash-preview': { ready: creds.COMFLY_API_KEY, reason: creds.COMFLY_API_KEY ? 'ok' : 'missing COMFLY_API_KEY', model: 'gemini-3.1-flash-image-preview (1K/2K/4K 分辨率路由)', default_resolution: '2K' },
+          'comfly-gpt-image-2': { ready: creds.COMFLY_API_KEY, reason: creds.COMFLY_API_KEY ? 'ok' : 'missing COMFLY_API_KEY', model: 'gpt-image-2', default_resolution: '4K' },
+          'apimart-gpt-image-2': { ready: creds.APIMART_API_KEY, reason: creds.APIMART_API_KEY ? 'ok' : 'missing APIMART_API_KEY (回退链第 3 级跳过)', model: 'gpt-image-2', default_resolution: '4K' },
+          'google-gemini-image': { ready: creds.GEMINI_API_KEY, reason: creds.GEMINI_API_KEY ? 'ok' : 'missing GEMINI_API_KEY (回退链第 4 级跳过)', model: 'gemini-3.1-flash-image', default_resolution: '2K' },
+          'dreamina-image': { ready: dreaminaBinary && dreaminaLogin, reason: dreaminaBinary && dreaminaLogin ? 'ok' : 'dreamina 未就绪（共享 seedance-cli 容量）', model: 'image 4.0', default_resolution: '1K' },
           'dreamina-video': { ready: dreaminaBinary && dreaminaLogin, reason: dreaminaBinary && dreaminaLogin ? 'ok' : 'dreamina 未就绪' },
         }
 

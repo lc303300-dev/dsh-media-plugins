@@ -1,0 +1,4 @@
+interface:
+  display_name: "{{display_name}}"
+  short_description: "CURATOR-REQUIRED: 25-64 characters"
+  default_prompt: "Use ${{skill_id}} to complete this image business task."

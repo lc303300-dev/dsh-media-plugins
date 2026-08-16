@@ -6,7 +6,13 @@
  * - per-adapter budget default 120 s, whole-task default 300 s;
  * - fallback only for FALLBACK_ALLOWED classes; indeterminate stops with needs_review;
  * - default concurrency 6 per adapter; `seedance-cli` capacity shared by
- *   dreamina image + video.
+ *   dreamina image + video;
+ * - `image_ratio` is required and never inferred; `image_resolution`
+ *   (1K/2K/4K) is optional with provider-specific defaults (Gemini routes
+ *   default 2K, GPT routes default 4K, Dreamina defaults 1K);
+ * - `image_provider` is a user-explicit restricted route: only that adapter
+ *   runs, there is no cross-route fallback, and unknown/disabled routes are
+ *   rejected as input_error before any paid call.
  *
  * @module dsh-media-plugins/shared/adapters
  */
@@ -18,14 +24,34 @@ import { join } from 'node:path'
 import sharp from 'sharp'
 import { MediaError, mediaErrors, FALLBACK_ALLOWED, type AttemptRecord } from './failure.ts'
 import { openAiImageUrl, downloadImageTo, HttpStatusError, hasImageSignature, extensionFor } from './media-client.ts'
-import { acquireSlot, appendSafeLog, ensureDir, newTaskId, sha256Text } from './private-runtime.ts'
+import {
+  acquireSlot,
+  appendSafeLog,
+  ensureDir,
+  isCircuitOpen,
+  newTaskId,
+  recordProviderOutcome,
+  sha256Text,
+} from './private-runtime.ts'
 
 const execFileAsync = promisify(execFile)
 
 /** The 8 supported image ratios (contract: never infer, never extend). */
 export const SUPPORTED_RATIOS: readonly string[] = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'] as const
 
-/** 1K-only pixel allowlist for the supported ratios. */
+/** The 3 supported image resolution classes (contract). */
+export const SUPPORTED_RESOLUTIONS: readonly string[] = ['1K', '2K', '4K'] as const
+
+/** Public image route ids accepted by `image_provider` (DSH canonical ids). */
+export const SUPPORTED_IMAGE_PROVIDERS: readonly string[] = [
+  'comfly-gemini-flash-preview',
+  'comfly-gpt-image-2',
+  'apimart-gpt-image-2',
+  'google-gemini-image',
+  'dreamina-image',
+] as const
+
+/** 1K-only pixel allowlist for the supported ratios (identical to Codex GEMINI_LITE_1K_SIZES). */
 export const RATIO_SIZES: Readonly<Record<string, string>> = {
   '21:9': '1584x672',
   '16:9': '1376x768',
@@ -37,6 +63,47 @@ export const RATIO_SIZES: Readonly<Record<string, string>> = {
   '9:16': '768x1376',
 }
 
+/** Comfly Gemini models per resolution class (contract: models_by_resolution). */
+export const GEMINI_MODELS_BY_RESOLUTION: Readonly<Record<string, string>> = {
+  '1K': 'gemini-3.1-flash-image-preview',
+  '2K': 'gemini-3.1-flash-image-preview-2k',
+  '4K': 'gemini-3.1-flash-image-preview-4k',
+}
+
+/** GPT Image 2 concrete pixel sizes per ratio x resolution (contract: GPT_IMAGE_2_SIZES). */
+export const GPT_IMAGE_2_SIZES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  '1K': {
+    '21:9': '1280x544',
+    '16:9': '1280x720',
+    '3:2': '1200x800',
+    '4:3': '1152x864',
+    '1:1': '1024x1024',
+    '3:4': '864x1152',
+    '2:3': '800x1200',
+    '9:16': '720x1280',
+  },
+  '2K': {
+    '21:9': '2048x880',
+    '16:9': '2048x1152',
+    '3:2': '1920x1280',
+    '4:3': '1920x1440',
+    '1:1': '2048x2048',
+    '3:4': '1440x1920',
+    '2:3': '1280x1920',
+    '9:16': '1152x2048',
+  },
+  '4K': {
+    '21:9': '3840x1648',
+    '16:9': '3840x2160',
+    '3:2': '3520x2352',
+    '4:3': '3312x2480',
+    '1:1': '2880x2880',
+    '3:4': '2480x3312',
+    '2:3': '2352x3520',
+    '9:16': '2160x3840',
+  },
+}
+
 /** Resolve an explicit ratio to a pixel size; throws input_error otherwise. */
 export function ratioToSize(ratio: string): string {
   const value = (ratio ?? '').trim()
@@ -45,6 +112,42 @@ export function ratioToSize(ratio: string): string {
   throw mediaErrors.input(
     `unsupported image_ratio "${value}"; supported values: ${SUPPORTED_RATIOS.join(', ')}`,
   )
+}
+
+/** Validate a user-supplied resolution class; throws input_error for anything else. */
+export function assertSupportedResolution(resolution: string | undefined): void {
+  if (resolution !== undefined && !SUPPORTED_RESOLUTIONS.includes(resolution)) {
+    throw mediaErrors.input(
+      `Unsupported image_resolution "${resolution}"; supported values: ${SUPPORTED_RESOLUTIONS.join(', ')}`,
+    )
+  }
+}
+
+/** Gemini pixel size: scale the 1K ratio allowlist by the resolution class. */
+export function geminiSizeFor(ratio: string, resolution: string): string {
+  const scale = { '1K': 1, '2K': 2, '4K': 4 }[resolution]
+  if (scale === undefined) {
+    throw mediaErrors.input(`Unsupported image_resolution "${resolution}"; supported values: ${SUPPORTED_RESOLUTIONS.join(', ')}`)
+  }
+  const base = RATIO_SIZES[ratio]
+  if (base === undefined) {
+    throw mediaErrors.input(`Unsupported image_ratio "${ratio}"; supported values: ${SUPPORTED_RATIOS.join(', ')}`)
+  }
+  const [width, height] = base.split('x').map(Number)
+  return `${width * scale}x${height * scale}`
+}
+
+/** GPT Image 2 pixel size: table lookup per ratio x resolution. */
+export function gptImage2SizeFor(ratio: string, resolution: string): string {
+  const sizes = GPT_IMAGE_2_SIZES[resolution]
+  if (sizes === undefined) {
+    throw mediaErrors.input(`Unsupported image_resolution "${resolution}"; supported values: ${SUPPORTED_RESOLUTIONS.join(', ')}`)
+  }
+  const px = sizes[ratio]
+  if (px === undefined) {
+    throw mediaErrors.input(`Unsupported image_ratio "${ratio}" for ${resolution} output; supported values: ${SUPPORTED_RATIOS.join(', ')}`)
+  }
+  return px
 }
 
 export interface RouterConfig {
@@ -69,7 +172,12 @@ export interface AdapterInput {
   prompt: string
   /** Normalized provider inputs (EXIF + resized, staged in the private runtime). */
   images: string[]
+  /** Concrete pixel size the adapter must submit (resolved per route+resolution). */
   size: string
+  /** Ratio token (used by adapters that take a ratio instead of pixels). */
+  ratio: string
+  /** Validated user-selected resolution class; undefined lets the adapter apply its route default. */
+  resolution?: string
   privateRoot: string
   proxyUrl?: string
   signal?: AbortSignal
@@ -82,7 +190,8 @@ export interface ImageAdapter {
   model: string
   capacityKey: string
   checkReady(): Promise<{ ready: boolean; reason?: string }>
-  execute(input: AdapterInput): Promise<{ outputPath: string }>
+  /** Returns the staged output path plus the model actually used (resolution routing). */
+  execute(input: AdapterInput): Promise<{ outputPath: string; model?: string }>
 }
 
 /** Classify an HTTP status into the failure taxonomy. */
@@ -114,8 +223,21 @@ function credentials(cfg: RouterConfig, env: string): string | undefined {
 /* Adapters                                                            */
 /* ------------------------------------------------------------------ */
 
-/** Comfly OpenAI-compatible adapter (one fixed model, one request). */
-function comflyAdapter(id: string, model: string, cfg: RouterConfig): ImageAdapter {
+/**
+ * Comfly OpenAI-compatible adapter (one fixed model, one request).
+ *
+ * `options.geminiProfile` switches to the Gemini contract: the model is
+ * selected per resolution class (1K/2K/4K) and the body carries the
+ * provider-specific `resolution` field. GPT Image 2 receives a concrete
+ * pixel `size` and never sends `resolution`.
+ */
+function comflyAdapter(
+  id: string,
+  model: string,
+  cfg: RouterConfig,
+  options: { geminiProfile?: boolean } = {},
+): ImageAdapter {
+  const defaultResolution = options.geminiProfile ? '2K' : '4K'
   return {
     id,
     model,
@@ -126,12 +248,16 @@ function comflyAdapter(id: string, model: string, cfg: RouterConfig): ImageAdapt
     async execute(input) {
       const apiKey = credentials(cfg, cfg.comflyApiKeyEnv)
       if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.comflyApiKeyEnv}`)
+      const resolution = input.resolution ?? defaultResolution
+      const effectiveModel = options.geminiProfile ? (GEMINI_MODELS_BY_RESOLUTION[resolution] ?? model) : model
+      const size = options.geminiProfile ? geminiSizeFor(input.ratio, resolution) : gptImage2SizeFor(input.ratio, resolution)
       const url = await openAiImageUrl({
         baseURL: cfg.comflyBaseURL,
         apiKey,
-        model,
+        model: effectiveModel,
         prompt: input.prompt,
-        size: input.size,
+        size,
+        resolution,
         images: input.images,
         proxyUrl: cfg.proxyUrl,
         signal: input.signal,
@@ -143,12 +269,12 @@ function comflyAdapter(id: string, model: string, cfg: RouterConfig): ImageAdapt
         signal: input.signal,
         timeoutMs: Math.min(input.budgetMs, 120000),
       })
-      return { outputPath: path }
+      return { outputPath: path, model: effectiveModel }
     },
   }
 }
 
-/** APIMart OpenAI-compatible adapter (references as base64 data URIs). */
+/** APIMart OpenAI-compatible adapter (references as base64 data URIs; GPT Image 2 sizes). */
 function apimartAdapter(cfg: RouterConfig): ImageAdapter {
   const id = 'apimart-gpt-image-2'
   const model = 'gpt-image-2'
@@ -162,9 +288,11 @@ function apimartAdapter(cfg: RouterConfig): ImageAdapter {
     async execute(input) {
       const apiKey = credentials(cfg, cfg.apimartApiKeyEnv)
       if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.apimartApiKeyEnv}`)
+      const resolution = input.resolution ?? '4K'
+      const size = gptImage2SizeFor(input.ratio, resolution)
       const base = cfg.apimartBaseURL.replace(/\/+$/, '')
       const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json; charset=utf-8' }
-      const body: Record<string, unknown> = { model, prompt: input.prompt, n: 1, size: input.size, response_format: 'url' }
+      const body: Record<string, unknown> = { model, prompt: input.prompt, n: 1, size, response_format: 'url' }
       if (input.images.length > 0) {
         const image = input.images[0]
         const data = await readFile(image)
@@ -208,6 +336,7 @@ function geminiAdapter(cfg: RouterConfig): ImageAdapter {
     async execute(input) {
       const apiKey = credentials(cfg, cfg.geminiApiKeyEnv)
       if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.geminiApiKeyEnv}`)
+      const resolution = input.resolution ?? '2K'
       const ratioKey = Object.entries(RATIO_SIZES).find(([, px]) => px === input.size)?.[0] ?? '16:9'
       const inputParts: Record<string, unknown>[] = [{ type: 'text', text: input.prompt }]
       for (const path of input.images) {
@@ -218,7 +347,7 @@ function geminiAdapter(cfg: RouterConfig): ImageAdapter {
       const body = {
         model,
         input: inputParts,
-        response_format: { type: 'image', mime_type: 'image/jpeg', aspect_ratio: ratioKey, image_size: '1K' },
+        response_format: { type: 'image', mime_type: 'image/jpeg', aspect_ratio: ratioKey, image_size: resolution },
       }
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), input.budgetMs)
@@ -295,9 +424,11 @@ function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
     },
     async execute(input) {
       const outDir = await ensureDir(join(input.privateRoot, 'jobs', '_router', 'outputs'))
-      const args = input.images.length > 0
+      const resolution = (input.resolution ?? '1K').toLowerCase()
+      const base = input.images.length > 0
         ? ['image2image', `--prompt=${input.prompt}`, `--model_version=${model}`, ...input.images.map((p) => `--image=${p}`)]
         : ['text2image', `--prompt=${input.prompt}`, `--model_version=${model}`]
+      const args = [...base, `--ratio=${input.ratio}`, `--resolution_type=${resolution}`]
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), input.budgetMs)
       try {
@@ -324,8 +455,7 @@ export const ADAPTER_ALIASES: Readonly<Record<string, string>> = {
 /** Build the default adapter chain in contract priority order. */
 export function defaultAdapters(cfg: RouterConfig): ImageAdapter[] {
   const chain: ImageAdapter[] = [
-    comflyAdapter('comfly-gemini-flash-preview', 'gemini-3.1-flash-image-preview', cfg),
-    comflyAdapter('comfly-gpt-image-2-all', 'gpt-image-2-all', cfg),
+    comflyAdapter('comfly-gemini-flash-preview', GEMINI_MODELS_BY_RESOLUTION['1K'], cfg, { geminiProfile: true }),
     comflyAdapter('comfly-gpt-image-2', 'gpt-image-2', cfg),
     apimartAdapter(cfg),
     geminiAdapter(cfg),
@@ -334,6 +464,25 @@ export function defaultAdapters(cfg: RouterConfig): ImageAdapter[] {
   if (!cfg.enabled || cfg.enabled.length === 0) return chain
   const enabledIds = new Set(cfg.enabled.map((id) => ADAPTER_ALIASES[id] ?? id))
   return chain.filter((a) => enabledIds.has(a.id))
+}
+
+/**
+ * Resolve a user-explicit `image_provider` to exactly one adapter.
+ * Unknown routes and routes disabled by config fail as input_error before
+ * any provider is called. The explicit route never falls back elsewhere.
+ */
+function resolveExplicitAdapter(requested: string, fullChain: ImageAdapter[], enabledChain: ImageAdapter[]): ImageAdapter {
+  const id = ADAPTER_ALIASES[requested] ?? requested
+  const adapter = fullChain.find((a) => a.id === id)
+  if (adapter === undefined) {
+    throw mediaErrors.input(
+      `Unsupported image_provider "${requested}"; supported routes: ${SUPPORTED_IMAGE_PROVIDERS.join(', ')}`,
+    )
+  }
+  if (!enabledChain.some((a) => a.id === id)) {
+    throw mediaErrors.input(`Requested image_provider is disabled: ${id}`)
+  }
+  return adapter
 }
 
 export interface RouterOutcome {
@@ -348,6 +497,10 @@ export interface RouterOptions {
   /** Raw local reference paths; the router normalizes them first. */
   images: string[]
   ratio: string
+  /** Optional user-selected resolution class (1K/2K/4K); adapters apply their route default otherwise. */
+  resolution?: string
+  /** Optional user-explicit route id; only that adapter runs without fallback. */
+  imageProvider?: string
   config: RouterConfig
   workspaceRoot: string
   privateRoot: string
@@ -385,14 +538,20 @@ async function normalizeInputs(images: string[], privateRoot: string, taskId: st
 }
 
 /**
- * Run the serial image router: normalize inputs, then attempt adapters in
- * priority order with per-adapter budget = min(120s, remaining) and a
- * 300 s whole-task deadline, honoring per-capacity slot leases.
+ * Run the serial image router: validate ratio/resolution/provider, normalize
+ * inputs, then attempt adapters in priority order with per-adapter budget
+ * = min(120s, remaining) and a 300 s whole-task deadline, honoring
+ * per-capacity slot leases. An explicit `imageProvider` restricts the run to
+ * that single adapter with no cross-route fallback.
  */
 export async function runImageRouter(options: RouterOptions): Promise<RouterOutcome> {
   const { prompt, images, ratio, config, privateRoot, signal, taskId = newTaskId() } = options
-  const size = ratioToSize(ratio)
-  const adapters = options.adapters ?? defaultAdapters(config)
+  ratioToSize(ratio) // throws input_error for missing/unsupported
+  assertSupportedResolution(options.resolution)
+  const fullChain = options.adapters ?? defaultAdapters({ ...config, enabled: [] })
+  const enabledChain = options.adapters ?? defaultAdapters(config)
+  const explicit = options.imageProvider ? resolveExplicitAdapter(options.imageProvider, fullChain, enabledChain) : undefined
+  const adapters = explicit ? [explicit] : enabledChain
   const taskDeadline = Date.now() + config.taskTimeoutMs
   const attempts: AttemptRecord[] = []
   const startedAt = Date.now()
@@ -407,9 +566,23 @@ export async function runImageRouter(options: RouterOptions): Promise<RouterOutc
     const adapterBudget = Math.min(config.providerTimeoutMs, remaining)
     const attemptStart = Date.now()
 
+    // circuit breaker: a tripped adapter skips the whole attempt during cooldown
+    const circuit = await isCircuitOpen(privateRoot, adapter.id)
+    if (circuit.open) {
+      if (explicit) {
+        throw mediaErrors.providerTimeout(`requested image_provider ${adapter.id} is in circuit cooldown`)
+      }
+      attempts.push({ adapter: adapter.id, model: adapter.model, status: 'skipped', failureClass: 'circuit_open', reason: 'circuit open: cooling down after repeated failures' })
+      await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_circuit_open', adapter: adapter.id })
+      continue
+    }
+
     // readiness gate: missing credentials / unusable binary skip without trying
     const ready = await adapter.checkReady()
     if (!ready.ready) {
+      if (explicit) {
+        throw mediaErrors.auth(`requested image_provider ${adapter.id} is not ready: ${ready.reason ?? 'unknown'}`)
+      }
       attempts.push({ adapter: adapter.id, model: adapter.model, status: 'skipped', failureClass: 'auth_unavailable', reason: ready.reason ?? 'not ready' })
       await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_skipped', adapter: adapter.id, reason: ready.reason })
       continue
@@ -424,6 +597,9 @@ export async function runImageRouter(options: RouterOptions): Promise<RouterOutc
       })
     } catch (error: any) {
       const reason = error?.message ?? 'slot busy'
+      if (explicit) {
+        throw mediaErrors.providerTimeout(`requested image_provider ${adapter.id} slot busy: ${reason}`)
+      }
       attempts.push({ adapter: adapter.id, model: adapter.model, status: 'timeout', failureClass: 'provider_timeout', durationMs: Date.now() - attemptStart, reason })
       continue
     }
@@ -432,15 +608,19 @@ export async function runImageRouter(options: RouterOptions): Promise<RouterOutc
       const result = await adapter.execute({
         prompt,
         images: normalized,
-        size,
+        size: ratioToSize(ratio),
+        ratio,
+        resolution: options.resolution,
         privateRoot,
         proxyUrl: config.proxyUrl,
         signal,
         budgetMs: adapterBudget,
       })
-      attempts.push({ adapter: adapter.id, model: adapter.model, status: 'success', durationMs: Date.now() - attemptStart })
-      await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_success', adapter: adapter.id, model: adapter.model, durationMs: Date.now() - attemptStart })
-      return { outputPath: result.outputPath, provider: adapter.id, model: adapter.model, attempts }
+      const model = result.model ?? adapter.model
+      await recordProviderOutcome(privateRoot, adapter.id, true)
+      attempts.push({ adapter: adapter.id, model, status: 'success', durationMs: Date.now() - attemptStart })
+      await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_success', adapter: adapter.id, model, durationMs: Date.now() - attemptStart })
+      return { outputPath: result.outputPath, provider: adapter.id, model, attempts }
     } catch (error: any) {
       let cls = 'definite_provider_failure'
       if (error instanceof MediaError) cls = error.cls
@@ -448,9 +628,11 @@ export async function runImageRouter(options: RouterOptions): Promise<RouterOutc
         const classified = classifyHttp(error.status)
         cls = classified.cls
       }
+      await recordProviderOutcome(privateRoot, adapter.id, false)
       const durationMs = Date.now() - attemptStart
       attempts.push({ adapter: adapter.id, model: adapter.model, status: cls === 'provider_timeout' ? 'timeout' : 'failed', failureClass: cls, durationMs, reason: String(error?.message ?? error).slice(0, 300) })
       await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_failed', adapter: adapter.id, failureClass: cls, durationMs })
+      if (explicit) throw error // explicit routes never fall back
       if (!FALLBACK_ALLOWED.has(cls as any)) throw error
       // allowed: continue to the next adapter
     } finally {

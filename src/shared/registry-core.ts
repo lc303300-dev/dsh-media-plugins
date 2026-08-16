@@ -33,6 +33,13 @@ export interface SkillContract {
     duration_min?: number
     duration_max?: number
   }
+  image?: {
+    input_mode?: 'text_only' | 'reference_conditioned'
+    supported_ratios?: string[]
+    scene_count?: { min: number; max: number | null }
+    candidate_count_per_scene?: { min: number; max: number | null }
+    batch_allowed?: boolean
+  }
   slots?: SlotContract[]
   prompt?: {
     lang?: string
@@ -141,6 +148,9 @@ export function materialGuidance(contractJson: string): Array<Record<string, unk
 /** Supported video ratios (project pipeline contract). */
 export const VIDEO_RATIOS = ['1:1', '3:4', '16:9', '4:3', '9:16', '21:9'] as const
 
+/** Supported image ratios (Codex_IS image Skill output contract). */
+export const IMAGE_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'] as const
+
 /** Structural validation of a Skill contract; throws on violation. */
 export function validateContract(raw: unknown): SkillContract {
   const c = (raw ?? {}) as SkillContract
@@ -154,6 +164,23 @@ export function validateContract(raw: unknown): SkillContract {
         if (!VIDEO_RATIOS.includes(r as any)) throw new Error(`contract.video.ratios contains unsupported ratio: ${r}`)
       }
     }
+  }
+  if (c.image !== undefined) {
+    if (c.image.input_mode !== undefined && c.image.input_mode !== 'text_only' && c.image.input_mode !== 'reference_conditioned') throw new Error('contract.image.input_mode must be text_only or reference_conditioned')
+    if (Array.isArray(c.image.supported_ratios)) {
+      for (const r of c.image.supported_ratios) {
+        if (!IMAGE_RATIOS.includes(r as any)) throw new Error(`contract.image.supported_ratios contains unsupported ratio: ${r}`)
+      }
+    }
+    for (const key of ['scene_count', 'candidate_count_per_scene'] as const) {
+      const range = c.image[key]
+      if (range !== undefined) {
+        if (!Number.isInteger(range.min) || range.min < 1) throw new Error(`contract.image.${key}.min must be an integer >= 1`)
+        if (range.max !== null && range.max !== undefined && (!Number.isInteger(range.max) || range.max < 1)) throw new Error(`contract.image.${key}.max must be null or an integer >= 1`)
+        if (range.max !== null && range.max !== undefined && range.min > range.max) throw new Error(`contract.image.${key}: min > max`)
+      }
+    }
+    if (c.image.batch_allowed !== undefined && typeof c.image.batch_allowed !== 'boolean') throw new Error('contract.image.batch_allowed must be boolean')
   }
   if (c.slots !== undefined) {
     if (!Array.isArray(c.slots)) throw new Error('contract.slots must be an array')
@@ -174,6 +201,7 @@ export function validateContract(raw: unknown): SkillContract {
     description: typeof c.description === 'string' ? c.description : '',
     taxonomy: Array.isArray(c.taxonomy) ? c.taxonomy.map(String) : [],
     video: c.video,
+    image: c.image,
     slots: c.slots,
     prompt: c.prompt,
   }

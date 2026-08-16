@@ -1,5 +1,5 @@
 import { n as MediaError, r as mediaErrors, t as FALLBACK_ALLOWED } from "./failure.js";
-import { a as ensureDir, n as acquireSlot, o as newTaskId, r as appendSafeLog } from "./private-runtime.js";
+import { a as ensureDir, l as recordProviderOutcome, n as acquireSlot, o as isCircuitOpen, r as appendSafeLog, s as newTaskId } from "./private-runtime.js";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -70,7 +70,7 @@ function extractImageUrl(payload) {
 * multipart) and return the remote image URL.
 */
 async function openAiImageUrl(options) {
-	const { baseURL, apiKey, model, prompt, size, images = [], proxyUrl, signal, timeoutMs = 12e4 } = options;
+	const { baseURL, apiKey, model, prompt, size, resolution, images = [], proxyUrl, signal, timeoutMs = 12e4 } = options;
 	const dispatcher = proxyDispatcher(proxyUrl);
 	const auth = {
 		Authorization: `Bearer ${apiKey}`,
@@ -94,13 +94,15 @@ async function openAiImageUrl(options) {
 		if (images.length > 0) {
 			const boundary = `----DshMedia${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
 			const chunks = [];
-			for (const [fieldName, fieldValue] of [
+			const fields = [
 				["model", model],
 				["prompt", prompt],
 				["n", "1"],
-				["size", size],
-				["response_format", "url"]
-			]) chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"\r\n\r\n${fieldValue}\r\n`, "utf8"));
+				["size", size]
+			];
+			if (model !== "gpt-image-2" && resolution !== void 0) fields.push(["resolution", resolution.toLowerCase()]);
+			fields.push(["response_format", "url"]);
+			for (const [fieldName, fieldValue] of fields) chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"\r\n\r\n${fieldValue}\r\n`, "utf8"));
 			const fs = await import("node:fs/promises");
 			const mimeMap = {
 				".png": "image/png",
@@ -127,21 +129,25 @@ async function openAiImageUrl(options) {
 				body: Buffer.concat(chunks),
 				...common
 			});
-		} else response = await fetch$1(`${baseURL.replace(/\/+$/, "")}/images/generations`, {
-			method: "POST",
-			headers: {
-				...auth,
-				"Content-Type": "application/json; charset=utf-8"
-			},
-			body: JSON.stringify({
+		} else {
+			const payload = {
 				model,
 				prompt,
 				n: 1,
 				size,
 				response_format: "url"
-			}),
-			...common
-		});
+			};
+			if (model !== "gpt-image-2" && resolution !== void 0) payload.resolution = resolution.toLowerCase();
+			response = await fetch$1(`${baseURL.replace(/\/+$/, "")}/images/generations`, {
+				method: "POST",
+				headers: {
+					...auth,
+					"Content-Type": "application/json; charset=utf-8"
+				},
+				body: JSON.stringify(payload),
+				...common
+			});
+		}
 		if (!response.ok) throw new HttpStatusError(response.status, `image request failed with HTTP ${response.status}`);
 		return extractImageUrl(await response.json());
 	} catch (error) {
@@ -200,7 +206,13 @@ async function downloadImageTo(url, destDir, options = {}) {
 * - per-adapter budget default 120 s, whole-task default 300 s;
 * - fallback only for FALLBACK_ALLOWED classes; indeterminate stops with needs_review;
 * - default concurrency 6 per adapter; `seedance-cli` capacity shared by
-*   dreamina image + video.
+*   dreamina image + video;
+* - `image_ratio` is required and never inferred; `image_resolution`
+*   (1K/2K/4K) is optional with provider-specific defaults (Gemini routes
+*   default 2K, GPT routes default 4K, Dreamina defaults 1K);
+* - `image_provider` is a user-explicit restricted route: only that adapter
+*   runs, there is no cross-route fallback, and unknown/disabled routes are
+*   rejected as input_error before any paid call.
 *
 * @module dsh-media-plugins/shared/adapters
 */
@@ -216,7 +228,21 @@ const SUPPORTED_RATIOS = [
 	"2:3",
 	"9:16"
 ];
-/** 1K-only pixel allowlist for the supported ratios. */
+/** The 3 supported image resolution classes (contract). */
+const SUPPORTED_RESOLUTIONS = [
+	"1K",
+	"2K",
+	"4K"
+];
+/** Public image route ids accepted by `image_provider` (DSH canonical ids). */
+const SUPPORTED_IMAGE_PROVIDERS = [
+	"comfly-gemini-flash-preview",
+	"comfly-gpt-image-2",
+	"apimart-gpt-image-2",
+	"google-gemini-image",
+	"dreamina-image"
+];
+/** 1K-only pixel allowlist for the supported ratios (identical to Codex GEMINI_LITE_1K_SIZES). */
 const RATIO_SIZES = {
 	"21:9": "1584x672",
 	"16:9": "1376x768",
@@ -227,12 +253,76 @@ const RATIO_SIZES = {
 	"2:3": "848x1264",
 	"9:16": "768x1376"
 };
+/** Comfly Gemini models per resolution class (contract: models_by_resolution). */
+const GEMINI_MODELS_BY_RESOLUTION = {
+	"1K": "gemini-3.1-flash-image-preview",
+	"2K": "gemini-3.1-flash-image-preview-2k",
+	"4K": "gemini-3.1-flash-image-preview-4k"
+};
+/** GPT Image 2 concrete pixel sizes per ratio x resolution (contract: GPT_IMAGE_2_SIZES). */
+const GPT_IMAGE_2_SIZES = {
+	"1K": {
+		"21:9": "1280x544",
+		"16:9": "1280x720",
+		"3:2": "1200x800",
+		"4:3": "1152x864",
+		"1:1": "1024x1024",
+		"3:4": "864x1152",
+		"2:3": "800x1200",
+		"9:16": "720x1280"
+	},
+	"2K": {
+		"21:9": "2048x880",
+		"16:9": "2048x1152",
+		"3:2": "1920x1280",
+		"4:3": "1920x1440",
+		"1:1": "2048x2048",
+		"3:4": "1440x1920",
+		"2:3": "1280x1920",
+		"9:16": "1152x2048"
+	},
+	"4K": {
+		"21:9": "3840x1648",
+		"16:9": "3840x2160",
+		"3:2": "3520x2352",
+		"4:3": "3312x2480",
+		"1:1": "2880x2880",
+		"3:4": "2480x3312",
+		"2:3": "2352x3520",
+		"9:16": "2160x3840"
+	}
+};
 /** Resolve an explicit ratio to a pixel size; throws input_error otherwise. */
 function ratioToSize(ratio) {
 	const value = (ratio ?? "").trim();
 	const mapped = RATIO_SIZES[value];
 	if (mapped !== void 0) return mapped;
 	throw mediaErrors.input(`unsupported image_ratio "${value}"; supported values: ${SUPPORTED_RATIOS.join(", ")}`);
+}
+/** Validate a user-supplied resolution class; throws input_error for anything else. */
+function assertSupportedResolution(resolution) {
+	if (resolution !== void 0 && !SUPPORTED_RESOLUTIONS.includes(resolution)) throw mediaErrors.input(`Unsupported image_resolution "${resolution}"; supported values: ${SUPPORTED_RESOLUTIONS.join(", ")}`);
+}
+/** Gemini pixel size: scale the 1K ratio allowlist by the resolution class. */
+function geminiSizeFor(ratio, resolution) {
+	const scale = {
+		"1K": 1,
+		"2K": 2,
+		"4K": 4
+	}[resolution];
+	if (scale === void 0) throw mediaErrors.input(`Unsupported image_resolution "${resolution}"; supported values: ${SUPPORTED_RESOLUTIONS.join(", ")}`);
+	const base = RATIO_SIZES[ratio];
+	if (base === void 0) throw mediaErrors.input(`Unsupported image_ratio "${ratio}"; supported values: ${SUPPORTED_RATIOS.join(", ")}`);
+	const [width, height] = base.split("x").map(Number);
+	return `${width * scale}x${height * scale}`;
+}
+/** GPT Image 2 pixel size: table lookup per ratio x resolution. */
+function gptImage2SizeFor(ratio, resolution) {
+	const sizes = GPT_IMAGE_2_SIZES[resolution];
+	if (sizes === void 0) throw mediaErrors.input(`Unsupported image_resolution "${resolution}"; supported values: ${SUPPORTED_RESOLUTIONS.join(", ")}`);
+	const px = sizes[ratio];
+	if (px === void 0) throw mediaErrors.input(`Unsupported image_ratio "${ratio}" for ${resolution} output; supported values: ${SUPPORTED_RATIOS.join(", ")}`);
+	return px;
 }
 /** Classify an HTTP status into the failure taxonomy. */
 function classifyHttp(status) {
@@ -254,8 +344,16 @@ function credentials(cfg, env) {
 	if (typeof injected === "string" && injected.length > 0) return injected;
 	return process.env[env] || void 0;
 }
-/** Comfly OpenAI-compatible adapter (one fixed model, one request). */
-function comflyAdapter(id, model, cfg) {
+/**
+* Comfly OpenAI-compatible adapter (one fixed model, one request).
+*
+* `options.geminiProfile` switches to the Gemini contract: the model is
+* selected per resolution class (1K/2K/4K) and the body carries the
+* provider-specific `resolution` field. GPT Image 2 receives a concrete
+* pixel `size` and never sends `resolution`.
+*/
+function comflyAdapter(id, model, cfg, options = {}) {
+	const defaultResolution = options.geminiProfile ? "2K" : "4K";
 	return {
 		id,
 		model,
@@ -269,25 +367,32 @@ function comflyAdapter(id, model, cfg) {
 		async execute(input) {
 			const apiKey = credentials(cfg, cfg.comflyApiKeyEnv);
 			if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.comflyApiKeyEnv}`);
-			return { outputPath: await downloadImageTo(await openAiImageUrl({
-				baseURL: cfg.comflyBaseURL,
-				apiKey,
-				model,
-				prompt: input.prompt,
-				size: input.size,
-				images: input.images,
-				proxyUrl: cfg.proxyUrl,
-				signal: input.signal,
-				timeoutMs: input.budgetMs
-			}), join(input.privateRoot, "jobs", "_router", "outputs"), {
-				proxyUrl: cfg.proxyUrl,
-				signal: input.signal,
-				timeoutMs: Math.min(input.budgetMs, 12e4)
-			}) };
+			const resolution = input.resolution ?? defaultResolution;
+			const effectiveModel = options.geminiProfile ? GEMINI_MODELS_BY_RESOLUTION[resolution] ?? model : model;
+			const size = options.geminiProfile ? geminiSizeFor(input.ratio, resolution) : gptImage2SizeFor(input.ratio, resolution);
+			return {
+				outputPath: await downloadImageTo(await openAiImageUrl({
+					baseURL: cfg.comflyBaseURL,
+					apiKey,
+					model: effectiveModel,
+					prompt: input.prompt,
+					size,
+					resolution,
+					images: input.images,
+					proxyUrl: cfg.proxyUrl,
+					signal: input.signal,
+					timeoutMs: input.budgetMs
+				}), join(input.privateRoot, "jobs", "_router", "outputs"), {
+					proxyUrl: cfg.proxyUrl,
+					signal: input.signal,
+					timeoutMs: Math.min(input.budgetMs, 12e4)
+				}),
+				model: effectiveModel
+			};
 		}
 	};
 }
-/** APIMart OpenAI-compatible adapter (references as base64 data URIs). */
+/** APIMart OpenAI-compatible adapter (references as base64 data URIs; GPT Image 2 sizes). */
 function apimartAdapter(cfg) {
 	const id = "apimart-gpt-image-2";
 	const model = "gpt-image-2";
@@ -304,6 +409,8 @@ function apimartAdapter(cfg) {
 		async execute(input) {
 			const apiKey = credentials(cfg, cfg.apimartApiKeyEnv);
 			if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.apimartApiKeyEnv}`);
+			const resolution = input.resolution ?? "4K";
+			const size = gptImage2SizeFor(input.ratio, resolution);
 			const base = cfg.apimartBaseURL.replace(/\/+$/, "");
 			const headers = {
 				Authorization: `Bearer ${apiKey}`,
@@ -313,7 +420,7 @@ function apimartAdapter(cfg) {
 				model,
 				prompt: input.prompt,
 				n: 1,
-				size: input.size,
+				size,
 				response_format: "url"
 			};
 			if (input.images.length > 0) {
@@ -363,6 +470,7 @@ function geminiAdapter(cfg) {
 		async execute(input) {
 			const apiKey = credentials(cfg, cfg.geminiApiKeyEnv);
 			if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.geminiApiKeyEnv}`);
+			const resolution = input.resolution ?? "2K";
 			const ratioKey = Object.entries(RATIO_SIZES).find(([, px]) => px === input.size)?.[0] ?? "16:9";
 			const inputParts = [{
 				type: "text",
@@ -384,7 +492,7 @@ function geminiAdapter(cfg) {
 					type: "image",
 					mime_type: "image/jpeg",
 					aspect_ratio: ratioKey,
-					image_size: "1K"
+					image_size: resolution
 				}
 			};
 			const controller = new AbortController();
@@ -467,15 +575,20 @@ function dreaminaImageAdapter(cfg) {
 		},
 		async execute(input) {
 			const outDir = await ensureDir(join(input.privateRoot, "jobs", "_router", "outputs"));
-			const args = input.images.length > 0 ? [
-				"image2image",
-				`--prompt=${input.prompt}`,
-				`--model_version=${model}`,
-				...input.images.map((p) => `--image=${p}`)
-			] : [
-				"text2image",
-				`--prompt=${input.prompt}`,
-				`--model_version=${model}`
+			const resolution = (input.resolution ?? "1K").toLowerCase();
+			const args = [
+				...input.images.length > 0 ? [
+					"image2image",
+					`--prompt=${input.prompt}`,
+					`--model_version=${model}`,
+					...input.images.map((p) => `--image=${p}`)
+				] : [
+					"text2image",
+					`--prompt=${input.prompt}`,
+					`--model_version=${model}`
+				],
+				`--ratio=${input.ratio}`,
+				`--resolution_type=${resolution}`
 			];
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), input.budgetMs);
@@ -501,8 +614,7 @@ const ADAPTER_ALIASES = { "comfly-gemini-lite": "comfly-gemini-flash-preview" };
 /** Build the default adapter chain in contract priority order. */
 function defaultAdapters(cfg) {
 	const chain = [
-		comflyAdapter("comfly-gemini-flash-preview", "gemini-3.1-flash-image-preview", cfg),
-		comflyAdapter("comfly-gpt-image-2-all", "gpt-image-2-all", cfg),
+		comflyAdapter("comfly-gemini-flash-preview", GEMINI_MODELS_BY_RESOLUTION["1K"], cfg, { geminiProfile: true }),
 		comflyAdapter("comfly-gpt-image-2", "gpt-image-2", cfg),
 		apimartAdapter(cfg),
 		geminiAdapter(cfg),
@@ -511,6 +623,18 @@ function defaultAdapters(cfg) {
 	if (!cfg.enabled || cfg.enabled.length === 0) return chain;
 	const enabledIds = new Set(cfg.enabled.map((id) => ADAPTER_ALIASES[id] ?? id));
 	return chain.filter((a) => enabledIds.has(a.id));
+}
+/**
+* Resolve a user-explicit `image_provider` to exactly one adapter.
+* Unknown routes and routes disabled by config fail as input_error before
+* any provider is called. The explicit route never falls back elsewhere.
+*/
+function resolveExplicitAdapter(requested, fullChain, enabledChain) {
+	const id = ADAPTER_ALIASES[requested] ?? requested;
+	const adapter = fullChain.find((a) => a.id === id);
+	if (adapter === void 0) throw mediaErrors.input(`Unsupported image_provider "${requested}"; supported routes: ${SUPPORTED_IMAGE_PROVIDERS.join(", ")}`);
+	if (!enabledChain.some((a) => a.id === id)) throw mediaErrors.input(`Requested image_provider is disabled: ${id}`);
+	return adapter;
 }
 /** Normalize references (EXIF + ≤1920 px) into the private inputs dir. */
 async function normalizeInputs(images, privateRoot, taskId) {
@@ -542,14 +666,23 @@ async function normalizeInputs(images, privateRoot, taskId) {
 	return out;
 }
 /**
-* Run the serial image router: normalize inputs, then attempt adapters in
-* priority order with per-adapter budget = min(120s, remaining) and a
-* 300 s whole-task deadline, honoring per-capacity slot leases.
+* Run the serial image router: validate ratio/resolution/provider, normalize
+* inputs, then attempt adapters in priority order with per-adapter budget
+* = min(120s, remaining) and a 300 s whole-task deadline, honoring
+* per-capacity slot leases. An explicit `imageProvider` restricts the run to
+* that single adapter with no cross-route fallback.
 */
 async function runImageRouter(options) {
 	const { prompt, images, ratio, config, privateRoot, signal, taskId = newTaskId() } = options;
-	const size = ratioToSize(ratio);
-	const adapters = options.adapters ?? defaultAdapters(config);
+	ratioToSize(ratio);
+	assertSupportedResolution(options.resolution);
+	const fullChain = options.adapters ?? defaultAdapters({
+		...config,
+		enabled: []
+	});
+	const enabledChain = options.adapters ?? defaultAdapters(config);
+	const explicit = options.imageProvider ? resolveExplicitAdapter(options.imageProvider, fullChain, enabledChain) : void 0;
+	const adapters = explicit ? [explicit] : enabledChain;
 	const taskDeadline = Date.now() + config.taskTimeoutMs;
 	const attempts = [];
 	const startedAt = Date.now();
@@ -559,8 +692,25 @@ async function runImageRouter(options) {
 		if (remaining <= 0) throw mediaErrors.taskTimeout(`image task exceeded ${Math.round(config.taskTimeoutMs / 1e3)}s deadline`);
 		const adapterBudget = Math.min(config.providerTimeoutMs, remaining);
 		const attemptStart = Date.now();
+		if ((await isCircuitOpen(privateRoot, adapter.id)).open) {
+			if (explicit) throw mediaErrors.providerTimeout(`requested image_provider ${adapter.id} is in circuit cooldown`);
+			attempts.push({
+				adapter: adapter.id,
+				model: adapter.model,
+				status: "skipped",
+				failureClass: "circuit_open",
+				reason: "circuit open: cooling down after repeated failures"
+			});
+			await appendSafeLog(privateRoot, "media-router", {
+				taskId,
+				event: "adapter_circuit_open",
+				adapter: adapter.id
+			});
+			continue;
+		}
 		const ready = await adapter.checkReady();
 		if (!ready.ready) {
+			if (explicit) throw mediaErrors.auth(`requested image_provider ${adapter.id} is not ready: ${ready.reason ?? "unknown"}`);
 			attempts.push({
 				adapter: adapter.id,
 				model: adapter.model,
@@ -584,6 +734,7 @@ async function runImageRouter(options) {
 			});
 		} catch (error) {
 			const reason = error?.message ?? "slot busy";
+			if (explicit) throw mediaErrors.providerTimeout(`requested image_provider ${adapter.id} slot busy: ${reason}`);
 			attempts.push({
 				adapter: adapter.id,
 				model: adapter.model,
@@ -598,15 +749,19 @@ async function runImageRouter(options) {
 			const result = await adapter.execute({
 				prompt,
 				images: normalized,
-				size,
+				size: ratioToSize(ratio),
+				ratio,
+				resolution: options.resolution,
 				privateRoot,
 				proxyUrl: config.proxyUrl,
 				signal,
 				budgetMs: adapterBudget
 			});
+			const model = result.model ?? adapter.model;
+			await recordProviderOutcome(privateRoot, adapter.id, true);
 			attempts.push({
 				adapter: adapter.id,
-				model: adapter.model,
+				model,
 				status: "success",
 				durationMs: Date.now() - attemptStart
 			});
@@ -614,19 +769,20 @@ async function runImageRouter(options) {
 				taskId,
 				event: "adapter_success",
 				adapter: adapter.id,
-				model: adapter.model,
+				model,
 				durationMs: Date.now() - attemptStart
 			});
 			return {
 				outputPath: result.outputPath,
 				provider: adapter.id,
-				model: adapter.model,
+				model,
 				attempts
 			};
 		} catch (error) {
 			let cls = "definite_provider_failure";
 			if (error instanceof MediaError) cls = error.cls;
 			else if (error instanceof HttpStatusError) cls = classifyHttp(error.status).cls;
+			await recordProviderOutcome(privateRoot, adapter.id, false);
 			const durationMs = Date.now() - attemptStart;
 			attempts.push({
 				adapter: adapter.id,
@@ -643,6 +799,7 @@ async function runImageRouter(options) {
 				failureClass: cls,
 				durationMs
 			});
+			if (explicit) throw error;
 			if (!FALLBACK_ALLOWED.has(cls)) throw error;
 		} finally {
 			await release?.();
@@ -651,4 +808,4 @@ async function runImageRouter(options) {
 	throw mediaErrors.provider(`all image providers failed after ${attempts.length} attempts (${Math.round((Date.now() - startedAt) / 1e3)}s)`);
 }
 //#endregion
-export { ratioToSize as n, runImageRouter as r, SUPPORTED_RATIOS as t };
+export { ratioToSize as a, SUPPORTED_RESOLUTIONS as i, SUPPORTED_IMAGE_PROVIDERS as n, runImageRouter as o, SUPPORTED_RATIOS as r, ADAPTER_ALIASES as t };

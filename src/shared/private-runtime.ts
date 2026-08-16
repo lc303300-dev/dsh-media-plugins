@@ -321,6 +321,60 @@ export async function appendSafeLog(privateRoot: string, name: string, entry: Re
   await writeFile(path, line, { flag: 'a' })
 }
 
+/* ------------------------------------------------------------------ */
+/* Provider circuit breaker (Codex ProviderRuntime counterpart)         */
+/* ------------------------------------------------------------------ */
+
+/** Consecutive execution failures that open the circuit (contract: 3). */
+export const CIRCUIT_TRIP_THRESHOLD = 3
+
+/** Cooldown while the circuit stays open (contract: 60 s). */
+export const CIRCUIT_COOLDOWN_MS = 60_000
+
+export interface CircuitState {
+  failures: number
+  openedAt?: string
+  lastFailureAt?: string
+  lastSuccessAt?: string
+}
+
+function circuitPath(privateRoot: string, adapterId: string): string {
+  return join(privateRoot, 'providers', adapterId, 'circuit.json')
+}
+
+/** Read the current circuit state for one adapter (undefined = never tripped). */
+export async function readCircuit(privateRoot: string, adapterId: string): Promise<CircuitState | undefined> {
+  return readJsonSafe(circuitPath(privateRoot, adapterId))
+}
+
+/**
+ * Record one execution outcome. Success resets the counter; every failure
+ * increments it, and the circuit opens once the threshold is reached
+ * (openedAt is kept on the first trip until a success resets it).
+ */
+export async function recordProviderOutcome(privateRoot: string, adapterId: string, ok: boolean): Promise<CircuitState> {
+  const current = (await readCircuit(privateRoot, adapterId)) ?? { failures: 0 }
+  const now = new Date().toISOString()
+  const next: CircuitState = ok
+    ? { failures: 0, lastSuccessAt: now }
+    : {
+        failures: current.failures + 1,
+        lastFailureAt: now,
+        ...(current.failures + 1 >= CIRCUIT_TRIP_THRESHOLD ? { openedAt: current.openedAt ?? now } : {}),
+      }
+  await atomicWriteJson(circuitPath(privateRoot, adapterId), next)
+  return next
+}
+
+/** True when the adapter is in cooldown (tripped and less than 60 s elapsed). */
+export async function isCircuitOpen(privateRoot: string, adapterId: string, now = Date.now()): Promise<{ open: boolean; state?: CircuitState }> {
+  const state = await readCircuit(privateRoot, adapterId)
+  if (!state || state.failures < CIRCUIT_TRIP_THRESHOLD) return { open: false, state }
+  const opened = state.openedAt ? Date.parse(state.openedAt) : NaN
+  if (!Number.isFinite(opened)) return { open: false, state }
+  return { open: now - opened < CIRCUIT_COOLDOWN_MS, state }
+}
+
 /** Allocate a stable task id (uuid without dashes). */
 export function newTaskId(): string {
   return randomUUID().replaceAll('-', '')

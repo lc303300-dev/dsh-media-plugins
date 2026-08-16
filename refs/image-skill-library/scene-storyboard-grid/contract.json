@@ -1,0 +1,14 @@
+{
+  "schema_version": 1, "skill_id": "scene-storyboard-grid", "display_name": "场景一致性九宫格分镜", "description": "根据场景底图和可选主体设定图，生成一致的单张 3×3 九宫格分镜提示词。", "input_mode": "reference_conditioned",
+  "references": [
+    {"id": "scene-base", "media_type": "image", "role": "scene", "scope": "scene", "required": true, "min_count": 1, "max_count": 1, "ordered": true, "observation_required": true, "send_to_generation": true, "description": "定义场景、构图、主体安装位置与尺度、空间几何、建筑、光线、天气、遮挡、阴影和所有环境对象。"},
+    {"id": "identity-design", "media_type": "image", "role": "identity", "scope": "scene", "required": false, "min_count": 0, "max_count": 1, "ordered": true, "observation_required": true, "send_to_generation": true, "description": "仅定义唯一主体身份、文字、部件、拓扑、比例、厚度、倒角、边缘、正侧面和材质，不定义场景内容。"}
+  ],
+  "reference_policy": {"allowed_slot_ids": ["scene-base", "identity-design"], "reject_uncontracted_images": true, "maximum_reference_images_per_scene": 2, "preserve_reference_order": true},
+  "workload": {"scene_count": {"min": 1, "max": null}, "candidate_count_per_scene": {"min": 1, "max": null}, "batch_allowed": true},
+  "output": {"media_type": "image", "requires_ratio_confirmation": true, "supported_ratios": ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"]},
+  "authoring": {"primary_language": "en", "requires_reference_binding": true, "requires_prompt_confirmation": true, "user_instruction_priority": "highest"},
+  "execution": {"provider_neutral": true, "single_candidate_entry": "generate_image", "batch_entry": "batch-image-generation", "requires_paid_batch_confirmation": true, "automatic_retry": false, "automatic_visual_ranking": false},
+  "knowledge": {"creative_guidance": "references/creative-guidance.md", "failure_cases": "references/failure-cases.md", "examples": "references/examples.md"},
+  "business_constraints": {"layout": "3x3", "panel_count": 9, "single_sheet": true, "equal_panels": true, "panel_orientation_source": "scene-base", "panel_orientation_values": ["portrait", "landscape", "square"], "uniform_panel_orientation": true, "outer_ratio_independent_from_panel_orientation": true, "closed_world_required": true, "temporal_mode": "same_scene_same_moment", "requires_per_scene_fact_ledger": true, "shot_selection_strategy": "evidence_conditioned"}
+}
