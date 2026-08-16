@@ -4,8 +4,11 @@ import { n as makePreview } from "./image-ops.js";
 import { n as searchCorpus } from "./corpus-core.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import { copyFile, stat, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { copyFile, mkdir, stat, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 //#region src/shared/dt-core.ts
 function escapeHtml(text) {
 	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -33,6 +36,7 @@ function buildReviewItems(manifest, previews) {
 }
 //#endregion
 //#region src/tool-dt.ts
+const execFileAsync = promisify(execFile);
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -46,12 +50,23 @@ function newBatchId(name) {
 async function loadJobs(dir) {
 	return await readJsonSafe(join(dir, "jobs.json")) ?? { tasks: {} };
 }
+/** Aggregate task status counts for wait_batch / pipeline_status. */
+function aggregateJobs(tasks) {
+	const counts = {};
+	for (const task of Object.values(tasks ?? {})) {
+		const key = task?.status ?? "unknown";
+		counts[key] = (counts[key] ?? 0) + 1;
+	}
+	return counts;
+}
 /** Cordis plugin name used by loader diagnostics. */
 const name = "Ws_tool-dt";
 const inject = ["tools"];
+const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
 const Config = z.object({
 	privateDir: z.string().default(""),
-	outputDir: z.string().default("outputs")
+	outputDir: z.string().default("outputs"),
+	dreaminaPath: z.string().default(join(PACKAGE_ROOT, "bin", "dreamina.exe"))
 });
 function apply(ctx, config) {
 	ctx.tools.register(defineTool({
@@ -72,6 +87,7 @@ function apply(ctx, config) {
 					"record_result",
 					"pipeline_status",
 					"run_batch",
+					"wait_batch",
 					"update_forge_matches",
 					"get_manifest",
 					"list"
@@ -140,6 +156,14 @@ function apply(ctx, config) {
 			prompt: {
 				type: "string",
 				description: "record_result 用：该素材生成的中文提示词。"
+			},
+			submit_id: {
+				type: "string",
+				description: "record_result 用：该素材视频任务的 submit_id（wait_batch 轮询用）。"
+			},
+			timeout_seconds: {
+				type: "integer",
+				description: "wait_batch 用：批次级等待上限（默认 600 秒）。"
 			},
 			confirm: {
 				type: "boolean",
@@ -364,6 +388,7 @@ function apply(ctx, config) {
 					};
 					jobs.tasks[taskId].status = "recorded";
 					jobs.tasks[taskId].prompt = prompt;
+					if (args.submit_id) jobs.tasks[taskId].submit_id = String(args.submit_id);
 					jobs.tasks[taskId].recorded_at = (/* @__PURE__ */ new Date()).toISOString();
 					await atomicWriteJson(join(dir, "jobs.json"), jobs);
 					manifest.prompts = [...(manifest.prompts ?? []).filter((p) => p.material !== imagePath), {
@@ -373,8 +398,68 @@ function apply(ctx, config) {
 					await atomicWriteJson(join(dir, "manifest.json"), manifest);
 					return {
 						ok: true,
-						message: `recorded ${taskId}`,
+						message: `recorded ${taskId}${jobs.tasks[taskId].submit_id ? ` (submit_id=${jobs.tasks[taskId].submit_id})` : ""}`,
 						batch_id: batchId
+					};
+				}
+				case "wait_batch": {
+					const jobs = await loadJobs(dir);
+					const pending = Object.entries(jobs.tasks).filter(([, t]) => t.submit_id && t.status !== "success" && t.status !== "failed");
+					if (pending.length === 0) return {
+						ok: true,
+						message: `no pending submit_id tasks (${Object.values(jobs.tasks).length} task(s) total)`,
+						summary: aggregateJobs(jobs.tasks)
+					};
+					const deadline = Date.now() + Number(args.timeout_seconds ?? 600) * 1e3;
+					const videosDir = join(workspaceRoot, config.outputDir, "dt", batchId);
+					await mkdir(videosDir, { recursive: true });
+					const parseJson = (stdout) => {
+						const start = stdout.indexOf("{");
+						if (start < 0) return void 0;
+						try {
+							return JSON.parse(stdout.slice(start));
+						} catch {
+							return;
+						}
+					};
+					const query = async (submitId) => {
+						try {
+							const { stdout } = await execFileAsync(config.dreaminaPath, [
+								"query_result",
+								`--submit_id=${submitId}`,
+								`--download_dir=${videosDir}`
+							], {
+								timeout: 9e4,
+								windowsHide: true
+							});
+							return parseJson(stdout);
+						} catch {
+							return;
+						}
+					};
+					while (Date.now() < deadline) {
+						let allTerminal = true;
+						for (const [taskId, task] of pending) {
+							if (task.status === "success" || task.status === "failed") continue;
+							const result = await query(task.submit_id);
+							if (result?.gen_status === "fail") {
+								task.status = "failed";
+								task.fail_reason = String(result.fail_reason ?? "unknown");
+							} else if (result?.gen_status === "success") {
+								task.status = "success";
+								task.finished_at = (/* @__PURE__ */ new Date()).toISOString();
+								task.output = result.video_url ?? result.output ?? `已下载到 ${videosDir}`;
+							} else allTerminal = false;
+						}
+						await atomicWriteJson(join(dir, "jobs.json"), jobs);
+						if (allTerminal) break;
+						await sleep(5e3);
+					}
+					const summary = aggregateJobs(jobs.tasks);
+					return {
+						ok: summary.failed === 0,
+						message: `batch wait done: ${JSON.stringify(summary)}`,
+						summary
 					};
 				}
 				case "pipeline_status": {

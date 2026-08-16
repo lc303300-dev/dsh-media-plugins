@@ -10,8 +10,13 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { copyFile, mkdir, readdir, stat, writeFile } from 'node:fs/promises'
-import { join, isAbsolute, basename } from 'node:path'
+import { dirname, join, isAbsolute, basename } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const execFileAsync = promisify(execFile)
 import { makePreview } from './shared/image-ops.ts'
 import { atomicWriteJson, ensureDir, readJsonSafe, resolvePrivateRoot, sha256File, newTaskId } from './shared/private-runtime.ts'
 import { VIDEO_RATIOS } from './shared/project-core.ts'
@@ -36,6 +41,16 @@ async function loadJobs(dir: string): Promise<Record<string, any>> {
   return (await readJsonSafe(join(dir, 'jobs.json'))) ?? { tasks: {} }
 }
 
+/** Aggregate task status counts for wait_batch / pipeline_status. */
+function aggregateJobs(tasks: Record<string, any>): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const task of Object.values(tasks ?? {})) {
+    const key = task?.status ?? 'unknown'
+    counts[key] = (counts[key] ?? 0) + 1
+  }
+  return counts
+}
+
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-dt'
 export const inject = ['tools']
@@ -43,11 +58,15 @@ export const inject = ['tools']
 export interface Config {
   privateDir?: string
   outputDir?: string
+  dreaminaPath?: string
 }
+
+const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
 
 export const Config: z<Config> = z.object({
   privateDir: z.string().default(''),
   outputDir: z.string().default('outputs'),
+  dreaminaPath: z.string().default(join(PACKAGE_ROOT, 'bin', 'dreamina.exe')),
 })
 
 type ResolvedConfig = Required<Config>
@@ -64,7 +83,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           enum: [
             'init_batch', 'new_batch', 'import_images', 'prepare_previews', 'set_prompts',
             'finalize_review', 'subagent_tasks', 'record_dispatch', 'record_result',
-            'pipeline_status', 'run_batch', 'update_forge_matches', 'get_manifest', 'list',
+            'pipeline_status', 'run_batch', 'wait_batch', 'update_forge_matches', 'get_manifest', 'list',
           ],
           required: true,
           description: '操作命令。',
@@ -83,6 +102,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         task_id: { type: 'string', description: 'record_dispatch/record_result 用：子代理任务 id。' },
         agent_id: { type: 'string', description: 'record_dispatch 用：子代理会话 id。' },
         prompt: { type: 'string', description: 'record_result 用：该素材生成的中文提示词。' },
+        submit_id: { type: 'string', description: 'record_result 用：该素材视频任务的 submit_id（wait_batch 轮询用）。' },
+        timeout_seconds: { type: 'integer', description: 'wait_batch 用：批次级等待上限（默认 600 秒）。' },
         confirm: { type: 'boolean', description: 'run_batch 用：确认所有提示词后生成提交计划。' },
       },
       output: {
@@ -240,11 +261,63 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             if (!prompt) return { ok: false, message: 'prompt is required' }
             jobs.tasks[taskId].status = 'recorded'
             jobs.tasks[taskId].prompt = prompt
+            if (args.submit_id) jobs.tasks[taskId].submit_id = String(args.submit_id)
             jobs.tasks[taskId].recorded_at = new Date().toISOString()
             await atomicWriteJson(join(dir, 'jobs.json'), jobs)
             manifest.prompts = [...(manifest.prompts ?? []).filter((p: any) => p.material !== imagePath), { material: imagePath, prompt }]
             await atomicWriteJson(join(dir, 'manifest.json'), manifest)
-            return { ok: true, message: `recorded ${taskId}`, batch_id: batchId }
+            return { ok: true, message: `recorded ${taskId}${jobs.tasks[taskId].submit_id ? ` (submit_id=${jobs.tasks[taskId].submit_id})` : ''}`, batch_id: batchId }
+          }
+          case 'wait_batch': {
+            // 批次级 wait/collect（wait_seedance_batch 等价）：轮询所有已记录 submit_id 的任务
+            const jobs = await loadJobs(dir)
+            const pending = Object.entries(jobs.tasks as Record<string, any>).filter(([, t]) => t.submit_id && t.status !== 'success' && t.status !== 'failed')
+            if (pending.length === 0) {
+              const all = Object.values(jobs.tasks as Record<string, any>)
+              return { ok: true, message: `no pending submit_id tasks (${all.length} task(s) total)`, summary: aggregateJobs(jobs.tasks) }
+            }
+            const deadline = Date.now() + (Number(args.timeout_seconds ?? 600) * 1000)
+            const videosDir = join(workspaceRoot, config.outputDir, 'dt', batchId)
+            await mkdir(videosDir, { recursive: true })
+            const parseJson = (stdout: string): any => {
+              const start = stdout.indexOf('{')
+              if (start < 0) return undefined
+              try {
+                return JSON.parse(stdout.slice(start))
+              } catch {
+                return undefined
+              }
+            }
+            const query = async (submitId: string): Promise<any> => {
+              try {
+                const { stdout } = await execFileAsync(config.dreaminaPath, ['query_result', `--submit_id=${submitId}`, `--download_dir=${videosDir}`], { timeout: 90000, windowsHide: true })
+                return parseJson(stdout)
+              } catch {
+                return undefined
+              }
+            }
+            while (Date.now() < deadline) {
+              let allTerminal = true
+              for (const [taskId, task] of pending) {
+                if (task.status === 'success' || task.status === 'failed') continue
+                const result = await query(task.submit_id)
+                if (result?.gen_status === 'fail') {
+                  task.status = 'failed'
+                  task.fail_reason = String(result.fail_reason ?? 'unknown')
+                } else if (result?.gen_status === 'success') {
+                  task.status = 'success'
+                  task.finished_at = new Date().toISOString()
+                  task.output = result.video_url ?? result.output ?? `已下载到 ${videosDir}`
+                } else {
+                  allTerminal = false
+                }
+              }
+              await atomicWriteJson(join(dir, 'jobs.json'), jobs)
+              if (allTerminal) break
+              await sleep(5000)
+            }
+            const summary = aggregateJobs(jobs.tasks)
+            return { ok: summary.failed === 0, message: `batch wait done: ${JSON.stringify(summary)}`, summary }
           }
           case 'pipeline_status': {
             const jobs = await loadJobs(dir)
