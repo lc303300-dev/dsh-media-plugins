@@ -161,6 +161,59 @@ export function fileSha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
+/** Detect text encoding from raw bytes: UTF-8 BOM, valid UTF-8, or binary. */
+export function detectEncoding(data: Buffer): string {
+  if (data.length >= 3 && data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf) return 'utf-8-sig'
+  try {
+    data.toString('utf8')
+    return 'utf-8'
+  } catch {
+    return 'binary'
+  }
+}
+
+/** Seal source provenance: name + SHA-256 + detected encoding (sources are evidence). */
+export function sealSources(paths: string[]): Array<{ name: string; sha256: string; encoding: string }> {
+  return paths.map((path) => {
+    const data = readFileSync(path)
+    return {
+      name: basename(path),
+      sha256: createHash('sha256').update(data).digest('hex'),
+      encoding: detectEncoding(data),
+    }
+  })
+}
+
+/** Read intake-sources.json provenance from a staged package. */
+export function readIntakeSources(root: string): Array<{ name: string; sha256: string; encoding: string }> | null {
+  try {
+    const raw = JSON.parse(readFileSync(join(root, 'intake-sources.json'), 'utf8'))
+    return Array.isArray(raw?.sources) ? raw.sources : null
+  } catch {
+    return null
+  }
+}
+
+/** Keyword classification of source text → which package file should carry it. */
+export function compileChecklist(text: string): Record<string, number> {
+  const categories: Array<{ key: string; patterns: RegExp[] }> = [
+    { key: 'constraints', patterns: [/数量|顺序|必选|角色|min|max|固定|首帧|尾帧|时长|比例/i] },
+    { key: 'instructions', patterns: [/必须|禁止|流程|步骤|先|然后|最后|不得/i] },
+    { key: 'creative', patterns: [/镜头|运镜|光线|构图|表演|风格|色调|推近|环绕|推进/i] },
+    { key: 'community', patterns: [/经验|常见|实践|社区|实测|通常/i] },
+    { key: 'failures', patterns: [/失败|问题|注意|避免|错误|不要/i] },
+    { key: 'examples', patterns: [/例如|示例|案例|正例|反例|比如/i] },
+  ]
+  const counts: Record<string, number> = { constraints: 0, instructions: 0, creative: 0, community: 0, failures: 0, examples: 0 }
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    if (!line.trim()) continue
+    for (const category of categories) {
+      if (category.patterns.some((p) => p.test(line))) counts[category.key] += 1
+    }
+  }
+  return counts
+}
+
 /** Canonical bytes for hashing: text files are BOM-stripped and CRLF/CR normalized
  *  to LF (package_integrity.py v2 semantics); binary files hash raw. */
 export function canonicalFileBytes(path: string): Buffer {

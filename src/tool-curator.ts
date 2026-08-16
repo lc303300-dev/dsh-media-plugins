@@ -17,8 +17,11 @@ import { fileURLToPath } from 'node:url'
 import {
   addMissingCountRules,
   buildIntakeReceipt,
+  compileChecklist,
   packageSha256,
   plannedCount,
+  readIntakeSources,
+  sealSources,
   validatePackage,
   validateScaffoldInput,
 } from './shared/curator-core.ts'
@@ -116,7 +119,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         source_path: { type: 'string', description: 'migrate 用：旧版 Skill Markdown 或资料路径。' },
         published: { type: 'boolean', description: 'validate 用：要求 intake-receipt.json（发布态）。' },
         version: { type: 'string', description: 'publish 用：注册库版本号（默认 1.0.0）。' },
-        sources: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'publish 用：来源 [{name, sha256}]。' },
+        sources: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'publish 用：来源 [{name, sha256}]（有 intake-sources.json 时优先用封存来源）。' },
+        approved: { type: 'boolean', description: 'publish 用：用户过目审核清单后明确确认；缺省拒绝发布。' },
         status: { type: 'string', enum: ['draft', 'published', 'deprecated', 'any'], description: 'discover 用：状态过滤（默认 published）。' },
       },
       output: {
@@ -190,7 +194,18 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               description,
               short_description: (args.short_description ?? `根据已确认素材与专业规则生成${displayName}视频提示词`).trim(),
             })
-            return { ok: true, message: `migrated to: ${destination}（请在模板 references 中补入原资料内容后 validate）`, package_path: destination }
+            // 封存来源（文件名 + SHA-256 + 编码），来源是不可修改的证据
+            const sealed = sealSources([source])
+            writeFileSync(join(destination, 'intake-sources.json'), JSON.stringify({ schema_version: 1, sources: sealed }, null, 2) + '\n', 'utf8')
+            // 编译清单：源内容应分类进哪些包文件
+            const checklist = compileChecklist(text)
+            return {
+              ok: true,
+              message: `migrated to: ${destination}；来源已封存（${sealed[0].sha256.slice(0, 12)}…，${sealed[0].encoding}）。请按编译清单把源资料分类补入模板 references 后 validate`,
+              package_path: destination,
+              sources: sealed,
+              compile_checklist: checklist,
+            }
           } catch (error: any) {
             return { ok: false, message: String(error?.message ?? error) }
           }
@@ -239,9 +254,35 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           if (issues.length > 0) return { ok: false, message: `validation failed (${issues.length} issue(s)); fix before publish`, issues }
           const contract = JSON.parse(readFileSync(join(packageDir, 'contract.json'), 'utf8'))
           const name = String(contract.skill_id)
-          const sources = Array.isArray(args.sources) && args.sources.length > 0
-            ? args.sources.map((s: any) => ({ name: String(s.name), sha256: String(s.sha256) }))
-            : [{ name: 'curator-input', sha256: packageSha256(packageDir) }]
+          // 审核门：publish 前必须用户明确确认（review checklist）
+          if (args.approved !== true) {
+            const sealed = readIntakeSources(packageDir)
+            const checklist = {
+              skill_id: name,
+              display_name: String(contract.display_name ?? ''),
+              source_hashes: sealed ? sealed.map((s) => ({ name: s.name, sha256: s.sha256.slice(0, 16) + '…' })) : null,
+              slots: (contract.references ?? []).map((ref: any) => ({
+                id: ref.id,
+                media_type: ref.media_type,
+                role: ref.role,
+                required: ref.required,
+                min_count: ref.min_count,
+                max_count: ref.max_count,
+                count_rule: ref.count_rule?.type,
+              })),
+              isolated_legacy_rules: '请人工核对源资料中是否含本机路径/凭据/CLI/provider/模型版本，已从契约隔离',
+              validation: `${issues.length} issue(s)`,
+              instruction: '请向用户展示以上审核项并获得明确确认后，以 approved=true 重新调用 publish',
+            }
+            return { ok: false, message: 'publish requires explicit user approval (approved=true) after reviewing the checklist', checklist }
+          }
+          // 来源：优先用封存的 intake-sources.json，其次显式 sources 参数
+          const sealed = readIntakeSources(packageDir)
+          const sources = sealed
+            ? sealed.map((s) => ({ name: s.name, sha256: s.sha256 }))
+            : Array.isArray(args.sources) && args.sources.length > 0
+              ? args.sources.map((s: any) => ({ name: String(s.name), sha256: String(s.sha256) }))
+              : [{ name: 'curator-input', sha256: packageSha256(packageDir) }]
           const receipt = buildIntakeReceipt(packageDir, sources)
           writeFileSync(join(packageDir, 'intake-receipt.json'), JSON.stringify(receipt, null, 2) + '\n', 'utf8')
           const publishedIssues = validatePackage(packageDir, true)

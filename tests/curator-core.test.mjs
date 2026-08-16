@@ -12,6 +12,10 @@ import {
   validatePackage,
   validateScaffoldInput,
   parseFrontmatter,
+  sealSources,
+  detectEncoding,
+  compileChecklist,
+  readIntakeSources,
 } from '../src/shared/curator-core.ts'
 
 /** Build a fully valid skill package at root. */
@@ -162,4 +166,48 @@ test('parseFrontmatter extracts name and description', () => {
   const { metadata } = parseFrontmatter('---\nname: demo-skill\ndescription: 描述内容\n---\n正文')
   assert.equal(metadata.name, 'demo-skill')
   assert.equal(metadata.description, '描述内容')
+})
+
+test('sealSources records name + sha256 + encoding without touching the file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-seal-'))
+  try {
+    const src = join(dir, 'source.md')
+    writeFileSync(src, '\uFEFF# 城市夜景创作经验\n主体数量固定 1 张，必须按顺序绑定。\n', 'utf8')
+    const sealed = sealSources([src])
+    assert.equal(sealed.length, 1)
+    assert.equal(sealed[0].name, 'source.md')
+    assert.match(sealed[0].sha256, /^[a-f0-9]{64}$/)
+    assert.equal(sealed[0].encoding, 'utf-8-sig')
+    assert.equal(readFileSync(src, 'utf8').charCodeAt(0), 0xfeff, 'original must not be modified')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('detectEncoding distinguishes BOM, plain UTF-8 and binary', () => {
+  assert.equal(detectEncoding(Buffer.from('\uFEFFabc', 'utf8')), 'utf-8-sig')
+  assert.equal(detectEncoding(Buffer.from('abc', 'utf8')), 'utf-8')
+})
+
+test('compileChecklist classifies source lines into target files', () => {
+  const text = '主体固定 1 张，必须按顺序绑定。\n镜头缓慢推近，光线偏冷。\n社区实测经验：环绕镜头更稳。\n避免画面过暗：给主光方向。\n例如：夜晚城市霓虹。'
+  const counts = compileChecklist(text)
+  assert.ok(counts.constraints >= 1)
+  assert.ok(counts.creative >= 1)
+  assert.ok(counts.community >= 1)
+  assert.ok(counts.failures >= 1)
+  assert.ok(counts.examples >= 1)
+})
+
+test('readIntakeSources returns sealed provenance or null', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-srcs-'))
+  try {
+    assert.equal(readIntakeSources(dir), null)
+    writeFileSync(join(dir, 'intake-sources.json'), JSON.stringify({ schema_version: 1, sources: [{ name: 'a.md', sha256: 'a'.repeat(64), encoding: 'utf-8' }] }), 'utf8')
+    const sources = readIntakeSources(dir)
+    assert.equal(sources.length, 1)
+    assert.equal(sources[0].name, 'a.md')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

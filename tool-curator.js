@@ -160,6 +160,78 @@ function plannedCount(rule, durationSeconds) {
 		default: return rule.fixed_count ?? 0;
 	}
 }
+/** Detect text encoding from raw bytes: UTF-8 BOM, valid UTF-8, or binary. */
+function detectEncoding(data) {
+	if (data.length >= 3 && data[0] === 239 && data[1] === 187 && data[2] === 191) return "utf-8-sig";
+	try {
+		data.toString("utf8");
+		return "utf-8";
+	} catch {
+		return "binary";
+	}
+}
+/** Seal source provenance: name + SHA-256 + detected encoding (sources are evidence). */
+function sealSources(paths) {
+	return paths.map((path) => {
+		const data = readFileSync(path);
+		return {
+			name: basename(path),
+			sha256: createHash("sha256").update(data).digest("hex"),
+			encoding: detectEncoding(data)
+		};
+	});
+}
+/** Read intake-sources.json provenance from a staged package. */
+function readIntakeSources(root) {
+	try {
+		const raw = JSON.parse(readFileSync(join(root, "intake-sources.json"), "utf8"));
+		return Array.isArray(raw?.sources) ? raw.sources : null;
+	} catch {
+		return null;
+	}
+}
+/** Keyword classification of source text → which package file should carry it. */
+function compileChecklist(text) {
+	const categories = [
+		{
+			key: "constraints",
+			patterns: [/数量|顺序|必选|角色|min|max|固定|首帧|尾帧|时长|比例/i]
+		},
+		{
+			key: "instructions",
+			patterns: [/必须|禁止|流程|步骤|先|然后|最后|不得/i]
+		},
+		{
+			key: "creative",
+			patterns: [/镜头|运镜|光线|构图|表演|风格|色调|推近|环绕|推进/i]
+		},
+		{
+			key: "community",
+			patterns: [/经验|常见|实践|社区|实测|通常/i]
+		},
+		{
+			key: "failures",
+			patterns: [/失败|问题|注意|避免|错误|不要/i]
+		},
+		{
+			key: "examples",
+			patterns: [/例如|示例|案例|正例|反例|比如/i]
+		}
+	];
+	const counts = {
+		constraints: 0,
+		instructions: 0,
+		creative: 0,
+		community: 0,
+		failures: 0,
+		examples: 0
+	};
+	for (const line of String(text ?? "").split(/\r?\n/)) {
+		if (!line.trim()) continue;
+		for (const category of categories) if (category.patterns.some((p) => p.test(line))) counts[category.key] += 1;
+	}
+	return counts;
+}
 /** Canonical bytes for hashing: text files are BOM-stripped and CRLF/CR normalized
 *  to LF (package_integrity.py v2 semantics); binary files hash raw. */
 function canonicalFileBytes(path) {
@@ -706,7 +778,11 @@ function apply(ctx, config) {
 					type: "object",
 					additionalProperties: true
 				},
-				description: "publish 用：来源 [{name, sha256}]。"
+				description: "publish 用：来源 [{name, sha256}]（有 intake-sources.json 时优先用封存来源）。"
+			},
+			approved: {
+				type: "boolean",
+				description: "publish 用：用户过目审核清单后明确确认；缺省拒绝发布。"
 			},
 			status: {
 				type: "string",
@@ -795,7 +871,8 @@ function apply(ctx, config) {
 			}
 			if (command === "migrate") try {
 				const source = resolvePath(String(args.source_path ?? ""));
-				const fm = parseFrontmatterName(readFileSync(source, "utf8"));
+				const text = readFileSync(source, "utf8");
+				const fm = parseFrontmatterName(text);
 				const skillId = args.skill_id ?? (fm.name ?? basename(source, ".md")).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
 				const displayName = args.display_name ?? fm.name ?? skillId;
 				const description = args.description ?? fm.description ?? `根据用户资料生成的 ${displayName} 视频创作 Skill，负责按已确认素材与专业规则编写可执行中文提示词。`;
@@ -808,10 +885,18 @@ function apply(ctx, config) {
 					description,
 					short_description: (args.short_description ?? `根据已确认素材与专业规则生成${displayName}视频提示词`).trim()
 				});
+				const sealed = sealSources([source]);
+				writeFileSync(join(destination, "intake-sources.json"), JSON.stringify({
+					schema_version: 1,
+					sources: sealed
+				}, null, 2) + "\n", "utf8");
+				const checklist = compileChecklist(text);
 				return {
 					ok: true,
-					message: `migrated to: ${destination}（请在模板 references 中补入原资料内容后 validate）`,
-					package_path: destination
+					message: `migrated to: ${destination}；来源已封存（${sealed[0].sha256.slice(0, 12)}…，${sealed[0].encoding}）。请按编译清单把源资料分类补入模板 references 后 validate`,
+					package_path: destination,
+					sources: sealed,
+					compile_checklist: checklist
 				};
 			} catch (error) {
 				return {
@@ -875,7 +960,38 @@ function apply(ctx, config) {
 				};
 				const contract = JSON.parse(readFileSync(join(packageDir, "contract.json"), "utf8"));
 				const name = String(contract.skill_id);
-				const receipt = buildIntakeReceipt(packageDir, Array.isArray(args.sources) && args.sources.length > 0 ? args.sources.map((s) => ({
+				if (args.approved !== true) {
+					const sealed = readIntakeSources(packageDir);
+					return {
+						ok: false,
+						message: "publish requires explicit user approval (approved=true) after reviewing the checklist",
+						checklist: {
+							skill_id: name,
+							display_name: String(contract.display_name ?? ""),
+							source_hashes: sealed ? sealed.map((s) => ({
+								name: s.name,
+								sha256: s.sha256.slice(0, 16) + "…"
+							})) : null,
+							slots: (contract.references ?? []).map((ref) => ({
+								id: ref.id,
+								media_type: ref.media_type,
+								role: ref.role,
+								required: ref.required,
+								min_count: ref.min_count,
+								max_count: ref.max_count,
+								count_rule: ref.count_rule?.type
+							})),
+							isolated_legacy_rules: "请人工核对源资料中是否含本机路径/凭据/CLI/provider/模型版本，已从契约隔离",
+							validation: `${issues.length} issue(s)`,
+							instruction: "请向用户展示以上审核项并获得明确确认后，以 approved=true 重新调用 publish"
+						}
+					};
+				}
+				const sealed = readIntakeSources(packageDir);
+				const receipt = buildIntakeReceipt(packageDir, sealed ? sealed.map((s) => ({
+					name: s.name,
+					sha256: s.sha256
+				})) : Array.isArray(args.sources) && args.sources.length > 0 ? args.sources.map((s) => ({
 					name: String(s.name),
 					sha256: String(s.sha256)
 				})) : [{
