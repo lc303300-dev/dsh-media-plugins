@@ -133,15 +133,68 @@ function apply(ctx, config) {
 				video_to_gif: ffmpeg ? "ready" : "unavailable",
 				batch_image: creds.COMFLY_API_KEY ? "ready" : "degraded"
 			};
-			const providers = {
-				"comfly-gemini-flash-preview": { ready: creds.COMFLY_API_KEY },
-				"comfly-gpt-image-2-all": { ready: creds.COMFLY_API_KEY },
-				"comfly-gpt-image-2": { ready: creds.COMFLY_API_KEY },
-				"apimart-gpt-image-2": { ready: creds.APIMART_API_KEY },
-				"google-gemini-image": { ready: creds.GEMINI_API_KEY },
-				"dreamina-image": { ready: dreaminaBinary && dreaminaLogin },
-				"dreamina-video": { ready: dreaminaBinary && dreaminaLogin }
+			const toolReasons = {
+				generate_image: !creds.COMFLY_API_KEY ? "主通道缺少 COMFLY_API_KEY" : "ready",
+				generate_video: !dreaminaBinary ? "dreamina 二进制缺失" : !dreaminaLogin ? "dreamina 未登录" : "ready",
+				describe_image: !creds.VOLCANO_ENGINE_API_KEY ? "缺少 VOLCANO_ENGINE_API_KEY" : "ready",
+				skill_registry: !registryOk ? "注册库不可用" : "ready",
+				prompt_revision: !corpusOk ? "语料未加载" : "ready",
+				video_to_gif: !ffmpeg ? "ffmpeg 未找到" : "ready",
+				batch_image: !creds.COMFLY_API_KEY ? "主通道缺少 COMFLY_API_KEY" : "ready"
 			};
+			let proxyOpen = false;
+			try {
+				const { createConnection } = await import("node:net");
+				proxyOpen = await new Promise((resolve) => {
+					const socket = createConnection({
+						host: "127.0.0.1",
+						port: 7897,
+						timeout: 3e3
+					});
+					socket.once("connect", () => {
+						socket.destroy();
+						resolve(true);
+					});
+					socket.once("error", () => resolve(false));
+					socket.once("timeout", () => {
+						socket.destroy();
+						resolve(false);
+					});
+				});
+			} catch {
+				proxyOpen = false;
+			}
+			const providers = {
+				"comfly-gemini-flash-preview": {
+					ready: creds.COMFLY_API_KEY,
+					reason: creds.COMFLY_API_KEY ? "ok" : "missing COMFLY_API_KEY"
+				},
+				"comfly-gpt-image-2-all": {
+					ready: creds.COMFLY_API_KEY,
+					reason: creds.COMFLY_API_KEY ? "ok" : "missing COMFLY_API_KEY"
+				},
+				"comfly-gpt-image-2": {
+					ready: creds.COMFLY_API_KEY,
+					reason: creds.COMFLY_API_KEY ? "ok" : "missing COMFLY_API_KEY"
+				},
+				"apimart-gpt-image-2": {
+					ready: creds.APIMART_API_KEY,
+					reason: creds.APIMART_API_KEY ? "ok" : "missing APIMART_API_KEY (回退链第 4 级跳过)"
+				},
+				"google-gemini-image": {
+					ready: creds.GEMINI_API_KEY,
+					reason: creds.GEMINI_API_KEY ? "ok" : "missing GEMINI_API_KEY (回退链第 5 级跳过)"
+				},
+				"dreamina-image": {
+					ready: dreaminaBinary && dreaminaLogin,
+					reason: dreaminaBinary && dreaminaLogin ? "ok" : "dreamina 未就绪（共享 seedance-cli 容量）"
+				},
+				"dreamina-video": {
+					ready: dreaminaBinary && dreaminaLogin,
+					reason: dreaminaBinary && dreaminaLogin ? "ok" : "dreamina 未就绪"
+				}
+			};
+			const now = (/* @__PURE__ */ new Date()).toISOString();
 			const deployment = {
 				private_runtime_writable: privateOk,
 				dreamina_binary: dreaminaBinary,
@@ -150,7 +203,8 @@ function apply(ctx, config) {
 				ffmpeg,
 				corpus_entries: corpusCount,
 				registry_db: registryOk,
-				proxy_port_7897: null
+				proxy_port_7897: proxyOpen,
+				last_checked: now
 			};
 			const readyCount = Object.values(tools).filter((t) => t === "ready").length;
 			const degradedCount = Object.values(tools).filter((t) => t === "degraded").length;
@@ -159,6 +213,7 @@ function apply(ctx, config) {
 				ok: unavailableCount === 0,
 				message: `tools: ${readyCount} ready / ${degradedCount} degraded / ${unavailableCount} unavailable`,
 				tools,
+				tool_reasons: toolReasons,
 				providers,
 				deployment
 			};

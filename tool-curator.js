@@ -76,7 +76,10 @@ function apply(ctx, config) {
 					"planned_counts",
 					"migrate",
 					"discover",
-					"publish"
+					"publish",
+					"prepare_dt_supplement",
+					"receive_dt_supplement",
+					"approve_dt_supplement"
 				],
 				required: true,
 				description: "操作命令。"
@@ -132,6 +135,14 @@ function apply(ctx, config) {
 			approved: {
 				type: "boolean",
 				description: "publish 用：用户过目审核清单后明确确认；缺省拒绝发布。"
+			},
+			draft_path: {
+				type: "string",
+				description: "receive_dt_supplement 用：DT 创意补充草稿 JSON 路径。"
+			},
+			approved_by: {
+				type: "string",
+				description: "approve_dt_supplement 用：必须为 user。"
 			},
 			status: {
 				type: "string",
@@ -299,6 +310,114 @@ function apply(ctx, config) {
 					ok: true,
 					message: `planned counts for ${duration}s`,
 					plan
+				};
+			}
+			if (command === "prepare_dt_supplement") {
+				const targets = [];
+				for (const [name, path] of [["creative-guidance", "references/creative-guidance.md"], ["examples", "references/examples.md"]]) try {
+					if (readFileSync(join(packageDir, path), "utf8").replace(/<!--[\s\S]*?-->/g, "").trim().length < 200) targets.push(name);
+				} catch {
+					targets.push(name);
+				}
+				const request = {
+					schema_version: 1,
+					skill_id: basename(packageDir),
+					targets,
+					constraints: [
+						"只可补充提示词范例、正例、反例、边界案例和可选创意指导草稿",
+						"不得推断素材契约",
+						"不得选择 provider、模型、分辨率、轮询或付费执行",
+						"输出为草稿，须用户批准后才能写入正式 references"
+					],
+					requested_at: (/* @__PURE__ */ new Date()).toISOString()
+				};
+				const reviewDir = join(packageDir, "review");
+				mkdirSync(reviewDir, { recursive: true });
+				writeFileSync(join(reviewDir, "dt-supplement-request.json"), JSON.stringify(request, null, 2) + "\n", "utf8");
+				writeFileSync(join(reviewDir, "supplement-state.json"), JSON.stringify({
+					status: "draft_requested",
+					requested_at: request.requested_at
+				}, null, 2) + "\n", "utf8");
+				return {
+					ok: true,
+					message: targets.length === 0 ? "references 已完整，无需补充" : `补充请求已生成（目标：${targets.join(", ")}）`,
+					request
+				};
+			}
+			if (command === "receive_dt_supplement") {
+				if (!args.draft_path) return {
+					ok: false,
+					message: "draft_path is required"
+				};
+				const draftPath = resolvePath(String(args.draft_path));
+				let draft;
+				try {
+					draft = JSON.parse(readFileSync(draftPath, "utf8"));
+				} catch (error) {
+					return {
+						ok: false,
+						message: `invalid draft JSON: ${error?.message ?? error}`
+					};
+				}
+				if (!Array.isArray(draft?.targets) || draft.targets.length === 0 || !draft.targets.every((t) => t?.target && typeof t.content === "string")) return {
+					ok: false,
+					message: "draft must be {targets: [{target, content}]} with content strings"
+				};
+				if (draft.draft !== true) return {
+					ok: false,
+					message: "DT 补充必须是草稿（draft=true），未经批准不得进入正式 references"
+				};
+				const reviewDir = join(packageDir, "review");
+				mkdirSync(reviewDir, { recursive: true });
+				writeFileSync(join(reviewDir, "dt-supplement-draft.json"), JSON.stringify(draft, null, 2) + "\n", "utf8");
+				writeFileSync(join(reviewDir, "supplement-state.json"), JSON.stringify({
+					status: "draft_received",
+					received_at: (/* @__PURE__ */ new Date()).toISOString(),
+					targets: draft.targets.map((t) => t.target)
+				}, null, 2) + "\n", "utf8");
+				return {
+					ok: true,
+					message: `草稿已接收（${draft.targets.length} 个目标），待用户批准；未写入正式 references`,
+					draft
+				};
+			}
+			if (command === "approve_dt_supplement") {
+				if (args.approved_by !== "user") return {
+					ok: false,
+					message: "approve 必须由用户明确批准（approved_by=user）"
+				};
+				const reviewDir = join(packageDir, "review");
+				let draft;
+				try {
+					draft = JSON.parse(readFileSync(join(reviewDir, "dt-supplement-draft.json"), "utf8"));
+				} catch {
+					return {
+						ok: false,
+						message: "no received draft; run receive_dt_supplement first"
+					};
+				}
+				const allowedTargets = ["creative-guidance", "examples"];
+				const written = [];
+				for (const item of draft.targets) {
+					const target = String(item.target);
+					if (!allowedTargets.includes(target)) return {
+						ok: false,
+						message: `不支持的补充目标：${target}（仅 creative-guidance / examples）`
+					};
+					const path = target === "creative-guidance" ? "references/creative-guidance.md" : "references/examples.md";
+					const existing = readFileSync(join(packageDir, path), "utf8").trimEnd();
+					writeFileSync(join(packageDir, path), existing + "\n\n<!-- DT 创意补充（已获用户批准）-->\n" + String(item.content).trim() + "\n", "utf8");
+					written.push(target);
+				}
+				writeFileSync(join(reviewDir, "supplement-state.json"), JSON.stringify({
+					status: "user_approved",
+					approved_at: (/* @__PURE__ */ new Date()).toISOString(),
+					approved_by: "user",
+					targets: written
+				}, null, 2) + "\n", "utf8");
+				return {
+					ok: true,
+					message: `草稿已批准并入 references（${written.join(", ")}）；仍未发布，需用户确认后 publish`
 				};
 			}
 			if (command === "publish") {
