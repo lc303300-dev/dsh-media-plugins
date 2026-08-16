@@ -323,7 +323,7 @@ var SkillRegistry = class {
 		} catch {
 			rows = [];
 		}
-		if (rows.length === 0) {
+		{
 			const scored = [];
 			const all = this.db.prepare("SELECT * FROM skills").all();
 			for (const row of all) {
@@ -335,15 +335,18 @@ var SkillRegistry = class {
 					String(row.routing_json ?? "")
 				];
 				let score = 0;
+				const likeKeys = /* @__PURE__ */ new Set();
 				for (const term of terms) {
-					const key = term.toLowerCase();
-					for (const haystack of haystacks) {
-						const lower = haystack.toLowerCase();
-						let idx = lower.indexOf(key);
-						while (idx >= 0) {
-							score += 1;
-							idx = lower.indexOf(key, idx + key.length);
-						}
+					likeKeys.add(term.toLowerCase());
+					const cjk = term.match(/[\u4e00-\u9fff]+/g) ?? [];
+					for (const run of cjk) if (run.length >= 2) for (let i = 0; i < run.length - 1; i += 1) likeKeys.add(run.slice(i, i + 2).toLowerCase());
+				}
+				for (const key of likeKeys) for (const haystack of haystacks) {
+					const lower = haystack.toLowerCase();
+					let idx = lower.indexOf(key);
+					while (idx >= 0) {
+						score += 1;
+						idx = lower.indexOf(key, idx + key.length);
 					}
 				}
 				if (score > 0) scored.push({
@@ -352,7 +355,13 @@ var SkillRegistry = class {
 				});
 			}
 			scored.sort((a, b) => Number(a.score) - Number(b.score));
-			rows = scored.slice(0, limit);
+			const byId = /* @__PURE__ */ new Map();
+			for (const r of rows) byId.set(String(r.id), r);
+			for (const s of scored) {
+				const existing = byId.get(String(s.id));
+				if (!existing || Math.abs(Number(s.score)) > Math.abs(Number(existing.score))) byId.set(String(s.id), s);
+			}
+			rows = [...byId.values()];
 		}
 		if (rows.length === 0) {
 			const all = this.db.prepare("SELECT * FROM skills").all();

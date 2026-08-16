@@ -344,8 +344,9 @@ export class SkillRegistry {
       rows = []
     }
 
-    // 2) per-term LIKE scoring (handles short CJK and mixed queries) when FTS misses
-    if (rows.length === 0) {
+    // 2) per-term LIKE scoring (CJK bigrams) — ALWAYS runs and merges with FTS rows,
+    //    so 2-char intent fragments (巨型/巡游/地标) surface even when FTS found others.
+    {
       const scored: Array<Record<string, unknown>> = []
       const all = this.db.prepare('SELECT * FROM skills').all() as Array<Record<string, unknown>>
       for (const row of all) {
@@ -357,8 +358,18 @@ export class SkillRegistry {
           String(row.routing_json ?? ''),
         ]
         let score = 0
+        // LIKE keys: tokenized terms + CJK bigrams (2-char intent fragments like 巨型/巡游/地标)
+        const likeKeys = new Set<string>()
         for (const term of terms) {
-          const key = term.toLowerCase()
+          likeKeys.add(term.toLowerCase())
+          const cjk = term.match(/[\u4e00-\u9fff]+/g) ?? []
+          for (const run of cjk) {
+            if (run.length >= 2) {
+              for (let i = 0; i < run.length - 1; i += 1) likeKeys.add(run.slice(i, i + 2).toLowerCase())
+            }
+          }
+        }
+        for (const key of likeKeys) {
           for (const haystack of haystacks) {
             const lower = haystack.toLowerCase()
             let idx = lower.indexOf(key)
@@ -371,7 +382,14 @@ export class SkillRegistry {
         if (score > 0) scored.push({ ...row, score: -score })
       }
       scored.sort((a, b) => Number(a.score) - Number(b.score))
-      rows = scored.slice(0, limit)
+      // merge LIKE results into FTS rows (dedupe by id, keep the higher base score)
+      const byId = new Map<string, Record<string, unknown>>()
+      for (const r of rows) byId.set(String(r.id), r)
+      for (const s of scored) {
+        const existing = byId.get(String(s.id))
+        if (!existing || Math.abs(Number(s.score)) > Math.abs(Number(existing.score))) byId.set(String(s.id), s)
+      }
+      rows = [...byId.values()]
     }
 
     // 3) semantic-only retrieval: synonyms/category terms matched against routing
