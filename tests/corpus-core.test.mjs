@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { searchCorpus, corpusSize, scoreCorpusRow, toCorpusMatch, resolveIndexPath } from '../src/shared/corpus-core.ts'
+import { searchCorpus, corpusSize, scoreCorpusRow, toCorpusMatch, resolveIndexPath, cjkBigrams } from '../src/shared/corpus-core.ts'
 
 test('corpus loads from the bundled index (full seedance-forge port)', () => {
   const size = corpusSize()
@@ -48,6 +48,14 @@ test('toCorpusMatch always yields the portable_pattern field', () => {
   assert.equal(match.id, 'x')
   assert.ok(match.portable_pattern.includes('夜晚'))
   assert.ok(match.content_preview.length > 0)
+})
+
+test('CJK bigram tokenization makes long Chinese queries match', () => {
+  assert.deepEqual(cjkBigrams('夜晚城市'), ['夜晚', '晚城', '城市'])
+  const row = { id: 'x', title: '', description: '', content: '夜晚的城市霓虹灯光' }
+  assert.ok(scoreCorpusRow(row, '夜晚的未来城市霓虹灯光倒映') > 0, 'long CJK query must score via bigrams')
+  const hits = searchCorpus('夜晚的未来城市，霓虹灯光倒映在湿润的街道上，镜头从楼顶缓慢推近到街角人群', 3)
+  assert.ok(hits.length > 0 && hits.length <= 3, 'long CJK query finds bounded matches')
 })
 
 test('resolveIndexPath resolves to the bundled index file', () => {

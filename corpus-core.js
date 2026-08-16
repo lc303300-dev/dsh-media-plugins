@@ -38,18 +38,31 @@ function loadCorpus(indexPath) {
 	cachedRows = rows;
 	return rows;
 }
-/** Ranking mirrors seedance-forge native scoring. */
+/** CJK bigrams of a token (2-char sliding windows over CJK runs). */
+function cjkBigrams(token) {
+	const cjk = token.match(/[\u4e00-\u9fff]+/g) ?? [];
+	const bigrams = [];
+	for (const run of cjk) {
+		if (run.length === 1) bigrams.push(run);
+		for (let i = 0; i < run.length - 1; i += 1) bigrams.push(run.slice(i, i + 2));
+	}
+	return bigrams;
+}
+/** Ranking mirrors seedance-forge native scoring, with CJK bigram tokenization. */
 function scoreCorpusRow(row, query) {
 	const title = String(row.title ?? "").toLowerCase();
 	const category = String(row.category ?? "").toLowerCase();
 	const description = String(row.description ?? "").toLowerCase();
 	const content = String(row.content ?? "").toLowerCase();
 	let score = 0;
-	for (const keyword of query.toLowerCase().split(/\s+/).filter(Boolean)) {
-		score += (title.split(keyword).length - 1) * 4;
-		score += (category.split(keyword).length - 1) * 3;
-		score += (description.split(keyword).length - 1) * 2;
-		score += content.split(keyword).length - 1;
+	for (const raw of query.toLowerCase().split(/\s+/).filter(Boolean)) {
+		const keywords = raw.length > 2 && /[\u4e00-\u9fff]/.test(raw) ? [raw, ...cjkBigrams(raw)] : [raw];
+		for (const keyword of keywords) {
+			score += (title.split(keyword).length - 1) * 4;
+			score += (category.split(keyword).length - 1) * 3;
+			score += (description.split(keyword).length - 1) * 2;
+			score += content.split(keyword).length - 1;
+		}
 	}
 	return score;
 }
