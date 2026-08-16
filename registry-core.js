@@ -156,13 +156,13 @@ function materialGuidance(contractJson) {
 	try {
 		const contract = JSON.parse(contractJson);
 		return (Array.isArray(contract.references) ? contract.references : Array.isArray(contract.slots) ? contract.slots : []).map((item) => ({
-			id: item.id,
-			media_type: item.media_type,
-			description: item.description,
-			required: item.required,
-			min_count: item.min_count,
-			max_count: item.max_count,
-			ordered: item.ordered
+			id: String(item.id ?? ""),
+			media_type: String(item.media_type ?? ""),
+			description: String(item.description ?? ""),
+			required: item.required ?? null,
+			min_count: item.min_count ?? null,
+			max_count: item.max_count ?? null,
+			ordered: item.ordered ?? null
 		}));
 	} catch {
 		return [];
