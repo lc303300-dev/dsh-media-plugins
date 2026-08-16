@@ -82,6 +82,46 @@ test('search tokenizes multi-term CJK+ASCII intent queries', () => {
   }
 })
 
+test('search: matched reasons, negative weighting, alias boost, material guidance', () => {
+  const { db, cleanup } = tempDb()
+  try {
+    db.ingest({
+      contract: {
+        name: 'demo-promo',
+        version: '1.0.0',
+        description: '地产楼盘宣传片：将楼盘与社区参考素材编排为城市叙事的人居宣传片提示词。',
+        taxonomy: ['地产', '宣传片'],
+        slots: [{ id: 'hero', label: '楼盘图', min: 1, max: 3, count_rule: 'fixed' }],
+      },
+      routing: {
+        aliases: ['地产宣传片'],
+        user_intents: ['地产', '楼盘宣传'],
+        subjects: ['楼盘'],
+        styles: [],
+        narrative_patterns: [],
+        negative_intents: ['纪录片'],
+      },
+    })
+    db.setStatus('demo-promo', '1.0.0', 'published')
+    // exact alias boost: query equals an alias → +100 and reason
+    const aliasHits = db.search('地产宣传片', 5, 'published')
+    assert.ok(aliasHits[0].score >= 100, 'exact alias must get the +100 boost')
+    assert.ok(aliasHits[0].matched_reasons?.some((r) => r.includes('别名')), 'alias hit reason must be present')
+    // intent term match → reason + score boost
+    const intentHits = db.search('我想做地产楼盘的宣传片', 5, 'published')
+    assert.ok(intentHits.length > 0, 'unsegmented long query must retrieve via grams/semantic')
+    assert.ok(intentHits[0].matched_reasons?.some((r) => r.includes('意图命中')), 'intent reason must be present')
+    // material guidance from contract
+    assert.ok(Array.isArray(intentHits[0].material_guidance) && intentHits[0].material_guidance.length === 1)
+    assert.equal(intentHits[0].material_guidance[0].id, 'hero')
+    // negative intent weighting: query with a negative term scores lower
+    const negHits = db.search('地产宣传片纪录片', 5, 'published')
+    assert.ok(negHits[0].negative_hits?.includes('纪录片'), 'negative intent must be reported')
+  } finally {
+    cleanup()
+  }
+})
+
 test('dedupe by name+version across versions', () => {
   const { db, cleanup } = tempDb()
   try {

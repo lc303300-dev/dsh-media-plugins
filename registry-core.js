@@ -24,12 +24,150 @@ var __exportAll = (all, no_symbols) => {
 * @module dsh-media-plugins/shared/registry-core
 */
 var registry_core_exports = /* @__PURE__ */ __exportAll({
+	ROUTING_FIELDS: () => ROUTING_FIELDS,
 	SkillRegistry: () => SkillRegistry,
+	TAXONOMY: () => TAXONOMY,
 	VIDEO_RATIOS: () => VIDEO_RATIOS,
+	matchedTerms: () => matchedTerms,
+	materialGuidance: () => materialGuidance,
+	normalizeTerm: () => normalizeTerm,
 	skillSha256: () => skillSha256,
 	tokenizeSearchTerms: () => tokenizeSearchTerms,
 	validateContract: () => validateContract
 });
+/** Taxonomy (ported from Codex_CS skill-registry/config/taxonomy.json). */
+const ROUTING_FIELDS = [
+	"aliases",
+	"user_intents",
+	"subjects",
+	"styles",
+	"narrative_patterns",
+	"negative_intents"
+];
+const TAXONOMY = {
+	categories: {
+		intents: [
+			"宣传片",
+			"品牌展示",
+			"城市形象",
+			"地产宣传",
+			"地标巡游",
+			"建筑展示",
+			"动态组装",
+			"提示词"
+		],
+		subjects: [
+			"城市",
+			"地产",
+			"楼盘",
+			"建筑",
+			"地标",
+			"Logo",
+			"品牌",
+			"IP",
+			"角色",
+			"人居"
+		],
+		styles: [
+			"科幻",
+			"未来感",
+			"晨曦",
+			"云雾",
+			"高奢",
+			"写实",
+			"电影感",
+			"巨型",
+			"3D"
+		],
+		narrative_patterns: [
+			"巡游",
+			"硬切",
+			"一镜到底",
+			"航拍",
+			"穿梭",
+			"组装",
+			"拆解",
+			"特写",
+			"全貌",
+			"多场景"
+		]
+	},
+	synonyms: {
+		logo: [
+			"Logo",
+			"LOGO",
+			"标志",
+			"品牌标识"
+		],
+		ip: [
+			"IP",
+			"角色",
+			"吉祥物"
+		],
+		地产: [
+			"地产",
+			"房地产",
+			"楼盘",
+			"住宅",
+			"人居"
+		],
+		科幻: [
+			"科幻",
+			"未来",
+			"赛博",
+			"科技感"
+		],
+		宣传片: [
+			"宣传片",
+			"宣传视频",
+			"形象片",
+			"推广片"
+		]
+	}
+};
+/** Normalize a string: strip non-alphanumeric/CJK, casefold (registry.py port). */
+function normalizeTerm(value) {
+	return String(value ?? "").replace(/[^0-9a-z\u4e00-\u9fff]+/gi, "").toLowerCase();
+}
+/** Match a query against routing terms with synonym expansion. */
+function matchedTerms(query, routing) {
+	const queryNorm = normalizeTerm(query);
+	const positive = [];
+	const negative = [];
+	const synonymHits = /* @__PURE__ */ new Set();
+	for (const [canonical, forms] of Object.entries(TAXONOMY.synonyms)) if (forms.some((form) => queryNorm.includes(normalizeTerm(form)))) synonymHits.add(canonical.toLowerCase());
+	for (const field of ROUTING_FIELDS) {
+		const values = Array.isArray(routing[field]) ? routing[field] : [];
+		for (const term of values) {
+			const key = String(term).toLowerCase();
+			if (queryNorm.includes(normalizeTerm(String(term))) || synonymHits.has(key)) {
+				if (field === "negative_intents") negative.push(String(term));
+				else positive.push(String(term));
+			}
+		}
+	}
+	return {
+		positive,
+		negative
+	};
+}
+/** Material guidance from the contract references (registry.py material_summary). */
+function materialGuidance(contractJson) {
+	try {
+		const contract = JSON.parse(contractJson);
+		return (Array.isArray(contract.references) ? contract.references : Array.isArray(contract.slots) ? contract.slots : []).map((item) => ({
+			id: item.id,
+			media_type: item.media_type,
+			description: item.description,
+			required: item.required,
+			min_count: item.min_count,
+			max_count: item.max_count,
+			ordered: item.ordered
+		}));
+	} catch {
+		return [];
+	}
+}
 /** Supported video ratios (project pipeline contract). */
 const VIDEO_RATIOS = [
 	"1:1",
@@ -162,17 +300,22 @@ var SkillRegistry = class {
 		return row ? this.rowToRecord(row) : void 0;
 	}
 	/** FTS5 trigram search over name/description/taxonomy/contract, with
-	*  CJK-friendly tokenization (short 2-char intent terms like 巨型/巡游). */
+	*  CJK-friendly tokenization: trigram grams + latin words + per-term LIKE,
+	*  then semantic scoring (synonyms, negative weighting, alias boost). */
 	search(query, limit = 10, status = "published") {
 		const q = (query ?? "").trim();
 		if (q.length === 0) return [];
 		const terms = tokenizeSearchTerms(q);
 		let rows = [];
 		try {
-			const longTerms = terms.filter((t) => [...t].length >= 3);
-			if (longTerms.length > 0) {
-				const expression = longTerms.map((t) => `"${t.replaceAll("\"", " ")}"`).join(" OR ");
-				rows = this.db.prepare(`SELECT s.id, s.name, s.version, s.description, s.status, s.taxonomy, bm25(skills_fts) AS score
+			const compact = normalizeTerm(q);
+			const grams = [];
+			for (let i = 0; i < Math.max(0, compact.length - 2); i += 1) grams.push(compact.slice(i, i + 3));
+			const words = (q.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []).filter(Boolean);
+			const ftsTerms = [.../* @__PURE__ */ new Set([...grams, ...words])].slice(0, 64);
+			if (ftsTerms.length > 0) {
+				const expression = ftsTerms.map((t) => `"${t.replaceAll("\"", " ")}"`).join(" OR ");
+				rows = this.db.prepare(`SELECT s.id, s.name, s.version, s.description, s.status, s.taxonomy, s.routing_json, s.contract_json, bm25(skills_fts) AS score
              FROM skills_fts JOIN skills s ON s.id = skills_fts.skill_id
              WHERE skills_fts MATCH ?
              ORDER BY score LIMIT ?`).all(expression, Math.max(limit, 20));
@@ -211,15 +354,43 @@ var SkillRegistry = class {
 			scored.sort((a, b) => Number(a.score) - Number(b.score));
 			rows = scored.slice(0, limit);
 		}
-		return rows.filter((r) => status === "any" || r.status === status).map((r) => ({
-			id: r.id,
-			name: r.name,
-			version: r.version,
-			description: r.description,
-			status: r.status,
-			taxonomy: safeJson(r.taxonomy, []),
-			score: Math.round(Math.abs(Number(r.score ?? 0)) * 100) / 100
-		}));
+		if (rows.length === 0) {
+			const all = this.db.prepare("SELECT * FROM skills").all();
+			const semantic = [];
+			for (const row of all) {
+				const { positive } = matchedTerms(q, safeJson(row.routing_json, {}));
+				if (positive.length > 0) semantic.push({
+					...row,
+					score: -1
+				});
+			}
+			semantic.sort((a, b) => Number(a.score) - Number(b.score));
+			rows = semantic.slice(0, limit);
+		}
+		return rows.filter((r) => status === "any" || r.status === status).map((r) => {
+			const routing = safeJson(r.routing_json, {});
+			const aliases = Array.isArray(routing.aliases) ? routing.aliases.map(String) : [];
+			const queryNorm = normalizeTerm(q);
+			const exactAlias = aliases.some((alias) => normalizeTerm(alias) === queryNorm) || normalizeTerm(String(r.name ?? "")) === queryNorm;
+			const { positive, negative } = matchedTerms(q, routing);
+			const score = Math.abs(Number(r.score ?? 0)) + positive.length * 12 - negative.length * 20 + Number(routing.priority ?? 50) * .1 + (exactAlias ? 100 : 0);
+			const reasons = [];
+			if (exactAlias) reasons.push("名称或别名精确命中");
+			for (const term of positive) reasons.push(`意图命中：${term}`);
+			if (reasons.length === 0) reasons.push("全文意图相似");
+			return {
+				id: r.id,
+				name: r.name,
+				version: r.version,
+				description: r.description,
+				status: r.status,
+				taxonomy: safeJson(r.taxonomy, []),
+				score: Math.round(score * 100) / 100,
+				matched_reasons: reasons,
+				negative_hits: negative,
+				material_guidance: materialGuidance(String(r.contract_json ?? ""))
+			};
+		}).sort((a, b) => b.score - a.score).slice(0, limit);
 	}
 	setStatus(name, version, status) {
 		const existing = this.get(name, version);

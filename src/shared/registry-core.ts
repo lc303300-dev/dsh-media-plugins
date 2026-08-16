@@ -64,6 +64,78 @@ export interface SearchHit {
   status: SkillStatus
   taxonomy: string[]
   score: number
+  matched_reasons?: string[]
+  negative_hits?: string[]
+  material_guidance?: Array<Record<string, unknown>>
+}
+
+/** Taxonomy (ported from Codex_CS skill-registry/config/taxonomy.json). */
+export const ROUTING_FIELDS = ['aliases', 'user_intents', 'subjects', 'styles', 'narrative_patterns', 'negative_intents'] as const
+
+export const TAXONOMY: { categories: Record<string, string[]>; synonyms: Record<string, string[]> } = {
+  categories: {
+    intents: ['宣传片', '品牌展示', '城市形象', '地产宣传', '地标巡游', '建筑展示', '动态组装', '提示词'],
+    subjects: ['城市', '地产', '楼盘', '建筑', '地标', 'Logo', '品牌', 'IP', '角色', '人居'],
+    styles: ['科幻', '未来感', '晨曦', '云雾', '高奢', '写实', '电影感', '巨型', '3D'],
+    narrative_patterns: ['巡游', '硬切', '一镜到底', '航拍', '穿梭', '组装', '拆解', '特写', '全貌', '多场景'],
+  },
+  synonyms: {
+    logo: ['Logo', 'LOGO', '标志', '品牌标识'],
+    ip: ['IP', '角色', '吉祥物'],
+    地产: ['地产', '房地产', '楼盘', '住宅', '人居'],
+    科幻: ['科幻', '未来', '赛博', '科技感'],
+    宣传片: ['宣传片', '宣传视频', '形象片', '推广片'],
+  },
+}
+
+/** Normalize a string: strip non-alphanumeric/CJK, casefold (registry.py port). */
+export function normalizeTerm(value: string): string {
+  return String(value ?? '').replace(/[^0-9a-z\u4e00-\u9fff]+/gi, '').toLowerCase()
+}
+
+/** Match a query against routing terms with synonym expansion. */
+export function matchedTerms(
+  query: string,
+  routing: Record<string, unknown>,
+): { positive: string[]; negative: string[] } {
+  const queryNorm = normalizeTerm(query)
+  const positive: string[] = []
+  const negative: string[] = []
+  const synonymHits = new Set<string>()
+  for (const [canonical, forms] of Object.entries(TAXONOMY.synonyms)) {
+    if (forms.some((form) => queryNorm.includes(normalizeTerm(form)))) synonymHits.add(canonical.toLowerCase())
+  }
+  for (const field of ROUTING_FIELDS) {
+    const values = Array.isArray(routing[field]) ? routing[field] : []
+    for (const term of values) {
+      const key = String(term).toLowerCase()
+      const hit = queryNorm.includes(normalizeTerm(String(term))) || synonymHits.has(key)
+      if (hit) {
+        if (field === 'negative_intents') negative.push(String(term))
+        else positive.push(String(term))
+      }
+    }
+  }
+  return { positive, negative }
+}
+
+/** Material guidance from the contract references (registry.py material_summary). */
+export function materialGuidance(contractJson: string): Array<Record<string, unknown>> {
+  try {
+    const contract = JSON.parse(contractJson)
+    const refs = Array.isArray(contract.references) ? contract.references : Array.isArray(contract.slots) ? contract.slots : []
+    return refs.map((item: Record<string, unknown>) => ({
+      id: item.id,
+      media_type: item.media_type,
+      description: item.description,
+      required: item.required,
+      min_count: item.min_count,
+      max_count: item.max_count,
+      ordered: item.ordered,
+    }))
+  } catch {
+    return []
+  }
 }
 
 /** Supported video ratios (project pipeline contract). */
@@ -241,21 +313,27 @@ export class SkillRegistry {
   }
 
   /** FTS5 trigram search over name/description/taxonomy/contract, with
-   *  CJK-friendly tokenization (short 2-char intent terms like 巨型/巡游). */
+   *  CJK-friendly tokenization: trigram grams + latin words + per-term LIKE,
+   *  then semantic scoring (synonyms, negative weighting, alias boost). */
   search(query: string, limit = 10, status: SkillStatus | 'any' = 'published'): SearchHit[] {
     const q = (query ?? '').trim()
     if (q.length === 0) return []
     const terms = tokenizeSearchTerms(q)
     let rows: any[] = []
 
-    // 1) FTS5 trigram MATCH on terms long enough for trigram indexing (>= 3 chars)
+    // 1) FTS5 trigram MATCH over trigram grams of the normalized query + latin words
+    //    (registry.py query_terms port: unsegmented CJK sentences still retrieve).
     try {
-      const longTerms = terms.filter((t) => [...t].length >= 3)
-      if (longTerms.length > 0) {
-        const expression = longTerms.map((t) => `"${t.replaceAll('"', ' ')}"`).join(' OR ')
+      const compact = normalizeTerm(q)
+      const grams: string[] = []
+      for (let i = 0; i < Math.max(0, compact.length - 2); i += 1) grams.push(compact.slice(i, i + 3))
+      const words = (q.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []).filter(Boolean)
+      const ftsTerms = [...new Set([...grams, ...words])].slice(0, 64)
+      if (ftsTerms.length > 0) {
+        const expression = ftsTerms.map((t) => `"${t.replaceAll('"', ' ')}"`).join(' OR ')
         rows = this.db
           .prepare(
-            `SELECT s.id, s.name, s.version, s.description, s.status, s.taxonomy, bm25(skills_fts) AS score
+            `SELECT s.id, s.name, s.version, s.description, s.status, s.taxonomy, s.routing_json, s.contract_json, bm25(skills_fts) AS score
              FROM skills_fts JOIN skills s ON s.id = skills_fts.skill_id
              WHERE skills_fts MATCH ?
              ORDER BY score LIMIT ?`,
@@ -296,17 +374,49 @@ export class SkillRegistry {
       rows = scored.slice(0, limit)
     }
 
+    // 3) semantic-only retrieval: synonyms/category terms matched against routing
+    //    fields surface even when FTS/LIKE grams miss (e.g. 地产/楼盘 synonyms).
+    if (rows.length === 0) {
+      const all = this.db.prepare('SELECT * FROM skills').all() as Array<Record<string, unknown>>
+      const semantic: Array<Record<string, unknown>> = []
+      for (const row of all) {
+        const routing = safeJson(row.routing_json, {})
+        const { positive } = matchedTerms(q, routing)
+        if (positive.length > 0) semantic.push({ ...row, score: -1 })
+      }
+      semantic.sort((a, b) => Number(a.score) - Number(b.score))
+      rows = semantic.slice(0, limit)
+    }
+
     return rows
       .filter((r) => status === 'any' || r.status === status)
-      .map((r) => ({
-        id: r.id as string,
-        name: r.name as string,
-        version: r.version as string,
-        description: r.description as string,
-        status: r.status as SkillStatus,
-        taxonomy: safeJson(r.taxonomy, []),
-        score: Math.round(Math.abs(Number(r.score ?? 0)) * 100) / 100,
-      }))
+      .map((r) => {
+        const routing = safeJson(r.routing_json, {})
+        const aliases = Array.isArray(routing.aliases) ? routing.aliases.map(String) : []
+        const queryNorm = normalizeTerm(q)
+        const exactAlias = aliases.some((alias) => normalizeTerm(alias) === queryNorm) || normalizeTerm(String(r.name ?? '')) === queryNorm
+        const { positive, negative } = matchedTerms(q, routing)
+        const base = Math.abs(Number(r.score ?? 0))
+        const score = base + positive.length * 12 - negative.length * 20 + Number(routing.priority ?? 50) * 0.1 + (exactAlias ? 100 : 0)
+        const reasons: string[] = []
+        if (exactAlias) reasons.push('名称或别名精确命中')
+        for (const term of positive) reasons.push(`意图命中：${term}`)
+        if (reasons.length === 0) reasons.push('全文意图相似')
+        return {
+          id: r.id as string,
+          name: r.name as string,
+          version: r.version as string,
+          description: r.description as string,
+          status: r.status as SkillStatus,
+          taxonomy: safeJson(r.taxonomy, []),
+          score: Math.round(score * 100) / 100,
+          matched_reasons: reasons,
+          negative_hits: negative,
+          material_guidance: materialGuidance(String(r.contract_json ?? '')),
+        }
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
   }
 
   setStatus(name: string, version: string, status: SkillStatus): SkillRecord {
