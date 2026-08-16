@@ -131,12 +131,26 @@ pnpm test    # node --test（103 个离线单测，覆盖路由/失败分类/熔
 
 | 脚本 | 对应 Codex | 用途 |
 |---|---|---|
-| `scripts/deploy.ps1` | new-machine-deploy / bootstrap-new-machine | 一键部署：前置检查 → 结构校验 → pnpm install+build → setup.ps1 引导 → verify-deployment |
+| `scripts/deploy.ps1` | new-machine-deploy / bootstrap-new-machine | 一键部署：前置检查 → 结构校验 → pnpm install+build → setup.ps1 引导 → verify-deployment → 桌面壳 + 快捷方式（.NET 8 SDK 可用时） |
 | `scripts/verify-deployment.ps1` | verify-deployment.ps1 | 部署验证：包结构/构建产物/技能/语料/dreamina/ffmpeg/DSH 宿主侧 |
 | `scripts/start-task.ps1` | scripts/maintenance/start-task.ps1 | 任务开始前检查：结构校验 + git 状态 + 安全 fast-forward 更新（仅干净工作树） |
 | `scripts/configure-keys.ps1` | configure-api-key.ps1 | 隐藏式写 API Key 到 `$DSH_HOME/.credentials.yaml`，值不回显 |
+| `shell/Build-DeepSeekHarnessShell.ps1` | — | 构建 WebView2 桌面壳（需要 .NET 8 SDK） |
+| `shell/Install-DesktopShortcut.ps1` | — | 在桌面创建 DeepSeek Harness 快捷方式 |
 
 运行时就绪详情用 `media_status` 工具的 `status` / `verify` 命令。
+
+## 桌面壳（DeepSeekHarnessShell，仅 Windows）
+
+`shell/` 内含一个 WebView2 桌面壳：启动 `dsh web`（或就近的源码检出）并包成独立窗口 + 托盘，
+外链在系统默认浏览器打开。源码随仓库分发，构建产物不提交。
+
+- 前置：**.NET 8 SDK**（`dotnet` 在 PATH）；运行时依赖 WebView2（Win10/11 自带）。
+- 构建 + 建快捷方式：`powershell -NoProfile -ExecutionPolicy Bypass -File .\shell\Build-DeepSeekHarnessShell.ps1`
+- 仅建快捷方式：`powershell -NoProfile -ExecutionPolicy Bypass -File .\shell\Install-DesktopShortcut.ps1`
+- 部署入口 `scripts/deploy.ps1` 检测到 `dotnet` 时会自动构建并创建桌面快捷方式，否则跳过并提示。
+- 壳会优先探测附近的 DSH 源码检出（或 `DEEPSEEK_HARNESS_ROOT`）；都没有时走 `dsh` CLI。
+  可用环境变量 `DSH_WEB_COMMAND` 覆盖启动命令（默认 `dsh`）。
 
 ## 完成通知
 

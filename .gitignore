@@ -1,6 +1,7 @@
-﻿# 依赖与构建
+# 依赖与构建
 node_modules/
 *.tgz
+obj/
 
 # Dreamina CLI 二进制（31.9MB），由 setup.ps1 从官方地址下载，不进仓库
 bin/

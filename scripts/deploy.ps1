@@ -1,10 +1,11 @@
-# dsh-media-plugins 一键部署（对应 Codex new-machine-deploy/bootstrap-new-machine）
-# 用法: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy.ps1 [-SkipBuild] [-SkipSetup] [-SkipVerify]
+﻿# dsh-media-plugins 一键部署（对应 Codex new-machine-deploy/bootstrap-new-machine）
+# 用法: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy.ps1 [-SkipBuild] [-SkipSetup] [-SkipVerify] [-SkipShell]
 [CmdletBinding()]
 param(
     [switch]$SkipBuild,
     [switch]$SkipSetup,
-    [switch]$SkipVerify
+    [switch]$SkipVerify,
+    [switch]$SkipShell
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -17,7 +18,7 @@ foreach ($command in @("git", "node", "pnpm", "powershell.exe")) {
         throw "Required command is missing: $command"
     }
 }
-Write-Host "[1/5] 前置命令就绪（git / node / pnpm）" -ForegroundColor Green
+Write-Host "[1/6] 前置命令就绪（git / node / pnpm）" -ForegroundColor Green
 
 # 2. 仓库结构检查
 foreach ($path in @(
@@ -30,11 +31,11 @@ foreach ($path in @(
         throw "Required file missing: $path"
     }
 }
-Write-Host "[2/5] 仓库结构完整" -ForegroundColor Green
+Write-Host "[2/6] 仓库结构完整" -ForegroundColor Green
 
 # 3. 依赖 + 构建
 if (-not $SkipBuild) {
-    Write-Host "[3/5] pnpm install + build（tsdown 生成包根 *.js）..." -ForegroundColor Yellow
+    Write-Host "[3/6] pnpm install + build（tsdown 生成包根 *.js）..." -ForegroundColor Yellow
     Push-Location $root
     try {
         & pnpm install 2>&1 | Out-Host
@@ -46,25 +47,38 @@ if (-not $SkipBuild) {
     }
     Write-Host "  构建完成" -ForegroundColor Green
 } else {
-    Write-Host "[3/5] 跳过构建（-SkipBuild）" -ForegroundColor DarkGray
+    Write-Host "[3/6] 跳过构建（-SkipBuild）" -ForegroundColor DarkGray
 }
 
 # 4. 单机引导（下载 dreamina、写 key、配火山 provider、登录、装技能）
 if (-not $SkipSetup) {
-    Write-Host "[4/5] 运行 setup.ps1 引导（按提示操作）..." -ForegroundColor Yellow
+    Write-Host "[4/6] 运行 setup.ps1 引导（按提示操作）..." -ForegroundColor Yellow
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "setup.ps1")
     if ($LASTEXITCODE -ne 0) { throw "setup.ps1 failed" }
 } else {
-    Write-Host "[4/5] 跳过引导（-SkipSetup）" -ForegroundColor DarkGray
+    Write-Host "[4/6] 跳过引导（-SkipSetup）" -ForegroundColor DarkGray
 }
 
 # 5. 部署验证
 if (-not $SkipVerify) {
-    Write-Host "[5/5] 部署验证..." -ForegroundColor Yellow
+    Write-Host "[5/6] 部署验证..." -ForegroundColor Yellow
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts\verify-deployment.ps1")
     if ($LASTEXITCODE -ne 0) { throw "verify-deployment failed" }
 } else {
-    Write-Host "[5/5] 跳过验证（-SkipVerify）" -ForegroundColor DarkGray
+    Write-Host "[5/6] 跳过验证（-SkipVerify）" -ForegroundColor DarkGray
+}
+
+# 6. WebView2 桌面壳 + 桌面快捷方式（需要 .NET 8 SDK，可选）
+if (-not $SkipShell) {
+    Write-Host "[6/6] 桌面壳（DeepSeekHarnessShell）+ 桌面快捷方式..." -ForegroundColor Yellow
+    if (Get-Command dotnet -ErrorAction SilentlyContinue) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "shell\Build-DeepSeekHarnessShell.ps1")
+        if ($LASTEXITCODE -ne 0) { throw "Build-DeepSeekHarnessShell.ps1 failed" }
+    } else {
+        Write-Host "  未检测到 .NET SDK，跳过桌面壳（安装 .NET 8 SDK 后重跑本脚本，或手动执行 shell\Build-DeepSeekHarnessShell.ps1）。" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "[6/6] 跳过桌面壳（-SkipShell）" -ForegroundColor DarkGray
 }
 
 Write-Host ""
