@@ -86,7 +86,7 @@ function parseFrontmatterName(text: string): { name?: string; description?: stri
   const match = text.match(/^---\s*\r?\n(.*?)\r?\n---(?:\r?\n|$)/s)
   if (!match) return {}
   const out: Record<string, string> = {}
-  for (const line of match[1].split('\n')) {
+  for (const line of match[1].split(/\r?\n/)) {
     const kv = line.match(/^([A-Za-z_][\w-]*)\s*:\s*(.+)$/)
     if (kv) out[kv[1].trim()] = kv[2].trim().replace(/^["']|["']$/g, '')
   }

@@ -200,7 +200,7 @@ export function parseFrontmatter(text: string): { metadata: Record<string, strin
   const match = text.match(/^---\s*\r?\n(.*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/s)
   if (!match) throw new Error('SKILL.md must start with YAML frontmatter')
   const metadata: Record<string, string> = {}
-  for (const raw of match[1].split('\n')) {
+  for (const raw of match[1].split(/\r?\n/)) {
     if (!raw.trim()) continue
     const field = raw.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.+)$/)
     if (!field) throw new Error(`Unsupported frontmatter line: ${raw}`)
