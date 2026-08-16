@@ -167,7 +167,6 @@ export function packageSha256(root: string, includeReceipt = false): string {
     const relative = path.replaceAll('\\', '/').replace(root.replaceAll('\\', '/'), '').replace(/^\//, '')
     const relBuf = Buffer.from(relative, 'utf8')
     const data = readFileSync(path)
-    digest.update(Buffer.alloc(8))
     digest.update(int64(relBuf.length))
     digest.update(relBuf)
     digest.update(int64(data.length))
@@ -192,7 +191,13 @@ function listFiles(root: string): string[] {
     }
   }
   walk(root)
-  return out.sort()
+  // Windows path semantics sort case-insensitively (Python WindowsPath comparison);
+  // this ordering is part of the length-prefixed package hash contract.
+  return out.sort((a, b) => {
+    const la = a.toLowerCase()
+    const lb = b.toLowerCase()
+    return la < lb ? -1 : la > lb ? 1 : 0
+  })
 }
 
 /** Parse SKILL.md YAML frontmatter; returns {metadata, body}. */
@@ -364,7 +369,7 @@ export function validatePackage(root: string, requireReceipt = false): Issue[] {
       if (lookup.length === 0) add(issues, 'EMPTY_DURATION_LOOKUP', 'duration_lookup requires at least one anchor', path)
       const durations: number[] = []
       lookup.forEach((anchor: any) => {
-        if (!anchor || typeof anchor !== 'object' || JSON.stringify(Object.keys(anchor).sort()) !== JSON.stringify(['duration_seconds', 'count'])) {
+        if (!anchor || typeof anchor !== 'object' || JSON.stringify(Object.keys(anchor).sort()) !== JSON.stringify(['duration_seconds', 'count'].sort())) {
           add(issues, 'INVALID_DURATION_ANCHOR', 'Each duration lookup anchor requires duration_seconds and count', path)
           return
         }
