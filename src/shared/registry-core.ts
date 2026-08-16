@@ -240,45 +240,72 @@ export class SkillRegistry {
     return row ? this.rowToRecord(row) : undefined
   }
 
-  /** FTS5 trigram search over name/description/taxonomy/contract. */
+  /** FTS5 trigram search over name/description/taxonomy/contract, with
+   *  CJK-friendly tokenization (short 2-char intent terms like 巨型/巡游). */
   search(query: string, limit = 10, status: SkillStatus | 'any' = 'published'): SearchHit[] {
     const q = (query ?? '').trim()
     if (q.length === 0) return []
-    const quoted = q.includes('"') ? q.replaceAll('"', ' ') : q
+    const terms = tokenizeSearchTerms(q)
     let rows: any[] = []
+
+    // 1) FTS5 trigram MATCH on terms long enough for trigram indexing (>= 3 chars)
     try {
-      rows = this.db
-        .prepare(
-          `SELECT s.id, s.name, s.version, s.description, s.status, s.taxonomy, bm25(skills_fts) AS score
-           FROM skills_fts JOIN skills s ON s.id = skills_fts.skill_id
-           WHERE skills_fts MATCH ?
-           ORDER BY score LIMIT ?`,
-        )
-        .all(`"${quoted.replaceAll('"', ' ')}"`, limit)
+      const longTerms = terms.filter((t) => [...t].length >= 3)
+      if (longTerms.length > 0) {
+        const expression = longTerms.map((t) => `"${t.replaceAll('"', ' ')}"`).join(' OR ')
+        rows = this.db
+          .prepare(
+            `SELECT s.id, s.name, s.version, s.description, s.status, s.taxonomy, bm25(skills_fts) AS score
+             FROM skills_fts JOIN skills s ON s.id = skills_fts.skill_id
+             WHERE skills_fts MATCH ?
+             ORDER BY score LIMIT ?`,
+          )
+          .all(expression, Math.max(limit, 20))
+      }
     } catch {
       rows = []
     }
+
+    // 2) per-term LIKE scoring (handles short CJK and mixed queries) when FTS misses
     if (rows.length === 0) {
-      // trigram fallback: LIKE on CJK fragments
-      const like = `%${q}%`
-      rows = this.db
-        .prepare(
-          `SELECT id, name, version, description, status, taxonomy, 0 AS score FROM skills
-           WHERE name LIKE ? OR description LIKE ? OR taxonomy LIKE ?
-           ORDER BY CASE status WHEN 'published' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END LIMIT ?`,
-        )
-        .all(like, like, like, limit)
+      const scored: Array<Record<string, unknown>> = []
+      const all = this.db.prepare('SELECT * FROM skills').all() as Array<Record<string, unknown>>
+      for (const row of all) {
+        const haystacks = [
+          String(row.name ?? ''),
+          String(row.description ?? ''),
+          String(row.taxonomy ?? ''),
+          String(row.contract_json ?? ''),
+          String(row.routing_json ?? ''),
+        ]
+        let score = 0
+        for (const term of terms) {
+          const key = term.toLowerCase()
+          for (const haystack of haystacks) {
+            const lower = haystack.toLowerCase()
+            let idx = lower.indexOf(key)
+            while (idx >= 0) {
+              score += 1
+              idx = lower.indexOf(key, idx + key.length)
+            }
+          }
+        }
+        if (score > 0) scored.push({ ...row, score: -score })
+      }
+      scored.sort((a, b) => Number(a.score) - Number(b.score))
+      rows = scored.slice(0, limit)
     }
+
     return rows
       .filter((r) => status === 'any' || r.status === status)
       .map((r) => ({
-        id: r.id,
-        name: r.name,
-        version: r.version,
-        description: r.description,
+        id: r.id as string,
+        name: r.name as string,
+        version: r.version as string,
+        description: r.description as string,
         status: r.status as SkillStatus,
         taxonomy: safeJson(r.taxonomy, []),
-        score: Math.round((r.score ?? 0) * 100) / 100,
+        score: Math.round(Math.abs(Number(r.score ?? 0)) * 100) / 100,
       }))
   }
 
@@ -314,4 +341,12 @@ function safeJson(raw: unknown, fallback: unknown): any {
   } catch {
     return fallback
   }
+}
+
+/** Split a search query into CJK-friendly terms (whitespace + punctuation). */
+export function tokenizeSearchTerms(query: string): string[] {
+  return String(query ?? '')
+    .split(/[\s，。！？、,.;:：'"_\-()（）]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0)
 }

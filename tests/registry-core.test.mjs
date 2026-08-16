@@ -60,6 +60,28 @@ test('ingest → search (FTS5 trigram CJK) → publish → search filter', () =>
   }
 })
 
+test('search tokenizes multi-term CJK+ASCII intent queries', () => {
+  const { db, cleanup } = tempDb()
+  try {
+    db.ingest({
+      contract: {
+        name: 'giant-ip-landmark-parade',
+        version: '1.0.0',
+        description: '巨型IP地标巡游硬切视频：将 IP 角色设定图与多张城市地标实景合成参考编排为巨型 IP 巡游。',
+        taxonomy: ['IP', '地标', '巡游'],
+        slots: [{ id: 'ip-character', label: 'IP 身份图', min: 1, max: 1 }],
+      },
+      routing: { user_intents: ['巨型 IP 地标巡游'] },
+    })
+    db.setStatus('giant-ip-landmark-parade', '1.0.0', 'published')
+    const hits = db.search('巨型 logo 巡游 品牌地标', 5, 'published')
+    assert.ok(hits.length > 0, 'short CJK terms must match via per-term LIKE')
+    assert.equal(hits[0].name, 'giant-ip-landmark-parade')
+  } finally {
+    cleanup()
+  }
+})
+
 test('dedupe by name+version across versions', () => {
   const { db, cleanup } = tempDb()
   try {
