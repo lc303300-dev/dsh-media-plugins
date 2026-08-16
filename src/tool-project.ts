@@ -77,6 +77,29 @@ async function applySlotPlans(
   }
 }
 
+/** Windows 本地可点击链接目标：绝对路径 + 正斜杠（禁止 file:// / 反斜杠）。 */
+export function linkTarget(path: string): string {
+  return path.replaceAll('\\', '/')
+}
+
+/** 把槽计划转成带链接目标的输出（source_dir_link_target / final_dir_link_target）。 */
+export function slotDirOutput(plans: SlotPlan[] | undefined): Array<Record<string, unknown>> {
+  return (plans ?? []).map((plan) => ({
+    slot: plan.slot,
+    role: plan.role,
+    media_type: plan.media_type,
+    min: plan.min,
+    max: plan.max,
+    planned_count: plan.planned_count,
+    count_enforcement: plan.count_enforcement,
+    source_dir: plan.source_dir,
+    source_dir_link_target: linkTarget(plan.source_dir),
+    final_dir: plan.final_dir,
+    final_dir_link_target: linkTarget(plan.final_dir),
+    locked: plan.locked,
+  }))
+}
+
 /** Count files in a slot's final dir matching the media type. */
 async function countSlotFiles(plan: SlotPlan): Promise<number> {
   const { readdir } = await import('node:fs/promises')
@@ -156,6 +179,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             project: { type: 'object', additionalProperties: true },
             projects: { type: 'array' },
             payload: { type: 'object', additionalProperties: true },
+            slot_dirs: { type: 'array' },
+            scan: { type: 'array' },
           },
         },
         render(_args: unknown, value: any) {
@@ -196,7 +221,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             state = await applySlotPlans(state, args.duration, privateRoot, projectsRoot, workspaceRoot)
           }
           await save(state)
-          return { ok: true, message: `project ${id} created (${state.status})`, project: state }
+          return { ok: true, message: `project ${id} created (${state.status})`, project: state, slot_dirs: slotDirOutput(state.slotPlans) }
         }
         if (!projectId) return { ok: false, message: 'project_id is required' }
         const state = await load(projectId)
@@ -212,7 +237,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             validateVideoSettings(args.ratio, Number(args.duration))
             let next = { ...transition(state, 'project_initialized', 'settings set'), ratio: args.ratio, duration: Number(args.duration) }
             next = await applySlotPlans(next, args.duration, privateRoot, projectsRoot, workspaceRoot)
-            return { ok: true, message: `status -> ${next.status}（${next.slotPlans?.length ?? 0} 个素材槽已规划）`, project: await save(next) }
+            return { ok: true, message: `status -> ${next.status}（${next.slotPlans?.length ?? 0} 个素材槽已规划）`, project: await save(next), slot_dirs: slotDirOutput(next.slotPlans) }
           }
           case 'choose_image_stage': {
             const stage = args.stage === 'generating_images' ? 'generating_images' : 'collecting_user_materials'

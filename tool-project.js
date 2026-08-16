@@ -39,6 +39,27 @@ async function applySlotPlans(state, duration, privateRoot, projectsRoot, worksp
 		registry.close();
 	}
 }
+/** Windows 本地可点击链接目标：绝对路径 + 正斜杠（禁止 file:// / 反斜杠）。 */
+function linkTarget(path) {
+	return path.replaceAll("\\", "/");
+}
+/** 把槽计划转成带链接目标的输出（source_dir_link_target / final_dir_link_target）。 */
+function slotDirOutput(plans) {
+	return (plans ?? []).map((plan) => ({
+		slot: plan.slot,
+		role: plan.role,
+		media_type: plan.media_type,
+		min: plan.min,
+		max: plan.max,
+		planned_count: plan.planned_count,
+		count_enforcement: plan.count_enforcement,
+		source_dir: plan.source_dir,
+		source_dir_link_target: linkTarget(plan.source_dir),
+		final_dir: plan.final_dir,
+		final_dir_link_target: linkTarget(plan.final_dir),
+		locked: plan.locked
+	}));
+}
 /** Count files in a slot's final dir matching the media type. */
 async function countSlotFiles(plan) {
 	const { readdir } = await import("node:fs/promises");
@@ -180,7 +201,9 @@ function apply(ctx, config) {
 					payload: {
 						type: "object",
 						additionalProperties: true
-					}
+					},
+					slot_dirs: { type: "array" },
+					scan: { type: "array" }
 				}
 			},
 			render(_args, value) {
@@ -237,7 +260,8 @@ function apply(ctx, config) {
 				return {
 					ok: true,
 					message: `project ${id} created (${state.status})`,
-					project: state
+					project: state,
+					slot_dirs: slotDirOutput(state.slotPlans)
 				};
 			}
 			if (!projectId) return {
@@ -276,7 +300,8 @@ function apply(ctx, config) {
 					return {
 						ok: true,
 						message: `status -> ${next.status}（${next.slotPlans?.length ?? 0} 个素材槽已规划）`,
-						project: await save(next)
+						project: await save(next),
+						slot_dirs: slotDirOutput(next.slotPlans)
 					};
 				}
 				case "choose_image_stage": {
@@ -470,4 +495,4 @@ function apply(ctx, config) {
 	}));
 }
 //#endregion
-export { Config, apply, inject, name };
+export { Config, apply, inject, linkTarget, name, slotDirOutput };
