@@ -129,7 +129,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             package_path: { type: 'string' },
             issues: { type: 'array' },
             additions: { type: 'array' },
-            plan: { type: 'object' },
+            plan: { type: 'object', additionalProperties: true },
             skills: { type: 'array' },
           },
         },

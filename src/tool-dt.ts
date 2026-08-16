@@ -96,6 +96,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             manifest: { type: 'object', additionalProperties: true },
             review_path: { type: 'string' },
             batches: { type: 'array' },
+            materials: { type: 'array' },
+            tasks: { type: 'array' },
+            matches: { type: 'array' },
+            plan: { type: 'array' },
+            summary: { type: 'object', additionalProperties: true },
           },
         },
         render(_args: unknown, value: any) {

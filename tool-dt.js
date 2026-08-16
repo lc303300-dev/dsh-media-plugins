@@ -162,7 +162,15 @@ function apply(ctx, config) {
 						additionalProperties: true
 					},
 					review_path: { type: "string" },
-					batches: { type: "array" }
+					batches: { type: "array" },
+					materials: { type: "array" },
+					tasks: { type: "array" },
+					matches: { type: "array" },
+					plan: { type: "array" },
+					summary: {
+						type: "object",
+						additionalProperties: true
+					}
 				}
 			},
 			render(_args, value) {
