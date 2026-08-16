@@ -147,7 +147,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           const { SkillRegistry } = await import('./shared/registry-core.ts')
           const registry = new SkillRegistry(join(privateRoot, 'registry', 'registry.db'))
           try {
-            const status = (args.status as 'draft' | 'published' | 'deprecated' | undefined) || undefined
+            const status = args.status === 'any' ? undefined : (args.status as 'draft' | 'published' | 'deprecated' | undefined) || undefined
             const skills = registry.list(status)
             return { ok: true, message: `${skills.length} skill(s)`, skills: skills.map((s) => ({ id: s.id, name: s.name, version: s.version, status: s.status })) }
           } finally {

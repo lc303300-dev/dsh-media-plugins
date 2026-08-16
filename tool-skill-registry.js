@@ -192,7 +192,7 @@ function apply(ctx, config) {
 						};
 					}
 					case "list": {
-						const status = args.status || void 0;
+						const status = args.status === "any" ? void 0 : args.status || void 0;
 						const skills = registry.list(status, args.limit ?? 100);
 						return {
 							ok: true,

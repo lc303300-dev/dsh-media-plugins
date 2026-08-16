@@ -155,7 +155,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               return { ok: true, message: `deprecated ${record.name}@${record.version}`, skill: record }
             }
             case 'list': {
-              const status = (args.status as SkillStatus | undefined) || undefined
+              const status = args.status === 'any' ? undefined : (args.status as SkillStatus | undefined) || undefined
               const skills = registry.list(status, args.limit ?? 100)
               return { ok: true, message: `${skills.length} skill(s)`, skills: skills.map((s) => ({ id: s.id, name: s.name, version: s.version, status: s.status })) }
             }

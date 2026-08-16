@@ -718,7 +718,7 @@ function apply(ctx, config) {
 				const { SkillRegistry } = await import("./registry-core.js").then((n) => n.n);
 				const registry = new SkillRegistry(join(privateRoot, "registry", "registry.db"));
 				try {
-					const status = args.status || void 0;
+					const status = args.status === "any" ? void 0 : args.status || void 0;
 					const skills = registry.list(status);
 					return {
 						ok: true,
