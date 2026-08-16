@@ -13,6 +13,9 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
 export const VALIDATOR_VERSION = '1.1.0'
+export const LEGACY_HASH_ALGORITHM = 'codex-cs-package-sha256-v1-raw'
+export const CANONICAL_HASH_ALGORITHM = 'codex-cs-package-sha256-v2'
+export const TEXT_EXTENSIONS = new Set(['.md', '.json', '.yaml', '.yml', '.txt'])
 export const SKILL_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 export const REFERENCE_IDS = ['image', 'video', 'audio']
 export const REFERENCE_ROLES = ['identity', 'scene', 'style', 'start_frame', 'end_frame', 'footage', 'music', 'sound', 'other']
@@ -159,14 +162,34 @@ export function fileSha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
-/** Length-prefixed package hash over sorted files (intake-receipt excluded unless requested). */
-export function packageSha256(root: string, includeReceipt = false): string {
+/** Canonical bytes for hashing: text files are BOM-stripped and CRLF/CR normalized
+ *  to LF (package_integrity.py v2 semantics); binary files hash raw. */
+export function canonicalFileBytes(path: string): Buffer {
+  const data = readFileSync(path)
+  const ext = path.slice(path.lastIndexOf('.')).toLowerCase()
+  if (!TEXT_EXTENSIONS.has(ext)) return data
+  try {
+    let text = data.toString('utf8')
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1)
+    text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    return Buffer.from(text, 'utf8')
+  } catch {
+    return data
+  }
+}
+
+/** Length-prefixed package hash (v1 raw or v2 canonical). */
+export function packageSha256(
+  root: string,
+  includeReceipt = false,
+  algorithm = CANONICAL_HASH_ALGORITHM,
+): string {
   const digest = createHash('sha256')
   const files = listFiles(root).filter((path) => includeReceipt || basename(path) !== 'intake-receipt.json')
   for (const path of files) {
     const relative = path.replaceAll('\\', '/').replace(root.replaceAll('\\', '/'), '').replace(/^\//, '')
     const relBuf = Buffer.from(relative, 'utf8')
-    const data = readFileSync(path)
+    const data = algorithm === LEGACY_HASH_ALGORITHM ? readFileSync(path) : canonicalFileBytes(path)
     digest.update(int64(relBuf.length))
     digest.update(relBuf)
     digest.update(int64(data.length))
@@ -509,12 +532,17 @@ export function validatePackage(root: string, requireReceipt = false): Issue[] {
       } catch (error: any) {
         add(issues, 'INVALID_RECEIPT', String(error?.message ?? error), 'intake-receipt.json')
       }
-      const receiptFields = ['schema_version', 'skill_id', 'status', 'validator_version', 'approved_by', 'validated_at', 'sources', 'package_sha256']
+      const schema = receipt.schema_version
+      const v1Fields = ['schema_version', 'skill_id', 'status', 'validator_version', 'approved_by', 'validated_at', 'sources', 'package_sha256']
+      const receiptFields = schema === 2 ? [...v1Fields, 'hash_algorithm'] : v1Fields
       if (JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify([...receiptFields].sort())) {
         add(issues, 'INVALID_RECEIPT_FIELDS', `Receipt fields must be exactly: ${[...receiptFields].sort().join(', ')}`, 'intake-receipt.json')
       }
-      if (receipt.schema_version !== 1 || receipt.skill_id !== skillId || receipt.status !== 'published' || receipt.approved_by !== 'user') {
+      if (receipt.status !== 'published' || receipt.approved_by !== 'user' || receipt.skill_id !== skillId) {
         add(issues, 'INVALID_RECEIPT_IDENTITY', 'Receipt identity or approval fields are invalid', 'intake-receipt.json')
+      }
+      if (typeof receipt.validator_version !== 'string' || !receipt.validator_version || typeof receipt.validated_at !== 'string' || !receipt.validated_at) {
+        add(issues, 'INVALID_RECEIPT_FIELDS', 'Receipt validator_version and validated_at are required', 'intake-receipt.json')
       }
       const sources = receipt.sources
       if (!Array.isArray(sources) || sources.length === 0) {
@@ -522,7 +550,13 @@ export function validatePackage(root: string, requireReceipt = false): Issue[] {
       } else if (sources.some((item: any) => !item || typeof item !== 'object' || JSON.stringify(Object.keys(item).sort()) !== JSON.stringify(['name', 'sha256']) || !/^[a-f0-9]{64}$/.test(String(item.sha256 ?? '')))) {
         add(issues, 'INVALID_RECEIPT_SOURCES', 'Every receipt source requires name and SHA-256', 'intake-receipt.json')
       }
-      if (receipt.package_sha256 !== packageSha256(root)) {
+      if (!/^[a-f0-9]{64}$/.test(String(receipt.package_sha256 ?? ''))) {
+        add(issues, 'INVALID_RECEIPT_FIELDS', 'package_sha256 must be a 64-char hex string', 'intake-receipt.json')
+      }
+      const algorithm = receiptAlgorithm(receipt)
+      if (algorithm === null) {
+        add(issues, 'UNSUPPORTED_RECEIPT_SCHEMA', 'Unsupported receipt schema/hash algorithm', 'intake-receipt.json')
+      } else if (receipt.package_sha256 !== packageSha256(root, false, algorithm)) {
         add(issues, 'STALE_RECEIPT', 'Package content changed after publication receipt generation', 'intake-receipt.json')
       }
     }
@@ -531,10 +565,19 @@ export function validatePackage(root: string, requireReceipt = false): Issue[] {
   return issues
 }
 
-/** Create an intake receipt binding the package hash and source provenance. */
+/** Map a receipt to its hash algorithm (schema 1 legacy, schema 2 canonical). */
+export function receiptAlgorithm(receipt: Record<string, unknown>): string | null {
+  const schema = receipt.schema_version
+  if (schema === 1) return LEGACY_HASH_ALGORITHM
+  if (schema === 2 && receipt.hash_algorithm === CANONICAL_HASH_ALGORITHM) return CANONICAL_HASH_ALGORITHM
+  return null
+}
+
+/** Create an intake receipt (schema v2, canonical hash) binding the package and provenance. */
 export function buildIntakeReceipt(root: string, sources: Array<{ name: string; sha256: string }>): Record<string, unknown> {
   return {
-    schema_version: 1,
+    schema_version: 2,
+    hash_algorithm: CANONICAL_HASH_ALGORITHM,
     skill_id: basename(root),
     status: 'published',
     validator_version: VALIDATOR_VERSION,

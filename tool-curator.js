@@ -17,6 +17,15 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 * @module dsh-media-plugins/shared/curator-core
 */
 const VALIDATOR_VERSION = "1.1.0";
+const LEGACY_HASH_ALGORITHM = "codex-cs-package-sha256-v1-raw";
+const CANONICAL_HASH_ALGORITHM = "codex-cs-package-sha256-v2";
+const TEXT_EXTENSIONS = /* @__PURE__ */ new Set([
+	".md",
+	".json",
+	".yaml",
+	".yml",
+	".txt"
+]);
 const SKILL_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const REFERENCE_IDS = [
 	"image",
@@ -152,14 +161,29 @@ function plannedCount(rule, durationSeconds) {
 		default: return rule.fixed_count ?? 0;
 	}
 }
-/** Length-prefixed package hash over sorted files (intake-receipt excluded unless requested). */
-function packageSha256(root, includeReceipt = false) {
+/** Canonical bytes for hashing: text files are BOM-stripped and CRLF/CR normalized
+*  to LF (package_integrity.py v2 semantics); binary files hash raw. */
+function canonicalFileBytes(path) {
+	const data = readFileSync(path);
+	const ext = path.slice(path.lastIndexOf(".")).toLowerCase();
+	if (!TEXT_EXTENSIONS.has(ext)) return data;
+	try {
+		let text = data.toString("utf8");
+		if (text.charCodeAt(0) === 65279) text = text.slice(1);
+		text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+		return Buffer.from(text, "utf8");
+	} catch {
+		return data;
+	}
+}
+/** Length-prefixed package hash (v1 raw or v2 canonical). */
+function packageSha256(root, includeReceipt = false, algorithm = CANONICAL_HASH_ALGORITHM) {
 	const digest = createHash("sha256");
 	const files = listFiles(root).filter((path) => includeReceipt || basename(path) !== "intake-receipt.json");
 	for (const path of files) {
 		const relative = path.replaceAll("\\", "/").replace(root.replaceAll("\\", "/"), "").replace(/^\//, "");
 		const relBuf = Buffer.from(relative, "utf8");
-		const data = readFileSync(path);
+		const data = algorithm === "codex-cs-package-sha256-v1-raw" ? readFileSync(path) : canonicalFileBytes(path);
 		digest.update(int64(relBuf.length));
 		digest.update(relBuf);
 		digest.update(int64(data.length));
@@ -510,7 +534,8 @@ function validatePackage(root, requireReceipt = false) {
 			} catch (error) {
 				add(issues, "INVALID_RECEIPT", String(error?.message ?? error), "intake-receipt.json");
 			}
-			const receiptFields = [
+			const schema = receipt.schema_version;
+			const v1Fields = [
 				"schema_version",
 				"skill_id",
 				"status",
@@ -520,20 +545,33 @@ function validatePackage(root, requireReceipt = false) {
 				"sources",
 				"package_sha256"
 			];
+			const receiptFields = schema === 2 ? [...v1Fields, "hash_algorithm"] : v1Fields;
 			if (JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify([...receiptFields].sort())) add(issues, "INVALID_RECEIPT_FIELDS", `Receipt fields must be exactly: ${[...receiptFields].sort().join(", ")}`, "intake-receipt.json");
-			if (receipt.schema_version !== 1 || receipt.skill_id !== skillId || receipt.status !== "published" || receipt.approved_by !== "user") add(issues, "INVALID_RECEIPT_IDENTITY", "Receipt identity or approval fields are invalid", "intake-receipt.json");
+			if (receipt.status !== "published" || receipt.approved_by !== "user" || receipt.skill_id !== skillId) add(issues, "INVALID_RECEIPT_IDENTITY", "Receipt identity or approval fields are invalid", "intake-receipt.json");
+			if (typeof receipt.validator_version !== "string" || !receipt.validator_version || typeof receipt.validated_at !== "string" || !receipt.validated_at) add(issues, "INVALID_RECEIPT_FIELDS", "Receipt validator_version and validated_at are required", "intake-receipt.json");
 			const sources = receipt.sources;
 			if (!Array.isArray(sources) || sources.length === 0) add(issues, "MISSING_RECEIPT_SOURCES", "Receipt must contain at least one source hash", "intake-receipt.json");
 			else if (sources.some((item) => !item || typeof item !== "object" || JSON.stringify(Object.keys(item).sort()) !== JSON.stringify(["name", "sha256"]) || !/^[a-f0-9]{64}$/.test(String(item.sha256 ?? "")))) add(issues, "INVALID_RECEIPT_SOURCES", "Every receipt source requires name and SHA-256", "intake-receipt.json");
-			if (receipt.package_sha256 !== packageSha256(root)) add(issues, "STALE_RECEIPT", "Package content changed after publication receipt generation", "intake-receipt.json");
+			if (!/^[a-f0-9]{64}$/.test(String(receipt.package_sha256 ?? ""))) add(issues, "INVALID_RECEIPT_FIELDS", "package_sha256 must be a 64-char hex string", "intake-receipt.json");
+			const algorithm = receiptAlgorithm(receipt);
+			if (algorithm === null) add(issues, "UNSUPPORTED_RECEIPT_SCHEMA", "Unsupported receipt schema/hash algorithm", "intake-receipt.json");
+			else if (receipt.package_sha256 !== packageSha256(root, false, algorithm)) add(issues, "STALE_RECEIPT", "Package content changed after publication receipt generation", "intake-receipt.json");
 		}
 	}
 	return issues;
 }
-/** Create an intake receipt binding the package hash and source provenance. */
+/** Map a receipt to its hash algorithm (schema 1 legacy, schema 2 canonical). */
+function receiptAlgorithm(receipt) {
+	const schema = receipt.schema_version;
+	if (schema === 1) return LEGACY_HASH_ALGORITHM;
+	if (schema === 2 && receipt.hash_algorithm === "codex-cs-package-sha256-v2") return CANONICAL_HASH_ALGORITHM;
+	return null;
+}
+/** Create an intake receipt (schema v2, canonical hash) binding the package and provenance. */
 function buildIntakeReceipt(root, sources) {
 	return {
-		schema_version: 1,
+		schema_version: 2,
+		hash_algorithm: CANONICAL_HASH_ALGORITHM,
 		skill_id: basename(root),
 		status: "published",
 		validator_version: VALIDATOR_VERSION,
