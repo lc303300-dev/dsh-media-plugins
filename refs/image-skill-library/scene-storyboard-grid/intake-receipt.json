@@ -5,14 +5,14 @@
   "status": "published",
   "validator_version": "2.0.0",
   "approved_by": "user",
-  "validated_at": "2026-08-16T09:56:47.021Z",
+  "validated_at": "2026-08-17T03:40:30.998Z",
   "sources": [
     {
-      "name": "Codex_IS_搭建蓝图.md",
-      "sha256": "a5653bc46d19c7a70f59ef05e0fb5a9a4dad8ed6abf3c708b5fd0ae84a29463a"
+      "name": "scene-storyboard-grid-revision-source.md",
+      "sha256": "4ed0ec41ab4c1aaa746c964251d4b236b2f9aad0cb45b7c7ea69fe637c5a45d4"
     }
   ],
-  "intake_report_sha256": "c02598e16f606a5469dae1e41e65a3c09c480f0a1476b643dd9bacf50b6495d1",
-  "reviewed_core_sha256": "caa02e3d60a1797f1c9a58fb9038341c92967c1703eb6d27bdc00404b424ab12",
-  "package_sha256": "15c4f0abc01a069d7fe9c06cb22755c97ea877188933557303bba20685b7da9d"
+  "intake_report_sha256": "d7efd26a0b5dd3ec7bec041d5f2fc58563185f830d49c28c0e639ded25e56f2b",
+  "reviewed_core_sha256": "c95d180041a62c2c575276dd2432a28251a45c1233bb0c6c10c148c8b4d88828",
+  "package_sha256": "ddf84992393603e00a8643e1fd14a3557fee367bb8ac472ce45ccd615094167d"
 }

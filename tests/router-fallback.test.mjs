@@ -7,8 +7,7 @@ import { runImageRouter } from '../src/shared/adapters.ts'
 import { MediaError, mediaErrors } from '../src/shared/failure.ts'
 
 const cfg = {
-  comflyBaseURL: 'http://x', comflyApiKeyEnv: 'K', apimartBaseURL: 'http://x', apimartApiKeyEnv: 'K',
-  geminiApiURL: 'http://x', geminiApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
+  comflyBaseURL: 'http://x', comflyApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
   maxConcurrency: 6, providerTimeoutMs: 120000, taskTimeoutMs: 300000, outputDir: 'o', enabled: [],
 }
 

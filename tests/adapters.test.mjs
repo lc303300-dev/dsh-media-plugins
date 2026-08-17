@@ -10,7 +10,7 @@ test('SUPPORTED_RATIOS is exactly the 8 contract values', () => {
 
 test('SUPPORTED_RESOLUTIONS and SUPPORTED_IMAGE_PROVIDERS match the contract', () => {
   assert.deepEqual(SUPPORTED_RESOLUTIONS, ['1K', '2K', '4K'])
-  assert.deepEqual(SUPPORTED_IMAGE_PROVIDERS, ['comfly-gemini-flash-preview', 'comfly-gpt-image-2', 'apimart-gpt-image-2', 'google-gemini-image', 'dreamina-image'])
+  assert.deepEqual(SUPPORTED_IMAGE_PROVIDERS, ['comfly-gemini-flash-preview', 'comfly-gpt-image-2', 'dreamina-image'])
   assert.ok(!SUPPORTED_IMAGE_PROVIDERS.includes('comfly-gpt-image-2-all'), 'retired comfly-gpt-image-2-all must not be a public route')
 })
 
@@ -75,12 +75,11 @@ test('image signature detection', () => {
 
 test('defaultAdapters respects enabled filter and contract order (no retired gpt-image-2-all)', () => {
   const cfg = {
-    comflyBaseURL: 'x', comflyApiKeyEnv: 'K', apimartBaseURL: 'x', apimartApiKeyEnv: 'K',
-    geminiApiURL: 'x', geminiApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
+    comflyBaseURL: 'x', comflyApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
     maxConcurrency: 6, providerTimeoutMs: 120000, taskTimeoutMs: 300000, outputDir: 'o', enabled: [],
   }
   const all = defaultAdapters(cfg)
-  assert.deepEqual(all.map((a) => a.id), ['comfly-gemini-flash-preview', 'comfly-gpt-image-2', 'apimart-gpt-image-2', 'google-gemini-image', 'dreamina-image'])
+  assert.deepEqual(all.map((a) => a.id), ['comfly-gemini-flash-preview', 'comfly-gpt-image-2', 'dreamina-image'])
   const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gemini-flash-preview'] })
   assert.equal(filtered.length, 1)
   assert.equal(filtered[0].id, 'comfly-gemini-flash-preview')
@@ -88,8 +87,7 @@ test('defaultAdapters respects enabled filter and contract order (no retired gpt
 
 test('legacy adapter id alias: comfly-gemini-lite still selects the renamed adapter', () => {
   const cfg = {
-    comflyBaseURL: 'x', comflyApiKeyEnv: 'K', apimartBaseURL: 'x', apimartApiKeyEnv: 'K',
-    geminiApiURL: 'x', geminiApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
+    comflyBaseURL: 'x', comflyApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
     maxConcurrency: 6, providerTimeoutMs: 120000, taskTimeoutMs: 300000, outputDir: 'o', enabled: [],
   }
   const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gemini-lite'] })
