@@ -1,11 +1,11 @@
 import { n as MediaError, r as mediaErrors, t as FALLBACK_ALLOWED } from "./failure.js";
 import { a as ensureDir, l as recordProviderOutcome, n as acquireSlot, o as isCircuitOpen, r as appendSafeLog, s as newTaskId } from "./private-runtime.js";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import sharp from "sharp";
-import { ProxyAgent, fetch as fetch$1 } from "undici";
+import { ProxyAgent, fetch } from "undici";
 //#region src/shared/media-client.ts
 /**
 * Shared OpenAI-compatible media client (Comfly / APIMart) plus image
@@ -120,7 +120,7 @@ async function openAiImageUrl(options) {
 				chunks.push(Buffer.from("\r\n", "ascii"));
 			}
 			chunks.push(Buffer.from(`--${boundary}--\r\n`, "ascii"));
-			response = await fetch$1(`${baseURL.replace(/\/+$/, "")}/images/edits`, {
+			response = await fetch(`${baseURL.replace(/\/+$/, "")}/images/edits`, {
 				method: "POST",
 				headers: {
 					...auth,
@@ -138,7 +138,7 @@ async function openAiImageUrl(options) {
 				response_format: "url"
 			};
 			if (model !== "gpt-image-2" && resolution !== void 0) payload.resolution = resolution.toLowerCase();
-			response = await fetch$1(`${baseURL.replace(/\/+$/, "")}/images/generations`, {
+			response = await fetch(`${baseURL.replace(/\/+$/, "")}/images/generations`, {
 				method: "POST",
 				headers: {
 					...auth,
@@ -173,7 +173,7 @@ async function downloadImageTo(url, destDir, options = {}) {
 	if (signal?.aborted) controller.abort();
 	else signal?.addEventListener("abort", onAbort, { once: true });
 	try {
-		const download = await fetch$1(url, {
+		const download = await fetch(url, {
 			headers: DOWNLOAD_HEADERS,
 			signal: controller.signal,
 			...dispatcher === void 0 ? {} : { dispatcher }
@@ -238,8 +238,6 @@ const SUPPORTED_RESOLUTIONS = [
 const SUPPORTED_IMAGE_PROVIDERS = [
 	"comfly-gemini-flash-preview",
 	"comfly-gpt-image-2",
-	"apimart-gpt-image-2",
-	"google-gemini-image",
 	"dreamina-image"
 ];
 /** 1K-only pixel allowlist for the supported ratios (identical to Codex GEMINI_LITE_1K_SIZES). */
@@ -392,165 +390,6 @@ function comflyAdapter(id, model, cfg, options = {}) {
 		}
 	};
 }
-/** APIMart OpenAI-compatible adapter (references as base64 data URIs; GPT Image 2 sizes). */
-function apimartAdapter(cfg) {
-	const id = "apimart-gpt-image-2";
-	const model = "gpt-image-2";
-	return {
-		id,
-		model,
-		capacityKey: id,
-		async checkReady() {
-			return {
-				ready: Boolean(credentials(cfg, cfg.apimartApiKeyEnv)),
-				reason: cfg.apimartApiKeyEnv
-			};
-		},
-		async execute(input) {
-			const apiKey = credentials(cfg, cfg.apimartApiKeyEnv);
-			if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.apimartApiKeyEnv}`);
-			const resolution = input.resolution ?? "4K";
-			const size = gptImage2SizeFor(input.ratio, resolution);
-			const base = cfg.apimartBaseURL.replace(/\/+$/, "");
-			const headers = {
-				Authorization: `Bearer ${apiKey}`,
-				"Content-Type": "application/json; charset=utf-8"
-			};
-			const body = {
-				model,
-				prompt: input.prompt,
-				n: 1,
-				size,
-				response_format: "url"
-			};
-			if (input.images.length > 0) {
-				const image = input.images[0];
-				const data = await readFile(image);
-				body.image = `data:${`image/${image.split(".").pop()?.toLowerCase() === "png" ? "png" : "jpeg"}`};base64,${data.toString("base64")}`;
-			}
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), input.budgetMs);
-			input.signal?.addEventListener("abort", () => controller.abort(), { once: true });
-			try {
-				const response = await fetch(`${base}/images/generations`, {
-					method: "POST",
-					headers,
-					body: JSON.stringify(body),
-					signal: controller.signal
-				});
-				if (!response.ok) throw new HttpStatusError(response.status, `APIMart request failed with HTTP ${response.status}`);
-				const data = (await response.json())?.data;
-				if (!Array.isArray(data) || !data[0]?.url) throw mediaErrors.download("APIMart response contains no image URL");
-				const dest = join(input.privateRoot, "jobs", "_router", "outputs");
-				return { outputPath: await downloadImageTo(data[0].url, dest, {
-					proxyUrl: cfg.proxyUrl,
-					signal: input.signal,
-					timeoutMs: Math.min(input.budgetMs, 12e4)
-				}) };
-			} finally {
-				clearTimeout(timer);
-			}
-		}
-	};
-}
-/** Official Google Gemini image adapter (interactions API, base64 output). */
-function geminiAdapter(cfg) {
-	const id = "google-gemini-image";
-	const model = "gemini-3.1-flash-image";
-	return {
-		id,
-		model,
-		capacityKey: id,
-		async checkReady() {
-			return {
-				ready: Boolean(credentials(cfg, cfg.geminiApiKeyEnv)),
-				reason: cfg.geminiApiKeyEnv
-			};
-		},
-		async execute(input) {
-			const apiKey = credentials(cfg, cfg.geminiApiKeyEnv);
-			if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.geminiApiKeyEnv}`);
-			const resolution = input.resolution ?? "2K";
-			const ratioKey = Object.entries(RATIO_SIZES).find(([, px]) => px === input.size)?.[0] ?? "16:9";
-			const inputParts = [{
-				type: "text",
-				text: input.prompt
-			}];
-			for (const path of input.images) {
-				const data = await readFile(path);
-				const mime = `image/${path.split(".").pop()?.toLowerCase() === "png" ? "png" : "jpeg"}`;
-				inputParts.push({
-					type: "image",
-					data: data.toString("base64"),
-					mime_type: mime
-				});
-			}
-			const body = {
-				model,
-				input: inputParts,
-				response_format: {
-					type: "image",
-					mime_type: "image/jpeg",
-					aspect_ratio: ratioKey,
-					image_size: resolution
-				}
-			};
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), input.budgetMs);
-			input.signal?.addEventListener("abort", () => controller.abort(), { once: true });
-			try {
-				const response = await fetch(cfg.geminiApiURL, {
-					method: "POST",
-					headers: {
-						"x-goog-api-key": apiKey,
-						"Content-Type": "application/json"
-					},
-					body: JSON.stringify(body),
-					signal: controller.signal
-				});
-				if (!response.ok) throw new HttpStatusError(response.status, `Gemini request failed with HTTP ${response.status}`);
-				const found = extractGeminiImage(await response.json());
-				if (!found) throw mediaErrors.download("Gemini response contains no image data");
-				const bytes = Buffer.from(found.data, "base64");
-				if (!hasImageSignature(new Uint8Array(bytes))) throw mediaErrors.download("Gemini image data failed signature check");
-				const dest = await ensureDir(join(input.privateRoot, "jobs", "_router", "outputs"));
-				const finalPath = join(dest, `gemini-${Date.now()}${extensionFor(new Uint8Array(bytes))}`);
-				await writeFile(finalPath, bytes);
-				return { outputPath: finalPath };
-			} finally {
-				clearTimeout(timer);
-			}
-		}
-	};
-}
-/** Deep-walk a Gemini payload for the first base64 image. */
-function extractGeminiImage(payload) {
-	const direct = [payload?.output_image, payload?.output?.image];
-	for (const item of direct) if (item && typeof item.data === "string" && item.data.length > 0) return {
-		data: item.data,
-		mimeType: item.mime_type
-	};
-	const walk = (value) => {
-		if (Array.isArray(value)) {
-			for (const child of value) {
-				const found = walk(child);
-				if (found) return found;
-			}
-			return;
-		}
-		if (value && typeof value === "object") {
-			if (typeof value.data === "string" && value.data.length > 0 && (value.type === "image" || String(value.mime_type ?? "").startsWith("image/"))) return {
-				data: value.data,
-				mimeType: value.mime_type
-			};
-			for (const key of Object.keys(value)) {
-				const found = walk(value[key]);
-				if (found) return found;
-			}
-		}
-	};
-	return walk(payload);
-}
 /** Dreamina image adapter (best effort; last fallback, shared seedance-cli capacity). */
 function dreaminaImageAdapter(cfg) {
 	const id = "dreamina-image";
@@ -616,8 +455,6 @@ function defaultAdapters(cfg) {
 	const chain = [
 		comflyAdapter("comfly-gemini-flash-preview", GEMINI_MODELS_BY_RESOLUTION["1K"], cfg, { geminiProfile: true }),
 		comflyAdapter("comfly-gpt-image-2", "gpt-image-2", cfg),
-		apimartAdapter(cfg),
-		geminiAdapter(cfg),
 		dreaminaImageAdapter(cfg)
 	];
 	if (!cfg.enabled || cfg.enabled.length === 0) return chain;

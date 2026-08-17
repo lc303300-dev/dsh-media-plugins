@@ -15,9 +15,12 @@ function Require-Path {
 }
 
 # 包结构
+$isSourceCheckout = Test-Path -LiteralPath (Join-Path $RepositoryRoot "src") -PathType Container
 Require-Path (Join-Path $RepositoryRoot "package.json") "package manifest"
 Require-Path (Join-Path $RepositoryRoot "index.js") "bundle entry"
-Require-Path (Join-Path $RepositoryRoot "tsdown.config.ts") "build config"
+if ($isSourceCheckout) {
+    Require-Path (Join-Path $RepositoryRoot "tsdown.config.ts") "build config"
+}
 foreach ($tool in @("tool-image-gen", "tool-video-gen", "tool-batch-image", "tool-dt", "tool-status", "tool-video-to-gif", "tool-skill-registry", "tool-project", "tool-curator", "tool-revision", "tool-image-skill-curator", "tool-image-skill-pipeline")) {
     Require-Path (Join-Path $RepositoryRoot "$tool.js") "built tool bundle $tool"
 }
@@ -25,8 +28,12 @@ foreach ($tool in @("tool-image-gen", "tool-video-gen", "tool-batch-image", "too
 foreach ($core in @("adapters", "corpus-core", "curator-core", "failure", "gif-core", "image-ops", "image-skill-core", "private-runtime", "project-core", "registry-core", "revision-core")) {
     Require-Path (Join-Path $RepositoryRoot "$core.js") "built shared bundle $core"
 }
-foreach ($coreSource in @("adapters", "batch-core", "corpus-core", "curator-core", "dt-core", "failure", "gif-core", "image-ops", "image-skill-core", "media-client", "private-runtime", "project-core", "registry-core", "revision-core", "video-policy")) {
-    Require-Path (Join-Path $RepositoryRoot "src\shared\$coreSource.ts") "shared core source $coreSource"
+if ($isSourceCheckout) {
+    foreach ($coreSource in @("adapters", "batch-core", "corpus-core", "curator-core", "dt-core", "failure", "gif-core", "image-ops", "image-skill-core", "media-client", "private-runtime", "project-core", "registry-core", "revision-core", "video-policy")) {
+        Require-Path (Join-Path $RepositoryRoot "src\shared\$coreSource.ts") "shared core source $coreSource"
+    }
+} else {
+    Write-Host "  [info] 非源码检出（无 src/），跳过 src/*.ts 与 tsdown.config.ts 校验" -ForegroundColor DarkGray
 }
 # 技能
 foreach ($skill in @("default-image-generation", "default-video-generation", "batch-image-generation", "dt-prompt-authoring", "video-skill-router", "codex-cs-skill-curator", "video-to-gif", "image-skill-router", "image-skill-curator")) {

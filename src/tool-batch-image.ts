@@ -41,10 +41,6 @@ export interface Config {
   outputDir?: string
   comflyBaseURL?: string
   comflyApiKeyEnv?: string
-  apimartBaseURL?: string
-  apimartApiKeyEnv?: string
-  geminiApiURL?: string
-  geminiApiKeyEnv?: string
   dreaminaPath?: string
   proxyUrl?: string
   maxConcurrency?: number
@@ -58,10 +54,6 @@ export const Config: z<Config> = z.object({
   outputDir: z.string().default('outputs'),
   comflyBaseURL: z.string().default('https://ai.comfly.org/v1'),
   comflyApiKeyEnv: z.string().default('COMFLY_API_KEY'),
-  apimartBaseURL: z.string().default('https://api.apimart.ai/v1'),
-  apimartApiKeyEnv: z.string().default('APIMART_API_KEY'),
-  geminiApiURL: z.string().default('https://generativelanguage.googleapis.com/v1beta/interactions'),
-  geminiApiKeyEnv: z.string().default('GEMINI_API_KEY'),
   dreaminaPath: z.string().default(join(PACKAGE_ROOT, 'bin', 'dreamina.exe')),
   proxyUrl: z.string().default(''),
   maxConcurrency: z.number().default(6),
@@ -121,10 +113,6 @@ function apply(ctx: Context, config: ResolvedConfig): void {
   const baseRouterConfig: RouterConfig = {
     comflyBaseURL: config.comflyBaseURL,
     comflyApiKeyEnv: config.comflyApiKeyEnv,
-    apimartBaseURL: config.apimartBaseURL,
-    apimartApiKeyEnv: config.apimartApiKeyEnv,
-    geminiApiURL: config.geminiApiURL,
-    geminiApiKeyEnv: config.geminiApiKeyEnv,
     dreaminaPath: config.dreaminaPath,
     proxyUrl: config.proxyUrl,
     maxConcurrency: config.maxConcurrency,
@@ -137,7 +125,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
   /** Resolve provider keys through the DSH credentials service per call. */
   async function resolveCredentials(): Promise<Record<string, string>> {
     const credentials: Record<string, string> = {}
-    for (const env of [config.comflyApiKeyEnv, config.apimartApiKeyEnv, config.geminiApiKeyEnv]) {
+    for (const env of [config.comflyApiKeyEnv]) {
       try {
         const resolved = await ctx.credentials?.resolve(credentialRef(env))
         if (resolved?.value) credentials[env] = String(resolved.value)

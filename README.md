@@ -1,22 +1,25 @@
 # dsh-media-plugins
 
-DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 12 个工具、8 个技能与一个完成通知，
+DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 15 个工具、9 个技能与一个完成通知，
 覆盖 Codex_Wsstudio 指南（P0–P4 + DT 修订系统 + Codex_IS 受治理图片业务 Skill 层）在 DSH 平台上的重建：
 
 | 功能 | 说明 | 底层 | 凭证 |
 |---|---|---|---|
-| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 值、`image_resolution`（1K/2K/4K，Gemini 默认 2K / GPT 4K / Dreamina 1K）、`image_provider` 显式线路直达不回退；5 级适配器严格串行回退（comfly-gemini-flash-preview → comfly-gpt-image-2 → apimart → google gemini → dreamina-image），单适配器 120s / 整任务 300s，失败分类 + needs_review 禁重试 + 每适配器连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px，跨进程容量锁（默认 6，dreamina 图/视频共享 `seedance-cli`） | Comfly / APIMart / Google Gemini / Dreamina CLI | `COMFLY_API_KEY`、`APIMART_API_KEY`、`GEMINI_API_KEY` + VPN 代理 |
+| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 值、`image_resolution`（1K/2K/4K，Gemini 默认 2K / GPT 4K / Dreamina 1K）、`image_provider` 显式线路直达不回退；3 级适配器严格串行回退（comfly-gemini-flash-preview → comfly-gpt-image-2 → dreamina-image），单适配器 120s / 整任务 300s，失败分类 + needs_review 禁重试 + 每适配器连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px，跨进程容量锁（默认 6，dreamina 图/视频共享 `seedance-cli`） | Comfly / Dreamina CLI | `COMFLY_API_KEY` + VPN 代理 |
 | `generate_video` | 生视频：默认 seedance2.5 / 480p；text2video / multimodal2video；`video_execution_mode`：production（提交+轮询+下载）、production_submit_only（仅提交）、test_submit_only（强制非 VIP 2.0/720p，仅返回 submit_id，到即梦后台查看） | 即梦 Dreamina 本地 CLI（`dreamina.exe`） | OAuth 登录态 |
 | `describe_image` | 看图（识别/描述本地图片） | 火山方舟 Doubao（`doubao-seed-2-0-mini`） | `VOLCANO_ENGINE_API_KEY` |
 | `skill_registry` | 业务 Skill 治理（Codex_CS）：ingest/search/get/publish/deprecate/list，contract 校验、name@version 去重、内容哈希防漂移、FTS5 trigram 中文检索 | node:sqlite + FTS5（零原生依赖） | 无 |
+| `skill_curator` | 业务 Skill 录入治理（Codex_CS codex-cs-skill-curator）：scaffold / validate（validator 1.2.0）/ add_count_rules / planned_counts / migrate / publish（intake-receipt） | 内置模板 `refs/skill-template/` | 无 |
 | `project_pipeline` | 项目状态机（Codex_CS）：显式状态流转、素材槽 min/max 校验、素材/提示词 sha256 锁定、`build_payload` 提交前哈希复核防未确认版本 | 原子 JSON 状态（私有运行目录） | 无 |
 | `dt_batch` | DT 批次工作台：init_batch / prepare_previews（≤1024px）/ set_prompts / finalize_review（审阅 HTML） | sharp | 无 |
 | `prompt_revision` | 提示词修订系统（Codex_DT）：classify 确定性分类（explicit_local/ambiguous_creative/structural_rewrite）+ 规范哈希修订契约；search_corpus 内置 seedance-forge 全量语料（2477 条，≤3 上限、保留 provenance、语料模型版本绝不用于选模型）；validate_result 校验（locked_context_sha256 回显、explicit_local 禁语料） | 内置语料 `refs/forge-index.jsonl` | 无 |
 | `batch_image` | 确定性批量生图调度器：manifest 校验（支持组级 `reference_images`/`original_image` 槽 0）、稳定 job key、SQLite 状态、≤10 并发、≥1s 间隔、分派截止（默认 ceil(总数÷并发)×60s×1.5，可配 `deadline_seconds`）、完成宽限期（`completion_grace_seconds` 默认/上限 120s，可缩短不可延长）：截止后未启动任务永久 abandoned（`batch_deadline_not_submitted`）、运行中任务宽限期内落地照常收集、超时标记 failed（`batch_completion_grace_timeout`）；编号联系表（HTML，槽 0 原图）；重复提交被 job key 幂等拒绝 | node:sqlite + 统一路由器 | 同 generate_image |
 | `video_to_gif` | 视频转 GIF：FFmpeg 双遍 palettegen/paletteuse，宽度/FPS/颜色/抖动分档降级，默认 ≤10MB；可选 strict/quality 模式、denoise、anti-moire、palette stats/diff 模式、bayer_scale、gifsicle lossy 优化、max_duration_sec 截断、input_dir 批量 + CSV 转换报告 | FFmpeg（`FFMPEG_PATH` / PATH / 常见安装路径）+ 可选 gifsicle | 无 |
 | `image_preview` | EXIF 归一化 ≤1024px 预览 + 尺寸报告（视觉检查/审阅页用，不读原始大图） | sharp | 无 |
+| `split_grid_sheet` | 3×3 九宫格拼图拆格：方案1 形态学线检测 → 失败自动方案2 等比分割；可选 normalize_ratio 规范比例；输出 r1c1..r3c3 面板 + 自包含审阅页 | sharp | 无 |
 | `image_skill_curator` | 图片业务 Skill 录入治理（Codex_IS image-skill-curator）：scaffold（image-skill-template 骨架）/ audit（validator 2.0.0 intake-report：契约/路由/收据 schema、反泛化与反污染扫描、来源哈希）/ approve（approved_by=user）/ validate / publish（staging 原子发布 + 注册表重建，禁覆盖）/ upgrade（备份+回滚原子升级）/ seed_library（同步插件自带正式图片 Skill 库） | 内置模板 `refs/image-skill-template/` + 正式库 `refs/image-skill-library/` | 无 |
 | `image_skill_pipeline` | 图片业务 Skill 项目管线（Codex_IS project-pipeline）：create 校验已发布包收据/包哈希 + 比例/场景数/候选数契约门禁，按 references 逐场景建素材槽；add_material 只收 allowed_slot_ids 声明槽并校验每场景参考图上限；lock_materials sha256 快照锁定（变化作废提示词）；set_prompt/confirm_prompt 哈希绑定确认；多场景或多候选须 confirm_paid_batch 付费批次确认；start_generation --dry-run 生成执行清单（单候选 generate_image / 多候选 batch-image-generation） | 原子 JSON 状态（私有运行目录 `<private>/image-projects/`） | 无 |
+| `media_status` | 媒体/业务工具就绪检查：status（ready/degraded/unavailable）+ verify（部署验证：凭证存在性只报变量名、dreamina 二进制/登录/credit、ffmpeg、私有目录可写、语料、注册库） | 只读探针 | 无 |
 | 完成通知 | 答案生成完成时弹 Windows 托盘气泡 | `notify-toast.ps1` | 无（仅 Windows） |
 
 所有任务状态、锁、日志、注册库、项目/批次状态写入 **私有运行目录**
@@ -50,11 +53,9 @@ dsh plugin --profile <name> add ./dsh-media-plugins-0.2.0.tgz   # tarball
 `$DSH_HOME/settings.yaml` 配置 `llm-pi-ai.providers.volcengine`（见 `setup.ps1` 或旧版 README）。
 Key 写入 `$DSH_HOME/.credentials.yaml`。
 
-### 2. Comfly / APIMart / Gemini（生图回退链）
+### 2. Comfly（生图回退链）
 
-- `COMFLY_API_KEY`（必填，回退链 1–3 级共用）
-- `APIMART_API_KEY`（可选，第 4 级）
-- `GEMINI_API_KEY`（可选，第 5 级）
+- `COMFLY_API_KEY`（必填，回退链 1–2 级共用）
 - 需要 **VPN 代理**：`cordis.patch.yml` 里默认 `proxyUrl: 'http://127.0.0.1:7897'`，按本机代理端口改。
 
 ### 3. 即梦 Dreamina（生视频）
@@ -72,8 +73,8 @@ Key 写入 `$DSH_HOME/.credentials.yaml`。
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-会完成：写 Key（含 APIMART/GEMINI）→ 配火山 provider → 下载 dreamina.exe → 引导登录 →
-安装 6 个 Studio 技能到 `$DSH_HOME\skills\dsh-media-studio`（DSH 技能发现根，重启后生效）→ ffmpeg 检查。
+会完成：写 Key（COMFLY / VOLCANO）→ 配火山 provider → 下载 dreamina.exe → 引导登录 →
+安装 9 个 Studio 技能到 `$DSH_HOME\skills\<技能名>`（DSH 技能发现根，两级结构，重启后生效）→ ffmpeg 检查。
 
 ## 使用
 
@@ -110,7 +111,7 @@ image_skill_pipeline(command="start_generation", project_id=..., dry_run=true)
 - 单场景单候选 → 统一 `generate_image`；多场景或多候选 → 先 `confirm_paid_batch` 付费批次确认再交 `batch_image`。
 - 入库新图片业务 Skill：`image_skill_curator` `scaffold` → 补全删除 `CURATOR-REQUIRED` → `audit`（sources 必填）→ `approve`（approved_by=user）→ `publish`（approved=true）；已发布包修订走 `upgrade`。
 - 项目状态在 `<workspace>/.dsh-media-private/image-projects/`，正式图片 Skill 库在 `<workspace>/.dsh-media-private/image-skill-library/`。
-- 新技能：`image-skill-router`（路由工作流）与 `image-skill-curator`（入库治理）随 `skills/` 一并安装到 `$DSH_HOME\skills\dsh-media-studio`。
+- 新技能：`image-skill-router`（路由工作流）与 `image-skill-curator`（入库治理）随 `skills/` 一并安装到 `$DSH_HOME\skills\<技能名>`。
 
 ## 安全契约（与指南一致）
 

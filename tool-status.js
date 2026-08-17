@@ -38,8 +38,13 @@ function apply(ctx, config) {
 						type: "boolean",
 						required: true
 					},
+					command: { type: "string" },
 					message: { type: "string" },
 					tools: {
+						type: "object",
+						additionalProperties: true
+					},
+					tool_reasons: {
 						type: "object",
 						additionalProperties: true
 					},
@@ -50,26 +55,48 @@ function apply(ctx, config) {
 					deployment: {
 						type: "object",
 						additionalProperties: true
+					},
+					credentials: {
+						type: "object",
+						additionalProperties: true
 					}
 				}
 			},
 			render(_args, value) {
+				const lines = [value.message ?? JSON.stringify(value)];
+				const tools = value.tools ?? {};
+				const reasons = value.tool_reasons ?? {};
+				lines.push("", "工具状态:");
+				for (const [tool, status] of Object.entries(tools)) {
+					const reason = reasons[tool];
+					lines.push(`- ${tool}: ${status}${reason && reason !== "ready" ? `（${reason}）` : ""}`);
+				}
+				if (value.command === "verify") {
+					const d = value.deployment ?? {};
+					lines.push("", "部署验证:");
+					lines.push(`- deployment_ok: ${d.deployment_ok}`);
+					lines.push(`- private_runtime_writable: ${d.private_runtime_writable}`);
+					lines.push(`- dreamina_binary: ${d.dreamina_binary} / login: ${d.dreamina_login} / credit: ${d.dreamina_credit ?? "n/a"}`);
+					lines.push(`- ffmpeg: ${d.ffmpeg} / corpus_entries: ${d.corpus_entries} / registry_db: ${d.registry_db}`);
+					lines.push(`- proxy_port_7897: ${d.proxy_port_7897}`);
+					lines.push("", "凭证存在性（仅变量名，不输出值）:");
+					for (const [k, present] of Object.entries(value.credentials ?? {})) lines.push(`- ${k}: ${present ? "configured" : "missing"}`);
+				} else {
+					lines.push("", "生图/视频线路:");
+					for (const [provider, info] of Object.entries(value.providers ?? {})) lines.push(`- ${provider}: ${info.ready ? "ready" : "skip"}（${info.reason ?? ""}${info.model ? ` · ${info.model}` : ""}）`);
+				}
 				return [{
 					type: "text",
-					text: value.message ?? JSON.stringify(value)
+					text: lines.join("\n")
 				}];
 			}
 		},
-		async execute(_args, exec) {
+		async execute(args, exec) {
+			const command = args?.command === "verify" ? "verify" : "status";
 			const workspaceRoot = exec.agent?.session?.header?.cwd ?? process.cwd();
 			const privateRoot = resolvePrivateRoot(workspaceRoot, config.privateDir);
 			const creds = {};
-			for (const env of [
-				"COMFLY_API_KEY",
-				"APIMART_API_KEY",
-				"GEMINI_API_KEY",
-				"VOLCANO_ENGINE_API_KEY"
-			]) try {
+			for (const env of ["COMFLY_API_KEY", "VOLCANO_ENGINE_API_KEY"]) try {
 				const resolved = await ctx.credentials?.resolve(credentialRef(env));
 				creds[env] = Boolean(resolved?.value);
 			} catch {
@@ -125,7 +152,7 @@ function apply(ctx, config) {
 				privateOk = false;
 			}
 			const tools = {
-				generate_image: creds.COMFLY_API_KEY ? "ready" : creds.APIMART_API_KEY || creds.GEMINI_API_KEY || dreaminaBinary && dreaminaLogin ? "degraded" : "unavailable",
+				generate_image: creds.COMFLY_API_KEY ? "ready" : dreaminaBinary && dreaminaLogin ? "degraded" : "unavailable",
 				generate_video: dreaminaBinary && dreaminaLogin ? "ready" : dreaminaBinary ? "degraded" : "unavailable",
 				describe_image: creds.VOLCANO_ENGINE_API_KEY ? "ready" : "unavailable",
 				skill_registry: registryOk ? "ready" : "unavailable",
@@ -177,18 +204,6 @@ function apply(ctx, config) {
 					model: "gpt-image-2",
 					default_resolution: "4K"
 				},
-				"apimart-gpt-image-2": {
-					ready: creds.APIMART_API_KEY,
-					reason: creds.APIMART_API_KEY ? "ok" : "missing APIMART_API_KEY (回退链第 3 级跳过)",
-					model: "gpt-image-2",
-					default_resolution: "4K"
-				},
-				"google-gemini-image": {
-					ready: creds.GEMINI_API_KEY,
-					reason: creds.GEMINI_API_KEY ? "ok" : "missing GEMINI_API_KEY (回退链第 4 级跳过)",
-					model: "gemini-3.1-flash-image",
-					default_resolution: "2K"
-				},
 				"dreamina-image": {
 					ready: dreaminaBinary && dreaminaLogin,
 					reason: dreaminaBinary && dreaminaLogin ? "ok" : "dreamina 未就绪（共享 seedance-cli 容量）",
@@ -201,7 +216,9 @@ function apply(ctx, config) {
 				}
 			};
 			const now = (/* @__PURE__ */ new Date()).toISOString();
+			const deploymentOk = privateOk && dreaminaBinary && ffmpeg && corpusOk && registryOk;
 			const deployment = {
+				deployment_ok: deploymentOk,
 				private_runtime_writable: privateOk,
 				dreamina_binary: dreaminaBinary,
 				dreamina_login: dreaminaLogin,
@@ -212,16 +229,23 @@ function apply(ctx, config) {
 				proxy_port_7897: proxyOpen,
 				last_checked: now
 			};
+			const credentials = {
+				COMFLY_API_KEY: creds.COMFLY_API_KEY,
+				VOLCANO_ENGINE_API_KEY: creds.VOLCANO_ENGINE_API_KEY
+			};
 			const readyCount = Object.values(tools).filter((t) => t === "ready").length;
 			const degradedCount = Object.values(tools).filter((t) => t === "degraded").length;
 			const unavailableCount = Object.values(tools).filter((t) => t === "unavailable").length;
+			const message = command === "verify" ? `deployment: ${deploymentOk ? "OK" : "ISSUES"} | tools: ${readyCount} ready / ${degradedCount} degraded / ${unavailableCount} unavailable` : `tools: ${readyCount} ready / ${degradedCount} degraded / ${unavailableCount} unavailable`;
 			return {
 				ok: unavailableCount === 0,
-				message: `tools: ${readyCount} ready / ${degradedCount} degraded / ${unavailableCount} unavailable`,
+				command,
+				message,
 				tools,
 				tool_reasons: toolReasons,
 				providers,
-				deployment
+				deployment,
+				credentials
 			};
 		}
 	}));

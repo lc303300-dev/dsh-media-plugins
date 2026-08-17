@@ -104,8 +104,8 @@ function buildContactSheetHtml(plan, groups, landed) {
 	return rows.join("\n");
 }
 /** Relative path from the HTML file's directory (forward slashes); the sheet
- *  lives in <outputDir>/contact-<key>.html and outputs sit under
- *  <outputDir>/<jobKey>/..., so strip the workspace-root "outputs" segment. */
+*  lives in <outputDir>/contact-<key>.html and outputs sit under
+*  <outputDir>/<jobKey>/..., so strip the workspace-root "outputs" segment. */
 function relPath(p) {
 	return p.split("\\").join("/").replace(/^.*\/outputs\//, "");
 }
@@ -138,10 +138,6 @@ const Config = z.object({
 	outputDir: z.string().default("outputs"),
 	comflyBaseURL: z.string().default("https://ai.comfly.org/v1"),
 	comflyApiKeyEnv: z.string().default("COMFLY_API_KEY"),
-	apimartBaseURL: z.string().default("https://api.apimart.ai/v1"),
-	apimartApiKeyEnv: z.string().default("APIMART_API_KEY"),
-	geminiApiURL: z.string().default("https://generativelanguage.googleapis.com/v1beta/interactions"),
-	geminiApiKeyEnv: z.string().default("GEMINI_API_KEY"),
 	dreaminaPath: z.string().default(join(PACKAGE_ROOT, "bin", "dreamina.exe")),
 	proxyUrl: z.string().default(""),
 	maxConcurrency: z.number().default(6),
@@ -180,10 +176,6 @@ function apply(ctx, config) {
 	const baseRouterConfig = {
 		comflyBaseURL: config.comflyBaseURL,
 		comflyApiKeyEnv: config.comflyApiKeyEnv,
-		apimartBaseURL: config.apimartBaseURL,
-		apimartApiKeyEnv: config.apimartApiKeyEnv,
-		geminiApiURL: config.geminiApiURL,
-		geminiApiKeyEnv: config.geminiApiKeyEnv,
 		dreaminaPath: config.dreaminaPath,
 		proxyUrl: config.proxyUrl,
 		maxConcurrency: config.maxConcurrency,
@@ -195,11 +187,7 @@ function apply(ctx, config) {
 	/** Resolve provider keys through the DSH credentials service per call. */
 	async function resolveCredentials() {
 		const credentials = {};
-		for (const env of [
-			config.comflyApiKeyEnv,
-			config.apimartApiKeyEnv,
-			config.geminiApiKeyEnv
-		]) try {
+		for (const env of [config.comflyApiKeyEnv]) try {
 			const resolved = await ctx.credentials?.resolve(credentialRef(env));
 			if (resolved?.value) credentials[env] = String(resolved.value);
 		} catch {}

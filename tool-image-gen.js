@@ -21,10 +21,6 @@ const inject = [
 const Config = z.object({
 	comflyBaseURL: z.string().default("https://ai.comfly.org/v1"),
 	comflyApiKeyEnv: z.string().default("COMFLY_API_KEY"),
-	apimartBaseURL: z.string().default("https://api.apimart.ai/v1"),
-	apimartApiKeyEnv: z.string().default("APIMART_API_KEY"),
-	geminiApiURL: z.string().default("https://generativelanguage.googleapis.com/v1beta/interactions"),
-	geminiApiKeyEnv: z.string().default("GEMINI_API_KEY"),
 	dreaminaPath: z.string().default(join(PACKAGE_ROOT, "bin", "dreamina.exe")),
 	proxyUrl: z.string().default(""),
 	outputDir: z.string().default("outputs"),
@@ -56,7 +52,7 @@ async function stageOutput(source, outputDir, requested, workspaceRoot) {
 function apply(ctx, config) {
 	ctx.tools.register(defineTool({
 		name: "generate_image",
-		description: "用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。image_resolution 可选（1K/2K/4K）：缺省时 Gemini 线路默认 2K、GPT 线路默认 4K、Dreamina 默认 1K。image_provider 可选：仅当用户明确点名某条受支持线路时传入，指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前拒绝。图片按配置顺序严格串行尝试适配器（comfly-gemini-flash-preview → comfly-gpt-image-2 → apimart-gpt-image-2 → google-gemini-image → dreamina-image），单适配器最多 120 秒、整任务最多 300 秒；仅明确可回退的失败才进入下一适配器，提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。",
+		description: "用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。image_resolution 可选（1K/2K/4K）：缺省时 Gemini 线路默认 2K、GPT 线路默认 4K、Dreamina 默认 1K。image_provider 可选：仅当用户明确点名某条受支持线路时传入，指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前拒绝。图片按配置顺序严格串行尝试适配器（comfly-gemini-flash-preview → comfly-gpt-image-2 → dreamina-image），单适配器最多 120 秒、整任务最多 300 秒；仅明确可回退的失败才进入下一适配器，提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。",
 		parameters: {
 			prompt: {
 				type: "string",
@@ -135,21 +131,13 @@ function apply(ctx, config) {
 			const taskId = newTaskId();
 			const store = new TaskStore(join(privateRoot, "jobs"));
 			const credentials = {};
-			for (const env of [
-				config.comflyApiKeyEnv,
-				config.apimartApiKeyEnv,
-				config.geminiApiKeyEnv
-			]) try {
+			for (const env of [config.comflyApiKeyEnv]) try {
 				const resolved = await ctx.credentials?.resolve(credentialRef(env));
 				if (resolved?.value) credentials[env] = String(resolved.value);
 			} catch {}
 			const routerConfig = {
 				comflyBaseURL: config.comflyBaseURL,
 				comflyApiKeyEnv: config.comflyApiKeyEnv,
-				apimartBaseURL: config.apimartBaseURL,
-				apimartApiKeyEnv: config.apimartApiKeyEnv,
-				geminiApiURL: config.geminiApiURL,
-				geminiApiKeyEnv: config.geminiApiKeyEnv,
 				dreaminaPath: config.dreaminaPath,
 				proxyUrl: config.proxyUrl,
 				maxConcurrency: config.maxConcurrency,

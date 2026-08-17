@@ -1,4 +1,4 @@
-# dsh-media-plugins 任务开始前检查（对应 Codex scripts/maintenance/start-task.ps1）：
+﻿# dsh-media-plugins 任务开始前检查（对应 Codex scripts/maintenance/start-task.ps1）：
 # git 状态 + 结构校验 + 可选安全更新（仅干净工作树 + 未分叉时 fast-forward pull）。
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-task.ps1 [-RepositoryRoot <path>] [-CheckOnly] [-SkipUpdate]
 [CmdletBinding()]

@@ -19,11 +19,11 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import sharp from 'sharp'
 import { MediaError, mediaErrors, FALLBACK_ALLOWED, type AttemptRecord } from './failure.ts'
-import { openAiImageUrl, downloadImageTo, HttpStatusError, hasImageSignature, extensionFor } from './media-client.ts'
+import { openAiImageUrl, downloadImageTo, HttpStatusError } from './media-client.ts'
 import {
   acquireSlot,
   appendSafeLog,
@@ -46,8 +46,6 @@ export const SUPPORTED_RESOLUTIONS: readonly string[] = ['1K', '2K', '4K'] as co
 export const SUPPORTED_IMAGE_PROVIDERS: readonly string[] = [
   'comfly-gemini-flash-preview',
   'comfly-gpt-image-2',
-  'apimart-gpt-image-2',
-  'google-gemini-image',
   'dreamina-image',
 ] as const
 
@@ -153,10 +151,6 @@ export function gptImage2SizeFor(ratio: string, resolution: string): string {
 export interface RouterConfig {
   comflyBaseURL: string
   comflyApiKeyEnv: string
-  apimartBaseURL: string
-  apimartApiKeyEnv: string
-  geminiApiURL: string
-  geminiApiKeyEnv: string
   dreaminaPath: string
   proxyUrl: string
   maxConcurrency: number
@@ -274,138 +268,6 @@ function comflyAdapter(
   }
 }
 
-/** APIMart OpenAI-compatible adapter (references as base64 data URIs; GPT Image 2 sizes). */
-function apimartAdapter(cfg: RouterConfig): ImageAdapter {
-  const id = 'apimart-gpt-image-2'
-  const model = 'gpt-image-2'
-  return {
-    id,
-    model,
-    capacityKey: id,
-    async checkReady() {
-      return { ready: Boolean(credentials(cfg, cfg.apimartApiKeyEnv)), reason: cfg.apimartApiKeyEnv }
-    },
-    async execute(input) {
-      const apiKey = credentials(cfg, cfg.apimartApiKeyEnv)
-      if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.apimartApiKeyEnv}`)
-      const resolution = input.resolution ?? '4K'
-      const size = gptImage2SizeFor(input.ratio, resolution)
-      const base = cfg.apimartBaseURL.replace(/\/+$/, '')
-      const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json; charset=utf-8' }
-      const body: Record<string, unknown> = { model, prompt: input.prompt, n: 1, size, response_format: 'url' }
-      if (input.images.length > 0) {
-        const image = input.images[0]
-        const data = await readFile(image)
-        const mime = `image/${image.split('.').pop()?.toLowerCase() === 'png' ? 'png' : 'jpeg'}`
-        body.image = `data:${mime};base64,${data.toString('base64')}`
-      }
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), input.budgetMs)
-      input.signal?.addEventListener('abort', () => controller.abort(), { once: true })
-      try {
-        const response = await fetch(`${base}/images/generations`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        })
-        if (!response.ok) throw new HttpStatusError(response.status, `APIMart request failed with HTTP ${response.status}`)
-        const payload: any = await response.json()
-        const data = payload?.data
-        if (!Array.isArray(data) || !data[0]?.url) throw mediaErrors.download('APIMart response contains no image URL')
-        const dest = join(input.privateRoot, 'jobs', '_router', 'outputs')
-        return { outputPath: await downloadImageTo(data[0].url, dest, { proxyUrl: cfg.proxyUrl, signal: input.signal, timeoutMs: Math.min(input.budgetMs, 120000) }) }
-      } finally {
-        clearTimeout(timer)
-      }
-    },
-  }
-}
-
-/** Official Google Gemini image adapter (interactions API, base64 output). */
-function geminiAdapter(cfg: RouterConfig): ImageAdapter {
-  const id = 'google-gemini-image'
-  const model = 'gemini-3.1-flash-image'
-  return {
-    id,
-    model,
-    capacityKey: id,
-    async checkReady() {
-      return { ready: Boolean(credentials(cfg, cfg.geminiApiKeyEnv)), reason: cfg.geminiApiKeyEnv }
-    },
-    async execute(input) {
-      const apiKey = credentials(cfg, cfg.geminiApiKeyEnv)
-      if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.geminiApiKeyEnv}`)
-      const resolution = input.resolution ?? '2K'
-      const ratioKey = Object.entries(RATIO_SIZES).find(([, px]) => px === input.size)?.[0] ?? '16:9'
-      const inputParts: Record<string, unknown>[] = [{ type: 'text', text: input.prompt }]
-      for (const path of input.images) {
-        const data = await readFile(path)
-        const mime = `image/${path.split('.').pop()?.toLowerCase() === 'png' ? 'png' : 'jpeg'}`
-        inputParts.push({ type: 'image', data: data.toString('base64'), mime_type: mime })
-      }
-      const body = {
-        model,
-        input: inputParts,
-        response_format: { type: 'image', mime_type: 'image/jpeg', aspect_ratio: ratioKey, image_size: resolution },
-      }
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), input.budgetMs)
-      input.signal?.addEventListener('abort', () => controller.abort(), { once: true })
-      try {
-        const response = await fetch(cfg.geminiApiURL, {
-          method: 'POST',
-          headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        })
-        if (!response.ok) throw new HttpStatusError(response.status, `Gemini request failed with HTTP ${response.status}`)
-        const payload: any = await response.json()
-        const found = extractGeminiImage(payload)
-        if (!found) throw mediaErrors.download('Gemini response contains no image data')
-        const bytes = Buffer.from(found.data, 'base64')
-        if (!hasImageSignature(new Uint8Array(bytes))) throw mediaErrors.download('Gemini image data failed signature check')
-        const dest = await ensureDir(join(input.privateRoot, 'jobs', '_router', 'outputs'))
-        const finalPath = join(dest, `gemini-${Date.now()}${extensionFor(new Uint8Array(bytes))}`)
-        await writeFile(finalPath, bytes)
-        return { outputPath: finalPath }
-      } finally {
-        clearTimeout(timer)
-      }
-    },
-  }
-}
-
-/** Deep-walk a Gemini payload for the first base64 image. */
-function extractGeminiImage(payload: any): { data: string; mimeType?: string } | undefined {
-  const direct = [payload?.output_image, payload?.output?.image]
-  for (const item of direct) {
-    if (item && typeof item.data === 'string' && item.data.length > 0) {
-      return { data: item.data, mimeType: item.mime_type }
-    }
-  }
-  const walk = (value: any): { data: string; mimeType?: string } | undefined => {
-    if (Array.isArray(value)) {
-      for (const child of value) {
-        const found = walk(child)
-        if (found) return found
-      }
-      return undefined
-    }
-    if (value && typeof value === 'object') {
-      if (typeof value.data === 'string' && value.data.length > 0 && (value.type === 'image' || String(value.mime_type ?? '').startsWith('image/'))) {
-        return { data: value.data, mimeType: value.mime_type }
-      }
-      for (const key of Object.keys(value)) {
-        const found = walk(value[key])
-        if (found) return found
-      }
-    }
-    return undefined
-  }
-  return walk(payload)
-}
-
 /** Dreamina image adapter (best effort; last fallback, shared seedance-cli capacity). */
 function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
   const id = 'dreamina-image'
@@ -457,8 +319,6 @@ export function defaultAdapters(cfg: RouterConfig): ImageAdapter[] {
   const chain: ImageAdapter[] = [
     comflyAdapter('comfly-gemini-flash-preview', GEMINI_MODELS_BY_RESOLUTION['1K'], cfg, { geminiProfile: true }),
     comflyAdapter('comfly-gpt-image-2', 'gpt-image-2', cfg),
-    apimartAdapter(cfg),
-    geminiAdapter(cfg),
     dreaminaImageAdapter(cfg),
   ]
   if (!cfg.enabled || cfg.enabled.length === 0) return chain

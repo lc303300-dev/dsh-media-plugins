@@ -1,4 +1,4 @@
-# dsh-media-plugins 安装引导
+﻿# dsh-media-plugins 安装引导
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 $ErrorActionPreference = "Stop"
 
@@ -47,12 +47,8 @@ function Read-Key([string]$name, [string]$prompt, [string]$current) {
 }
 $volcano = Read-Key "VOLCANO_ENGINE_API_KEY" "火山方舟 Key（看图，可留空跳过）" $creds["VOLCANO_ENGINE_API_KEY"]
 $comfly = Read-Key "COMFLY_API_KEY" "Comfly Key（生图主通道，可留空跳过）" $creds["COMFLY_API_KEY"]
-$apimart = Read-Key "APIMART_API_KEY" "APIMart Key（生图回退 4 级，可留空跳过）" $creds["APIMART_API_KEY"]
-$gemini = Read-Key "GEMINI_API_KEY" "Google Gemini Key（生图回退 5 级，可留空跳过）" $creds["GEMINI_API_KEY"]
 if ($volcano) { $creds["VOLCANO_ENGINE_API_KEY"] = $volcano }
 if ($comfly) { $creds["COMFLY_API_KEY"] = $comfly }
-if ($apimart) { $creds["APIMART_API_KEY"] = $apimart }
-if ($gemini) { $creds["GEMINI_API_KEY"] = $gemini }
 $lines = $creds.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }
 $lines | Set-Content -LiteralPath $credFile -Encoding UTF8
 Write-Host "  已写入 $credFile" -ForegroundColor Green
@@ -98,7 +94,7 @@ if ($doLogin -eq '' -or $doLogin -eq 'y') {
 # 5. 安装业务技能到 $DSH_HOME/skills（DSH 技能发现根，重启后生效）
 Write-Host ""
 Write-Host "[5/5] 安装 Studio 技能到 $DSH_HOME\skills" -ForegroundColor Yellow
-$skillRoot = Join-Path $DSH_HOME "skills\dsh-media-studio"
+$skillRoot = Join-Path $DSH_HOME "skills"
 $srcSkills = Join-Path $PSScriptRoot "skills"
 if (Test-Path $srcSkills) {
     New-Item -ItemType Directory -Force -Path $skillRoot | Out-Null
