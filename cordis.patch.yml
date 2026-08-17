@@ -57,6 +57,9 @@
     - id: Ws_tool-preview
       name: dsh-media-plugins/Ws_tool-preview
 
+    - id: Ws_tool-grid-split
+      name: dsh-media-plugins/Ws_tool-grid-split
+
     - id: Ws_tool-status
       name: dsh-media-plugins/Ws_tool-status
 
