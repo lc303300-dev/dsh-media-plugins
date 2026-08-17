@@ -10,7 +10,7 @@ description: 将一张场景底图，或一张场景底图加一张主体整体�
 1. 读取 `contract.json`，只接受顺序固定的 `scene-base` 和可选 `identity-design`。发现额外图片立即停止并交回 Router；不得把额外图片仅当“灵感”使用。
 2. 读取规范化预览并建立该底图专属事实账本，至少记录 `frame_orientation`、`scene facts`、`identity facts`、`visibility limits`、`shot evidence` 和 `conflicts`。`frame_orientation` 只依据 `scene-base` 的宽高关系判定为 portrait、landscape 或 square；只有底图时启用单参考模式，两张图片齐全时启用双参考模式。
 3. 阅读 `references/creative-guidance.md`，逐项对照事实账本中的可见建筑、道路、孔洞、遮挡、光线和主体结构，为每个候选机位记录证据后再挑选九个有效机位。镜头集合不能机械套模板，也不能把选择池整段无条件写入提示词。
-4. 按稳定顺序编写英文提示词：`OUTPUT CONTRACT`、`REFERENCE ROLES`、`IDENTITY AND CONTINUITY`、`SHOT COVERAGE`、`ALLOWED VARIATION`、`PHYSICAL RELATIONSHIPS`、`CLOSED-WORLD RULE`、`OUTPUT NEGATIVES`。
+4. 按稳定顺序编写英文提示词：`OUTPUT CONTRACT`、`REFERENCE ROLES`、`IDENTITY AND CONTINUITY`、`SHOT COVERAGE`、`ALLOWED VARIATION`、`PHYSICAL RELATIONSHIPS`、`CLOSED-WORLD RULE`、`OUTPUT NEGATIVES`。`OUTPUT CONTRACT` 必须声明"nine equal panels separated by clear, uniform, full-span thin white grid lines"（白色细线分隔为契约固定要求）。
 5. 定稿前阅读 `references/failure-cases.md`，逐项确认已覆盖相关风险。需要示范措辞时才读取 `references/examples.md`，不得把示例事实升级为当前素材事实。
 6. 交回完整提示词 V1，等待用户确认。不得直接调用 `generate_image` 或批量执行层。
 
@@ -28,6 +28,7 @@ description: 将一张场景底图，或一张场景底图加一张主体整体�
 ## 不可越界项
 
 - 输出必须是一张指定比例的完整图片，正好九格、3×3、等大面板；无标题、编号、水印、说明文字或装饰外框。
+- 九格之间必须用清晰、等宽、贯穿全宽/全高的**白色细线**分隔（契约固定）；无分隔线、非白色分隔线或分隔线断裂/不等宽视为不合格，不得交付。
 - 九个内部面板必须统一遵循 `scene-base` 的主构图方向：竖向底图使用九个竖向小画面，横向底图使用九个横向小画面，方形底图使用九个方形小画面。外层用户确认比例只控制整张九宫格画布，不得反向改变内部面板方向。
 - 九格是同一主体、同一安装位置、同一尺度、同一场景、同一时刻、同一天气、同一光线方向、同一曝光与色彩基调。
 - 只改变摄影机位置、角度、裁切、景别、焦段、景深和对焦距离。

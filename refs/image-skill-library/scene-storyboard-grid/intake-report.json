@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
-  "status": "published",
+  "status": "approved",
   "skill_id": "scene-storyboard-grid",
   "display_name": "场景一致性九宫格分镜",
   "sources": [
     {
-      "name": "Codex_IS_搭建蓝图.md",
-      "sha256": "a5653bc46d19c7a70f59ef05e0fb5a9a4dad8ed6abf3c708b5fd0ae84a29463a"
+      "name": "scene-storyboard-grid-revision-source.md",
+      "sha256": "4ed0ec41ab4c1aaa746c964251d4b236b2f9aad0cb45b7c7ea69fe637c5a45d4"
     }
   ],
   "duplicate_check": {
     "status": "manual_review_required",
-    "checked_at": "2026-08-16T09:45:11.941951+00:00"
+    "checked_at": "2026-08-16T17:38:34.126Z"
   },
   "extraction_summary": {
     "contract_facts": "reviewed",
@@ -64,7 +64,14 @@
       "closed_world_required": true,
       "temporal_mode": "same_scene_same_moment",
       "requires_per_scene_fact_ledger": true,
-      "shot_selection_strategy": "evidence_conditioned"
+      "shot_selection_strategy": "evidence_conditioned",
+      "panel_separator": {
+        "style": "white_thin_line",
+        "required": true,
+        "uniform_width": true,
+        "full_span": true,
+        "purpose": "九个等大面板之间必须存在清晰、等宽、贯穿全宽/全高的白色细线分隔，保证输出可被确定性拆格工具按格线切分"
+      }
     }
   },
   "isolated_content": [],
@@ -76,11 +83,11 @@
     "failure_cases": true,
     "examples": true
   },
-  "reviewed_core_sha256": "caa02e3d60a1797f1c9a58fb9038341c92967c1703eb6d27bdc00404b424ab12",
+  "reviewed_core_sha256": "c95d180041a62c2c575276dd2432a28251a45c1233bb0c6c10c148c8b4d88828",
   "user_approval": {
     "required": true,
     "approved": true,
     "approved_by": "user",
-    "approved_at": "2026-08-16T09:45:12.261650+00:00"
+    "approved_at": "2026-08-16T17:38:36.182Z"
   }
 }

@@ -65,7 +65,7 @@
 - landscape 底图：九个小画面都采用横向构图。
 - square 底图：九个小画面都采用方形构图。
 - 九个小画面的方向必须统一，不得横竖混排。
-- 保持严格 3×3 等大网格；必要时通过留白、细窄统一分隔或整体排版适配外层比例，不得拉伸场景或把小画面改成相反方向。
+- 保持严格 3×3 等大网格；九格之间必须用清晰、等宽、贯穿全宽/全高的**白色细线**分隔（契约固定，输出契约中写明 "nine equal panels separated by clear, uniform, full-span thin white grid lines"）；不得使用深色/彩色分隔线，不得无分隔直接拼贴，不得通过内容留白代替分隔线。
 
 ## 空间、光线与文字
 
@@ -91,4 +91,4 @@
 7. `CLOSED-WORLD RULE`
 8. `OUTPUT NEGATIVES`
 
-输出声明应包含：single complete image、exactly nine panels、strict 3×3 equal grid、all nine panel compositions follow the scene reference orientation、no labels or numbers。不得包含供应商、模型、分辨率、费用或工作流说明。
+输出声明应包含：single complete image、exactly nine panels、strict 3×3 equal grid、all nine panel compositions follow the scene reference orientation、nine panels separated by clear uniform full-span thin white grid lines、no labels or numbers。不得包含供应商、模型、分辨率、费用或工作流说明。
