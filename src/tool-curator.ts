@@ -26,6 +26,13 @@ import {
   validateScaffoldInput,
 } from './shared/curator-core.ts'
 import { validateContract, type SlotContract } from './shared/registry-core.ts'
+import {
+  buildFlowIntakeReceipt,
+  buildFlowReviewCard,
+  flowMetaToRegistryShape,
+  flowPackageSha256,
+  validateCodexFlowPackage,
+} from './shared/flow-format.ts'
 import { resolvePrivateRoot } from './shared/private-runtime.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -42,14 +49,22 @@ export const Config: z<Config> = z.object({
 
 type ResolvedConfig = Required<Config>
 
-/** Bundle template root: built chunk lives at the package root. */
+/** Bundle template root: built chunk lives at the package root. Prefer the
+ *  Codex_Flow skill template (SKILL.md + meta.yaml + workflow.yaml); fall back
+ *  to the legacy contract template for old flows. */
 function templateRoot(): string {
   const here = dirname(fileURLToPath(import.meta.url))
   const candidates = [
+    join(here, 'refs', 'codex-flow-skill-template'),
+    join(here, '..', '..', 'refs', 'codex-flow-skill-template'),
     join(here, 'refs', 'skill-template'),
     join(here, '..', '..', 'refs', 'skill-template'),
   ]
-  return candidates.find((c) => existsSync(join(c, 'contract.json'))) ?? candidates[0]
+  return (
+    candidates.find((c) => existsSync(join(c, 'meta.yaml'))) ??
+    candidates.find((c) => existsSync(join(c, 'contract.json'))) ??
+    candidates[0]
+  )
 }
 
 /** Copy the template tree and render {{placeholders}}. */
@@ -101,7 +116,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'skill_curator',
       description:
-        '业务 Skill 录入治理（Codex_CS codex-cs-skill-curator 的 DSH 重建）：把用户上传的 Skill Markdown、旧版 Skill 包、社区经验文档或提示词资料整理为可审计、可验证、可发布的标准业务 Skill 包。scaffold 用标准模板生成骨架（contract.json/routing.json/SKILL.md/agents/references）；add_count_rules 为素材槽补齐审计式 count_rule（固定角色固定数量、其余默认每约 5 秒一项）；validate 按 validator 1.2.0 校验（必需文件、占位符/密钥/终端输出/绝对路径扫描、执行层泄漏、禁止 text2video、authoring 策略、intake-receipt 哈希绑定）；planned_counts 按确认时长推导各槽素材计划数；migrate 从旧版 Markdown 迁移；publish 生成 intake-receipt 并发布到注册库。全程 provider-neutral，不选择模型、不提交媒体。',
+        '业务 Skill 录入治理（Codex_Flow 格式的 DSH 重建）：把用户上传的 Skill Markdown、旧版 Skill 包、社区经验文档或提示词资料整理为可审计、可验证、可发布的业务 Skill 包。scaffold 用标准模板生成骨架（新格式：SKILL.md/meta.yaml/workflow.yaml/references，镜像 Codex_Flow 平台格式；旧格式：contract.json/routing.json/SKILL.md/agents/references）；validate 按格式自动选择校验器（meta.yaml 存在时用 flow-1.0：必需元字段、污染扫描、reference 路由、workflow 依赖完整性、收据哈希绑定；否则 validator 1.2.0）；add_count_rules/planned_counts 仅适用于旧 contract 格式；publish 生成审阅卡（含 paid_points 与 package_hash）与 intake-receipt 并发布到注册库。全程 provider-neutral，不选择模型、不提交媒体。',
       parameters: {
         command: {
           type: 'string',
@@ -217,6 +232,17 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const packageDir = resolvePath(String(args.package_dir))
 
         if (command === 'validate') {
+          // Codex_Flow format (meta.yaml) is authoritative when present
+          if (existsSync(join(packageDir, 'meta.yaml'))) {
+            const issues = validateCodexFlowPackage(packageDir, Boolean(args.published))
+            return {
+              ok: issues.length === 0,
+              message: issues.length === 0 ? 'package valid (codex-flow)' : `${issues.length} issue(s)`,
+              issues,
+              package_path: packageDir,
+              package_sha256: flowPackageSha256(packageDir),
+            }
+          }
           const issues = validatePackage(packageDir, Boolean(args.published))
           return {
             ok: issues.length === 0,
@@ -228,6 +254,9 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
 
         if (command === 'add_count_rules') {
+          if (existsSync(join(packageDir, 'meta.yaml'))) {
+            return { ok: false, message: 'add_count_rules 仅适用于旧 contract.json 格式；Codex_Flow 包不声明素材槽 count_rule' }
+          }
           const contractPath = join(packageDir, 'contract.json')
           const contract = JSON.parse(readFileSync(contractPath, 'utf8'))
           const { contract: updated, additions } = addMissingCountRules(contract)
@@ -236,6 +265,9 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
 
         if (command === 'planned_counts') {
+          if (existsSync(join(packageDir, 'meta.yaml'))) {
+            return { ok: false, message: 'planned_counts 仅适用于旧 contract.json 格式；Codex_Flow 包以 workflow.yaml 阶段为准，不按时长推导素材计划数' }
+          }
           const duration = Number(args.duration)
           if (!Number.isInteger(duration) || duration < 4 || duration > 30) return { ok: false, message: 'duration must be an integer 4-30' }
           const contract = JSON.parse(readFileSync(join(packageDir, 'contract.json'), 'utf8'))
@@ -321,6 +353,64 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
 
         if (command === 'publish') {
+          // Codex_Flow format path (meta.yaml authoritative when present)
+          if (existsSync(join(packageDir, 'meta.yaml'))) {
+            const issues = validateCodexFlowPackage(packageDir, false)
+            if (issues.length > 0) return { ok: false, message: `validation failed (${issues.length} issue(s)); fix before publish`, issues }
+            const shape = flowMetaToRegistryShape(packageDir)
+            const name = String(shape.name)
+            if (args.approved !== true) {
+              let card: Record<string, unknown>
+              try {
+                card = buildFlowReviewCard(packageDir)
+              } catch (error: any) {
+                return { ok: false, message: String(error?.message ?? error) }
+              }
+              const sealed = readIntakeSources(packageDir)
+              const checklist = {
+                skill_id: name,
+                display_name: String(card.display_name ?? ''),
+                primary_output: card.primary_output,
+                capabilities: card.capabilities,
+                paid_points: card.paid_points,
+                workflow_profile: card.workflow_profile,
+                source_hashes: sealed ? sealed.map((s) => ({ name: s.name, sha256: s.sha256.slice(0, 16) + '…' })) : null,
+                package_hash: String(card.package_hash ?? ''),
+                validation: `${issues.length} issue(s)`,
+                instruction: '请向用户展示以上审核项并获得明确确认后，以 approved=true 重新调用 publish',
+              }
+              return { ok: false, message: 'publish requires explicit user approval (approved=true) after reviewing the checklist', checklist }
+            }
+            const sealed = readIntakeSources(packageDir)
+            const sources = sealed
+              ? sealed.map((s) => ({ name: s.name, sha256: s.sha256 }))
+              : Array.isArray(args.sources) && args.sources.length > 0
+                ? args.sources.map((s: any) => ({ name: String(s.name), sha256: String(s.sha256) }))
+                : [{ name: 'curator-input', sha256: flowPackageSha256(packageDir) }]
+            const receipt = buildFlowIntakeReceipt(packageDir, sources, { version: String(shape.version) })
+            writeFileSync(join(packageDir, 'intake-receipt.json'), JSON.stringify(receipt, null, 2) + '\n', 'utf8')
+            const publishedIssues = validateCodexFlowPackage(packageDir, true)
+            if (publishedIssues.length > 0) {
+              return { ok: false, message: `receipt validation failed: ${publishedIssues.join(', ')}`, issues: publishedIssues }
+            }
+            const { SkillRegistry } = await import('./shared/registry-core.ts')
+            const registry = new SkillRegistry(join(privateRoot, 'registry', 'registry.db'))
+            try {
+              const contract = validateContract({
+                name: String(shape.name),
+                version: String(shape.version),
+                description: String(shape.description),
+                taxonomy: shape.taxonomy,
+                flow: shape.flow as any,
+              })
+              const routing = { aliases: shape.taxonomy, negative_intents: Array.isArray(shape.flow.exclude_intents) ? (shape.flow.exclude_intents as string[]) : [] }
+              const record = registry.ingest({ contract, routing, packageRoot: packageDir, provenance: 'curator (codex-flow)' }, { force: true })
+              registry.setStatus(String(shape.name), String(shape.version), 'published')
+              return { ok: true, message: `published ${record.name}@${record.version} with intake receipt (codex-flow)`, skill: { id: record.id, name: record.name, version: record.version, status: record.status } }
+            } finally {
+              registry.close()
+            }
+          }
           const issues = validatePackage(packageDir, false)
           if (issues.length > 0) return { ok: false, message: `validation failed (${issues.length} issue(s)); fix before publish`, issues }
           const contract = JSON.parse(readFileSync(join(packageDir, 'contract.json'), 'utf8'))

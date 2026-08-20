@@ -30,16 +30,16 @@ test('resolution policy: test forces 720p; production defaults to 480p or explic
   assert.equal(resolveVideoResolution('production', '720p', '480p'), '720p')
 })
 
-test('limits: seedance2.5 supports 50 refs/4-30s/480p-720p/audio-only; 2.0_vip 12 refs; others 720p only', () => {
+test('limits: seedance2.5 supports 50 refs/4-30s/480p-1080p/audio-only; 2.0_vip 12 refs; others 720p only', () => {
   const l25 = limitsFor('seedance2.5')
   assert.equal(l25.total, 50)
   assert.equal(l25.durationMax, 30)
-  assert.deepEqual(l25.resolutions, ['480p', '720p'])
+  assert.deepEqual(l25.resolutions, ['480p', '720p', '1080p'])
   assert.equal(l25.audioOnlyAllowed, true)
   const l20 = limitsFor('seedance2.0_vip')
   assert.equal(l20.total, 12)
   assert.equal(l20.durationMax, 15)
-  assert.deepEqual(l20.resolutions, ['720p', '1080p', '4k'])
+  assert.deepEqual(l20.resolutions, ['480p', '720p', '1080p', '4k'])
   assert.equal(l20.audioOnlyAllowed, false)
   const other = limitsFor('seedance2.0mini')
   assert.deepEqual(other.resolutions, ['720p'])

@@ -12,11 +12,12 @@ import { promisify } from "node:util";
 * Video model/execution policy (pure domain — no DSH imports).
 *
 * Contract (Codex_image AGENTS.md / UNIFIED_MEDIA_TOOL_REFACTOR_BLUEPRINT):
-* - default model seedance2.5, default resolution 480p;
+* - default model seedance2.5, default resolution 480p; seedance2.5 supports
+*   480p/720p/1080p (aligned with the upstream video_router allowlist);
 * - test_submit_only forces non-VIP seedance2.0 + 720p + poll=0 and never
 *   queries/downloads;
 * - ordinary explicit 2.0-series (non-VIP, non-test) normalizes to
-*   seedance2.0_vip;
+*   seedance2.0_vip (upstream allowlist 480p/720p/1080p/4k for 2.0_vip);
 * - multiframe2video is disabled legacy — the command selector never emits it.
 *
 * @module dsh-media-plugins/shared/video-policy
@@ -45,7 +46,11 @@ const LIMITS_SEEDANCE_2_5 = {
 	total: 50,
 	durationMin: 4,
 	durationMax: 30,
-	resolutions: ["480p", "720p"],
+	resolutions: [
+		"480p",
+		"720p",
+		"1080p"
+	],
 	ratios: [
 		"1:1",
 		"3:4",
@@ -61,6 +66,7 @@ const LIMITS_SEEDANCE_2_0 = {
 	durationMin: 4,
 	durationMax: 15,
 	resolutions: [
+		"480p",
 		"720p",
 		"1080p",
 		"4k"
@@ -226,11 +232,65 @@ async function newestVideo(dir) {
 	videos.sort((a, b) => b.length - a.length);
 	return videos[0];
 }
+/** Normalize a video duration value: integer seconds, optional s/秒 suffix (upstream normalize_video_duration). */
+function normalizeVideoDuration(value) {
+	if (value === void 0 || value === null) return 5;
+	if (typeof value === "boolean") throw mediaErrors.input("duration must be an integer number of seconds");
+	const text = String(value).trim();
+	const match = /^(\d{1,2})\s*(?:s(?:ec(?:onds?)?)?|秒)?$/i.exec(text);
+	if (!match) throw mediaErrors.input("duration must be an integer number of seconds, optionally followed by s or 秒");
+	return Number(match[1]);
+}
+/** Dated session-group name: YYYY_MM_DD-<base> (upstream dated_video_group contract: base 1-20 chars, one line). */
+function datedVideoGroup(name) {
+	const base = name.trim();
+	if (base.length === 0 || base.length > 20 || /[\r\n]/.test(base)) throw mediaErrors.input("video_group base name must contain 1-20 characters on one line");
+	const now = /* @__PURE__ */ new Date();
+	return `${`${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}_${String(now.getDate()).padStart(2, "0")}`}-${base}`;
+}
+/**
+* Extract the exact session id from `session list`/`session search` table
+* output. Mirrors the upstream regex: `session list` includes a PINNED column
+* while `session search` omits it, and names may contain spaces, so the
+* trailing timestamp anchors each row.
+*/
+function parseSessionId(text, exactName) {
+	for (const match of text.matchAll(/^\s*(\d+)\s+(.+?)\s+(?:(?:Yes|No)\s+)?\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?\s*$/gm)) if (match[2].trim() === exactName) return Number(match[1]);
+}
+/** Resolve (reuse) or create the Dreamina session for a group; returns its id. */
+async function resolveDreaminaSession(binary, groupName) {
+	let text;
+	try {
+		text = await runDreamina(binary, [
+			"session",
+			"search",
+			groupName
+		], 3e4);
+	} catch {
+		text = "";
+	}
+	let id = parseSessionId(text, groupName);
+	if (id === void 0) {
+		await runDreamina(binary, [
+			"session",
+			"create",
+			groupName
+		], 3e4);
+		text = await runDreamina(binary, [
+			"session",
+			"search",
+			groupName
+		], 3e4);
+		id = parseSessionId(text, groupName);
+	}
+	if (id === void 0) throw mediaErrors.provider("Dreamina session was created but could not be resolved");
+	return id;
+}
 /** Register the `generate_video` tool. */
 function apply(ctx, config) {
 	ctx.tools.register(defineTool({
 		name: "generate_video",
-		description: "用即梦 Dreamina（Seedance）本地 CLI 生成视频：默认走全能参考模式 multimodal2video（传任意 image/images/videos/audios 参考即启用，支持多图、参考视频与音频）；只传 prompt 时走 text2video。默认模型 seedance2.5、默认 480p；仅当前用户明确选择时才使用 seedance2.0 系列（普通 2.0 归一化为 seedance2.0_vip）。video_execution_mode：production（提交并轮询下载）、production_submit_only（仅提交返回 submit_id，不自动查询）、test_submit_only（强制非 VIP seedance2.0 + 720p，只返回 submit_id，请到即梦网站后台查看，绝不自动查询下载）。任务状态持久化在私有运行目录，同一任务绝不重复提交。",
+		description: "用即梦 Dreamina（Seedance）本地 CLI 生成视频：默认走全能参考模式 multimodal2video（传任意 image/images/videos/audios 参考即启用，支持多图、参考视频与音频）；只传 prompt 时走 text2video。默认模型 seedance2.5、默认 480p；仅当前用户明确选择时才使用 seedance2.0 系列（普通 2.0 归一化为 seedance2.0_vip）。video_execution_mode：production（提交并轮询下载）、production_submit_only（仅提交返回 submit_id，不自动查询）、test_submit_only（强制非 VIP seedance2.0 + 720p，只返回 submit_id，请到即梦网站后台查看，绝不自动查询下载）。video_count 1-10 可批量并行提交（仅提交不自动轮询下载），聚合状态为 submitted/partial；video_group 指定会话分组名（自动加 YYYY_MM_DD- 日期前缀并复用/创建即梦会话，同组任务共享会话，test_submit_only 必须提供）。任务状态持久化在私有运行目录，同一任务绝不重复提交。",
 		parameters: {
 			prompt: {
 				type: "string",
@@ -266,7 +326,7 @@ function apply(ctx, config) {
 			},
 			video_resolution: {
 				type: "string",
-				description: "分辨率：seedance2.5 仅支持 480p/720p；seedance2.0_vip 支持 720p/1080p/4k；其余模型仅 720p。默认 480p（test 模式固定 720p）。"
+				description: "分辨率：seedance2.5 支持 480p/720p/1080p；seedance2.0_vip 支持 480p/720p/1080p/4k；其余模型仅 720p。默认 480p（test 模式固定 720p）。"
 			},
 			model_version: {
 				type: "string",
@@ -276,6 +336,14 @@ function apply(ctx, config) {
 				type: "string",
 				enum: [...VIDEO_EXECUTION_MODES],
 				description: "执行模式：production（默认，提交+轮询+下载）、production_submit_only（仅提交）、test_submit_only（测试通道，强制非 VIP 2.0/720p，仅返回 submit_id）。"
+			},
+			video_count: {
+				type: "integer",
+				description: "可选：批量并行提交个数（1-10，默认 1）。>1 时仅提交不自动轮询下载，返回聚合状态 submitted/partial 与各 submit_id；test_submit_only 仅允许 1。"
+			},
+			video_group: {
+				type: "string",
+				description: "可选：会话分组名（1-20 字符单行），自动加 YYYY_MM_DD- 日期前缀，复用或创建即梦会话（同一分组的任务共享会话）；test_submit_only 必须提供。"
 			},
 			output: {
 				type: "string",
@@ -294,10 +362,29 @@ function apply(ctx, config) {
 						required: true
 					},
 					execution_mode: { type: "string" },
-					model: { type: "string" }
+					model: { type: "string" },
+					status: { type: "string" },
+					count: { type: "number" },
+					video_group: { type: "string" },
+					video_session_id: { type: "number" },
+					results: {
+						type: "array",
+						items: {
+							type: "object",
+							additionalProperties: true
+						}
+					}
 				}
 			},
 			render(_args, value) {
+				if (Array.isArray(value.results)) {
+					const ok = value.results.filter((r) => r.status === "submitted").length;
+					const group = value.video_group !== void 0 ? `, group=${value.video_group}` : "";
+					return [{
+						type: "text",
+						text: `video batch: ${ok}/${value.count ?? value.results.length} submitted (${value.status})${group}`
+					}];
+				}
 				if (value.done && value.path !== void 0) return [{
 					type: "text",
 					text: `generated video: ${value.path}`
@@ -315,7 +402,7 @@ function apply(ctx, config) {
 			if (!VIDEO_EXECUTION_MODES.includes(mode)) throw mediaErrors.input(`unsupported video_execution_mode: ${mode}`);
 			const model = resolveVideoModel(mode, normalizeModel(args.model_version ?? config.model));
 			const resolution = resolveVideoResolution(mode, args.video_resolution, config.resolution);
-			const duration = Number(args.duration ?? 5);
+			const duration = normalizeVideoDuration(args.duration);
 			const ratio = String(args.ratio ?? "16:9");
 			const images = [];
 			if (typeof args.image === "string" && args.image.trim().length > 0) images.push(args.image.trim());
@@ -338,6 +425,121 @@ function apply(ctx, config) {
 			const privateRoot = resolvePrivateRoot(workspaceRoot, config.privateDir);
 			const taskId = newTaskId();
 			const store = new TaskStore(join(privateRoot, "jobs"));
+			const count = args.video_count === void 0 ? 1 : Number(args.video_count);
+			if (!Number.isInteger(count) || count < 1 || count > 10) throw mediaErrors.input("video_count must be an integer between 1 and 10");
+			if (mode === "test_submit_only" && count !== 1) throw mediaErrors.input("test_submit_only supports exactly one task");
+			let sessionId;
+			let resolvedGroupName;
+			if (args.video_group !== void 0 && String(args.video_group).trim().length > 0) {
+				resolvedGroupName = datedVideoGroup(String(args.video_group));
+				sessionId = await resolveDreaminaSession(config.dreaminaPath, resolvedGroupName);
+			} else if (mode === "test_submit_only") throw mediaErrors.input("test_submit_only requires video_group to verify session routing");
+			const sessionArgs = sessionId === void 0 ? [] : [`--session=${sessionId}`];
+			const groupFields = resolvedGroupName === void 0 ? {} : {
+				video_group: resolvedGroupName,
+				video_session_id: sessionId
+			};
+			const buildSubmitArgs = () => totalRefs > 0 ? [
+				"multimodal2video",
+				...images.map((p) => `--image=${p}`),
+				...videos.map((p) => `--video=${p}`),
+				...audios.map((p) => `--audio=${p}`),
+				`--prompt=${prompt}`,
+				`--model_version=${model}`,
+				`--video_resolution=${resolution}`,
+				`--duration=${duration}`,
+				`--ratio=${ratio}`,
+				...sessionArgs,
+				"--poll=0"
+			] : [
+				"text2video",
+				`--prompt=${prompt}`,
+				`--model_version=${model}`,
+				`--video_resolution=${resolution}`,
+				`--duration=${duration}`,
+				`--ratio=${ratio}`,
+				...sessionArgs,
+				"--poll=0"
+			];
+			if (count > 1) {
+				const results = (await Promise.allSettled(Array.from({ length: count }, async () => {
+					const itemTaskId = newTaskId();
+					await store.create("video", itemTaskId, "video", {
+						prompt: redactPrompt(prompt),
+						mode,
+						model,
+						resolution,
+						duration,
+						ratio,
+						images: images.map((p) => p),
+						videos: videos.map((p) => p),
+						audios: audios.map((p) => p),
+						batch: true
+					});
+					await store.transition("video", itemTaskId, "running", {
+						model,
+						provider: "dreamina"
+					});
+					const submitOut = await runDreamina(config.dreaminaPath, buildSubmitArgs(), 24e4);
+					const parsed = parseJson(submitOut);
+					if (parsed === void 0 || typeof parsed.submit_id !== "string" || parsed.submit_id.length === 0) throw mediaErrors.provider(`dreamina submit returned no submit_id: ${String(submitOut).slice(0, 300)}`);
+					if (parsed.gen_status === "fail") throw mediaErrors.provider(`dreamina task failed: ${String(parsed.fail_reason ?? "unknown reason")}`);
+					return {
+						itemTaskId,
+						submitId: parsed.submit_id
+					};
+				}))).map((item, index) => {
+					if (item.status === "fulfilled") {
+						const { itemTaskId, submitId } = item.value;
+						store.saveResult("video", itemTaskId, {
+							status: "submitted",
+							submitId,
+							model,
+							mode
+						});
+						store.transition("video", itemTaskId, "success", {
+							submitId,
+							nextAction: "query_later"
+						});
+						return {
+							index: index + 1,
+							submit_id: submitId,
+							status: "submitted",
+							model,
+							execution_mode: mode
+						};
+					}
+					return {
+						index: index + 1,
+						status: "failed",
+						error: String(item.reason?.message ?? item.reason).slice(0, 300),
+						model,
+						execution_mode: mode
+					};
+				});
+				const statuses = new Set(results.map((r) => r.status));
+				const aggregate = statuses.size === 1 && statuses.has("submitted") ? "submitted" : "partial";
+				const batchResult = {
+					status: aggregate,
+					count,
+					results,
+					done: false,
+					execution_mode: mode,
+					model
+				};
+				if (resolvedGroupName !== void 0) {
+					batchResult.video_group = resolvedGroupName;
+					batchResult.video_session_id = sessionId;
+				}
+				await appendSafeLog(privateRoot, "generate_video", {
+					taskId,
+					event: "batch_submitted",
+					count,
+					group: resolvedGroupName,
+					status: aggregate
+				});
+				return batchResult;
+			}
 			const request = {
 				prompt: redactPrompt(prompt),
 				mode,
@@ -366,26 +568,7 @@ function apply(ctx, config) {
 						detail: String(error?.message ?? error).slice(0, 200)
 					});
 				}
-				const submitArgs = totalRefs > 0 ? [
-					"multimodal2video",
-					...images.map((p) => `--image=${p}`),
-					...videos.map((p) => `--video=${p}`),
-					...audios.map((p) => `--audio=${p}`),
-					`--prompt=${prompt}`,
-					`--model_version=${model}`,
-					`--video_resolution=${resolution}`,
-					`--duration=${duration}`,
-					`--ratio=${ratio}`,
-					"--poll=0"
-				] : [
-					"text2video",
-					`--prompt=${prompt}`,
-					`--model_version=${model}`,
-					`--video_resolution=${resolution}`,
-					`--duration=${duration}`,
-					`--ratio=${ratio}`,
-					"--poll=0"
-				];
+				const submitArgs = buildSubmitArgs();
 				const submitOut = await runDreamina(config.dreaminaPath, submitArgs, 24e4);
 				const submitted = parseJson(submitOut);
 				if (submitted === void 0 || typeof submitted.submit_id !== "string" || submitted.submit_id.length === 0) throw mediaErrors.provider(`dreamina submit returned no submit_id: ${String(submitOut).slice(0, 300)}`);
@@ -421,7 +604,8 @@ function apply(ctx, config) {
 							submit_id: submitId,
 							done: false,
 							execution_mode: mode,
-							model
+							model,
+							...groupFields
 						};
 					}
 					await store.transition("video", taskId, "success", {
@@ -432,7 +616,8 @@ function apply(ctx, config) {
 						submit_id: submitId,
 						done: false,
 						execution_mode: mode,
-						model
+						model,
+						...groupFields
 					};
 				}
 				const deadline = Date.now() + config.pollTimeoutMs;
@@ -476,7 +661,8 @@ function apply(ctx, config) {
 								submit_id: submitId,
 								done: true,
 								execution_mode: mode,
-								model
+								model,
+								...groupFields
 							};
 						}
 					}
@@ -490,7 +676,8 @@ function apply(ctx, config) {
 					submit_id: submitId,
 					done: false,
 					execution_mode: mode,
-					model
+					model,
+					...groupFields
 				};
 			} catch (error) {
 				if (error?.cls === "cancelled") throw error;

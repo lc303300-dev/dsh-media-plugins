@@ -9,8 +9,9 @@
 
 import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { existsSync, statSync } from 'node:fs'
 
 export type SkillStatus = 'draft' | 'published' | 'deprecated'
 
@@ -21,6 +22,28 @@ export interface SlotContract {
   max?: number
   planned_count?: number
   count_rule?: 'per_second' | 'fixed' | 'range' | string
+  /**
+   * References-style fields carried through on flow-synthesized contracts
+   * (project-core planSlots reads min_count / max_count; max_count null = no
+   * upper bound). Optional so legacy SlotContracts stay unchanged.
+   */
+  media_type?: string
+  min_count?: number
+  max_count?: number | null
+}
+
+export interface FlowContract {
+  capabilities: string[]
+  exclude_intents: string[]
+  primary_output: string
+  display_name: string
+  workflow_profile: string
+  interaction_profile: string
+  release_tier: string
+  package_sha256: string
+  references: Record<string, { path: string; load_at: string[] }>
+  entry: string
+  source: string
 }
 
 export interface SkillContract {
@@ -45,6 +68,8 @@ export interface SkillContract {
     lang?: string
     corpus_policy?: 'no_corpus' | 'up_to_3_examples'
   }
+  /** Codex_Flow format metadata (present for packages with meta.yaml). */
+  flow?: FlowContract
 }
 
 export interface SkillRecord {
@@ -195,6 +220,12 @@ export function validateContract(raw: unknown): SkillContract {
       if (slot.planned_count !== undefined && (!Number.isInteger(slot.planned_count) || slot.planned_count < 0)) throw new Error(`slot ${slot.id}: planned_count must be a non-negative integer`)
     }
   }
+  if (c.flow !== undefined) {
+    if (!Array.isArray(c.flow.capabilities)) throw new Error('contract.flow.capabilities must be an array')
+    if (!Array.isArray(c.flow.exclude_intents)) throw new Error('contract.flow.exclude_intents must be an array')
+    if (typeof c.flow.primary_output !== 'string' || c.flow.primary_output.trim().length === 0) throw new Error('contract.flow.primary_output is required')
+    if (typeof c.flow.package_sha256 !== 'string' || c.flow.package_sha256.length === 0) throw new Error('contract.flow.package_sha256 is required')
+  }
   return {
     name: c.name.trim(),
     version: c.version.trim(),
@@ -204,6 +235,7 @@ export function validateContract(raw: unknown): SkillContract {
     image: c.image,
     slots: c.slots,
     prompt: c.prompt,
+    flow: c.flow,
   }
 }
 
@@ -438,7 +470,12 @@ export class SkillRegistry {
       .filter((r) => status === 'any' || r.status === status)
       .map((r) => {
         const routing = safeJson(r.routing_json, {})
-        const aliases = Array.isArray(routing.aliases) ? routing.aliases.map(String) : []
+        const taxonomy = safeJson(r.taxonomy, [])
+        const aliases = Array.isArray(routing.aliases)
+          ? routing.aliases.map(String)
+          : Array.isArray(taxonomy)
+            ? taxonomy.map(String)
+            : []
         const queryNorm = normalizeTerm(q)
         const exactAlias = aliases.some((alias) => normalizeTerm(alias) === queryNorm) || normalizeTerm(String(r.name ?? '')) === queryNorm
         const { positive, negative } = matchedTerms(q, routing)
@@ -474,6 +511,139 @@ export class SkillRegistry {
     return this.get(name, version)!
   }
 
+  /**
+   * Fast-path routing (port of upstream Codex_Flow registry.route): one
+   * decision without loading Skill bodies or reference files. Candidates are
+   * filtered by capability and exclude-intents, scored by weighted phrase
+   * matching (skill_id 70 / display_name 80 / aliases 80 / tags 60 / token 4).
+   * A best score >= 60 yields `specialized_skill`; otherwise the platform
+   * fallback `generic-image` is returned for image capabilities (upstream
+   * contract). `generic-image` itself is never a candidate.
+   */
+  route(query: string, capability = 'image.generate', limit = 3): {
+    query: string
+    capability: string
+    decision: Record<string, unknown>
+    candidates: Array<Record<string, unknown>>
+  } {
+    const q = (query ?? '').trim()
+    const rows = this.db.prepare("SELECT * FROM skills WHERE status = 'published'").all() as Array<Record<string, unknown>>
+    const candidates: Array<Record<string, unknown>> = []
+    for (const row of rows) {
+      const contract = safeJson(row.contract_json, {}) as SkillContract
+      const caps = contract.flow?.capabilities ?? []
+      if (caps.length > 0 && !caps.includes(capability)) continue
+      if (String(row.name ?? '') === 'generic-image') continue
+      const excluded = (contract.flow?.exclude_intents ?? []).map((value) => String(value).toLowerCase())
+      if (excluded.some((value) => value.length > 0 && q.toLowerCase().includes(value))) continue
+      const score = routeScore(q, {
+        skill_id: String(row.name ?? ''),
+        display_name: String(contract.flow?.display_name ?? row.name ?? ''),
+        description: String(row.description ?? ''),
+        aliases: (contract.taxonomy ?? []).map(String),
+        tags: (contract.taxonomy ?? []).map(String),
+        capabilities: caps,
+      })
+      if (score > 0) {
+        candidates.push({ skill_id: row.name, display_name: contract.flow?.display_name ?? row.name, description: row.description, source: contract.flow?.source ?? 'codex-flow', score })
+      }
+    }
+    candidates.sort((a, b) => Number(b.score) - Number(a.score))
+    const best = candidates[0] as Record<string, unknown> | undefined
+    let decision: Record<string, unknown>
+    if (best && Number(best.score) >= 60) {
+      decision = { mode: 'specialized_skill', skill_id: best.skill_id, confidence: 'high', score: best.score, source: best.source }
+    } else if (capability.startsWith('image.')) {
+      decision = {
+        mode: 'generic_image',
+        skill_id: 'generic-image',
+        confidence: 'fallback',
+        style_library: shouldConsultStyleLibrary(q) ? 'recommended' : 'not_needed',
+        case_corpus: shouldConsultStyleLibrary(q) ? 'recommended' : 'not_needed',
+      }
+    } else {
+      decision = { mode: 'no_match', confidence: 'fallback' }
+    }
+    return { query, capability, decision, candidates: candidates.slice(0, limit) }
+  }
+
+  /** Resolve a compact record to its executable runtime descriptor (port of registry.resolve). */
+  resolve(name: string, version?: string): { record: SkillRecord; runtime: Record<string, unknown>; available: boolean } {
+    const record = this.get(name, version)
+    if (!record) throw new Error(`skill is not registered: ${name}${version ? `@${version}` : ''}`)
+    const flow = (record.contract as SkillContract).flow
+    const runtime: Record<string, unknown> = flow
+      ? {
+          source: flow.source,
+          version: record.version,
+          package_hash: flow.package_sha256,
+          entry: flow.entry,
+          references: flow.references,
+          intermediate_outputs: [],
+          workflow_profile: flow.workflow_profile,
+          interaction_profile: flow.interaction_profile,
+          primary_output: flow.primary_output,
+          exclude_intents: flow.exclude_intents,
+          capabilities: flow.capabilities,
+        }
+      : {
+          source: 'legacy',
+          version: record.version,
+          package_root: record.packageRoot,
+          contract: record.contract,
+        }
+    return { record, runtime, available: flow ? fileExists(flow.entry) : true }
+  }
+
+  /** Compile the published registry to a registry.json (schema codex-flow-registry/v2) in the private runtime. */
+  compile(registryPath: string): { indexed: number; rejected: string[]; registry: string } {
+    const rows = this.db.prepare("SELECT * FROM skills WHERE status = 'published'").all() as Array<Record<string, unknown>>
+    const skills: Array<Record<string, unknown>> = []
+    const rejected: string[] = []
+    for (const row of rows) {
+      const contract = safeJson(row.contract_json, {}) as SkillContract
+      const flow = contract.flow
+      if (flow) {
+        skills.push({
+          skill_id: row.name,
+          source: flow.source,
+          version: row.version,
+          description: row.description,
+          display_name: flow.display_name,
+          category: flow.primary_output,
+          styles: contract.taxonomy ?? [],
+          scenes: [],
+          use_when: row.description,
+          guidance: [],
+          pitfalls: flow.exclude_intents,
+          example_cases: [],
+          aliases: contract.taxonomy ?? [],
+          tags: contract.taxonomy ?? [],
+          capabilities: flow.capabilities,
+          release_tier: flow.release_tier,
+          record_type: 'skill',
+        })
+      } else {
+        rejected.push(String(row.name))
+      }
+    }
+    const registry = {
+      schema: 'codex-flow-registry/v2',
+      indexed: skills.length,
+      skills,
+      runtime: Object.fromEntries(
+        skills.map((skill) => [
+          skill.skill_id,
+          { source: skill.source, version: skill.version, package_hash: (this.get(String(skill.skill_id))?.contract as SkillContract)?.flow?.package_sha256 ?? '', entry: (this.get(String(skill.skill_id))?.contract as SkillContract)?.flow?.entry ?? '', references: (this.get(String(skill.skill_id))?.contract as SkillContract)?.flow?.references ?? {}, primary_output: skill.category, exclude_intents: skill.pitfalls, capabilities: skill.capabilities },
+        ]),
+      ),
+      rejected,
+    }
+    mkdirSync(dirname(registryPath), { recursive: true })
+    writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf8')
+    return { indexed: skills.length, rejected, registry: registryPath }
+  }
+
   list(status?: SkillStatus, limit = 100): SkillRecord[] {
     const rows = status
       ? this.db.prepare('SELECT * FROM skills WHERE status = ? ORDER BY updated_at DESC LIMIT ?').all(status, limit)
@@ -496,6 +666,61 @@ function safeJson(raw: unknown, fallback: unknown): any {
     return JSON.parse(raw)
   } catch {
     return fallback
+  }
+}
+
+/** Port of upstream registry.route_score (weighted phrase matching). */
+function routeScore(
+  query: string,
+  skill: { skill_id: string; display_name: string; description: string; aliases: string[]; tags: string[]; capabilities: string[] },
+): number {
+  const folded = (query ?? '').trim().toLowerCase()
+  if (!folded) return 0
+  let score = 0
+  const weightedFields: Array<[string[], number]> = [
+    [[skill.skill_id], 70],
+    [[skill.display_name], 80],
+    [skill.aliases, 80],
+    [skill.tags, 60],
+  ]
+  for (const [values, weight] of weightedFields) {
+    for (const value of values) {
+      const phrase = String(value).toLowerCase().trim()
+      if (phrase.length >= 2 && folded.includes(phrase)) {
+        score += weight
+        continue
+      }
+      const tokens = phrase.split(/[^a-z0-9\u4e00-\u9fff]+/).filter((t) => t.length > 1)
+      if (tokens.length > 0 && tokens.some((token) => folded.includes(token))) {
+        score += Math.max(8, Math.floor(weight / 2))
+      }
+    }
+  }
+  const haystack = [skill.skill_id, skill.display_name, skill.description, ...skill.aliases, ...skill.tags, ...skill.capabilities]
+    .join(' ')
+    .toLowerCase()
+  score += folded
+    .split(/\s+/)
+    .filter((token) => token.length > 1 && haystack.includes(token))
+    .length * 4
+  return score
+}
+
+const IMAGE_STYLE_LIBRARY_TERMS = [
+  'style', 'style transfer', 'reference image', 'redraw', '风格', '风格迁移', '参考图', '重绘', '版式', '视觉语言',
+]
+
+/** Port of upstream registry.should_consult_style_library. */
+function shouldConsultStyleLibrary(query: string): boolean {
+  const folded = query.toLowerCase()
+  return IMAGE_STYLE_LIBRARY_TERMS.some((term) => folded.includes(term) || query.includes(term))
+}
+
+function fileExists(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
   }
 }
 

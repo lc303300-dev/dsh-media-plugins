@@ -2,11 +2,12 @@
  * Video model/execution policy (pure domain — no DSH imports).
  *
  * Contract (Codex_image AGENTS.md / UNIFIED_MEDIA_TOOL_REFACTOR_BLUEPRINT):
- * - default model seedance2.5, default resolution 480p;
+ * - default model seedance2.5, default resolution 480p; seedance2.5 supports
+ *   480p/720p/1080p (aligned with the upstream video_router allowlist);
  * - test_submit_only forces non-VIP seedance2.0 + 720p + poll=0 and never
  *   queries/downloads;
  * - ordinary explicit 2.0-series (non-VIP, non-test) normalizes to
- *   seedance2.0_vip;
+ *   seedance2.0_vip (upstream allowlist 480p/720p/1080p/4k for 2.0_vip);
  * - multiframe2video is disabled legacy — the command selector never emits it.
  *
  * @module dsh-media-plugins/shared/video-policy
@@ -41,7 +42,7 @@ export const LIMITS_SEEDANCE_2_5: ModelLimits = {
   total: 50,
   durationMin: 4,
   durationMax: 30,
-  resolutions: ['480p', '720p'],
+  resolutions: ['480p', '720p', '1080p'],
   ratios: ['1:1', '3:4', '16:9', '4:3', '9:16', '21:9'],
   audioOnlyAllowed: true,
 }
@@ -50,7 +51,7 @@ export const LIMITS_SEEDANCE_2_0: ModelLimits = {
   total: 12,
   durationMin: 4,
   durationMax: 15,
-  resolutions: ['720p', '1080p', '4k'],
+  resolutions: ['480p', '720p', '1080p', '4k'],
   ratios: ['1:1', '3:4', '16:9', '4:3', '9:16', '21:9'],
   audioOnlyAllowed: false,
 }

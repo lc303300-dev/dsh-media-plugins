@@ -89,3 +89,61 @@
 只有同时满足以下条件才能发布：来源哈希存在；重复检查完成；确定性事实已进入 contract；知识文件完整；无 provider 或凭据实现；JSON Schema 与语义校验通过；审核报告无阻断问题；用户明确批准正式名称、契约和发布。
 
 发布收据在 staging 中生成，对排除收据后的规范化包计算 SHA-256（`codex-is-package-sha256-v2`）。注册表只索引有效收据且当前包哈希一致的正式包；已发布包修订必须重新审核、重新批准并通过 `upgrade` 原子升级。
+
+## 10. Codex_Flow 新格式（默认）
+
+> 第 1-9 节描述旧版 `contract.json` 格式（存量兼容），本节描述 **Codex_Flow 图片格式**（新入库默认，镜像上游 `packages/Codex_Flow` 平台）。新包优先按本节创建；`image_skill_curator` 与 `image_skill_pipeline` 自动识别：包内存在 `meta.yaml` 即按 flow 校验/发布/合成。
+
+新入库的图片业务 Skill 使用 Codex_Flow 平台格式，把"业务创意"与"平台执行"分离：业务包只描述输出、能力、排除意图、工作流门禁与知识引用；provider、模型、执行入口与付费批准由平台层决定。
+
+### 10.1 标准目录
+
+```text
+<skill-id>/
+├─ SKILL.md
+├─ meta.yaml
+├─ workflow.yaml          # staged profile 必须
+├─ intake-receipt.json    # 仅由发布器生成
+└─ references/
+   ├─ creative-guidance.md
+   ├─ failure-cases.md
+   └─ examples.md
+```
+
+图片版无 `community-experience.md`（与旧图片体系的 knowledge 三件套一致）。不得包含凭据、provider 适配器、付费提交、轮询、下载、运行日志、用户素材或生成结果。
+
+### 10.2 meta.yaml（schema `codex-flow-skill/v1`）
+
+必须字段：`schema`、`name`、`version`、`primary-output`（必须为 `image`）、`workflow-profile`（`simple`|`staged`）、`interaction-profile`（`conversation`|`gui`|`hybrid`）。建议字段：`display-name-zh`、`source`、`release-tier`、`intermediate-outputs`（如 `prompt`）、`tags`、`aliases`、`exclude-intents`、`capabilities`（必须含 `image.generate`；支持批量时再加 `image.batch-generate`）、`references`（每个引用声明 `path` 与 `load-at` 阶段，如 `authoring`/`final-qc`）。
+
+### 10.3 workflow.yaml（schema `codex-flow-workflow/v1`）
+
+`stages` 列表，每阶段声明 `id`、`output`、`gate`（`none`/`decision`/`approval`/`paid-execution`/`batch-approval`）、可选 `capability` 与 `depends-on`。依赖必须完整且无环。`brief`（gate `decision`）→ 生产阶段（声明 capability 的阶段）；**图片生产阶段的 gate 只能是 `paid-execution` 或 `batch-approval`**。付费点由 `paid-execution`/`batch-approval` 门禁推导，`intake-receipt` 审阅卡展示 `paid_points`。
+
+### 10.4 命名与一致性
+
+目录名、frontmatter `name`、meta `name` 三者必须一致。frontmatter 只能有 `name` 与 `description`。`skill_id` 小写连字符 ≤63 字符。
+
+### 10.5 禁止内容（污染扫描 + 图片专属检查）
+
+`SKILL.md` frontmatter+正文与 `meta.yaml` 中不得出现：provider 名（Seedance/Dreamina/Jimeng/Gemini/Kling 等）、模型标识、DAG/工作流 id 泄漏、API Key/Authorization/Cookie、本机绝对路径、危险命令。图片专属校验（`validateCodexFlowImagePackage`，issue 码 `FLOW_IMAGE_`）：capabilities 必须含 `image.generate`；`primary-output` 必须为 `image`；生产阶段 gate 只能是 `paid-execution` 或 `batch-approval`。平台执行细节（模型版本、分辨率、轮询、下载、付费策略）一律不进业务包。
+
+### 10.6 发布凭证
+
+`intake-receipt.json`（schema `codex-flow-receipt/v1`）由发布器生成：skill_id、version、validator、approved_by、来源哈希、`package_hash`（全包 SHA-256，跳过 `.codex-flow-private` 与收据自身）、创建时间。包内容变化后旧凭证立即失效（`STALE_RECEIPT`），必须重新审核与发布。flow 包无 `intake-report` 批准步骤：用户批准由 `publish`（`approved=true`）审核门完成。
+
+### 10.7 项目管线适配（flow 包的用户确认制）
+
+`image_skill_pipeline` 的 `create` 在创建边界把 flow 合成现有内部图片契约形状（状态机与哈希锁定机制不变）：
+
+- 素材槽：flow 无槽声明，使用一个通用场景槽 `image-material`（scope=scene、必选、min 1、max null、有序、需观察）；
+- 工作量：`scene_count` 1..6、`candidate_count_per_scene` 1..4；capabilities 含 `image.batch-generate` 时 `batch_allowed=true`，否则候选 max 强制 1（非批量包实际只允许单场景单候选）；
+- 输出比例：`supported_ratios` 用全部 8 个平台比例——**比例、场景数、候选数为用户确认制，无契约上界约束**（在平台范围内由用户逐项确认）；
+- 作者与执行默认：zh-CN / 用户指令最高优先 / 提示词确认 true；provider-neutral、单候选 `generate_image`、批量 `batch-image-generation`、付费批次确认 true、绝不自动重试/视觉排名。
+
+### 10.8 与旧格式的关系
+
+- `image_skill_curator` 的 `audit`/`validate`/`publish`/`upgrade` 自动识别：包内存在 `meta.yaml` 即按 Codex_Flow 校验与发布（`validateCodexFlowImagePackage` + `buildFlowReviewCard` + `buildFlowIntakeReceipt` + `flowMetaToRegistryShape` 入注册库），否则走旧 contract 路径（validator 2.0.0）。
+- `scaffold` 默认生成 `codex-flow-image-template` 骨架；旧格式模板仅用于迁移存量包。
+- `approve` 仅旧格式使用；flow 包的批准由 `publish --approved true` 完成。
+- `image_skill_pipeline` 的 `create`/`add_material`/`lock_materials`/`set_prompt`/`confirm_prompt`/`start_generation` 自动识别 flow 记录（registry record 含 `contract.flow` 且 `primary_output=image`），其余机制不变。

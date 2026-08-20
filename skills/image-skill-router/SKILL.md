@@ -7,7 +7,7 @@ whenToUse: 用户想用受治理图片业务 Skill（九宫格分镜、场景一
 # 图片业务 Skill 路由（Codex_IS 流程）
 
 1. **先检索**：用 `skill_registry` 的 `search` 按用户创作意图检索已发布图片业务 Skill；最多展示三个接近候选，列给用户并取得**明确确认**。**素材不能作为主要路由依据**——先定 Skill，再谈素材；没有可靠匹配时说明正式库不覆盖，不得临时扩展某个 Skill 的素材契约。
-2. **确认 Skill、比例、数量**：用户确认正式 Skill 名后，用 `image_skill_pipeline` 的 `create`（`skill_confirmed=true`，`display_name` 必须与 contract 一致）。画幅比例必须在 `contract.output.supported_ratios` 内；场景数与每场景候选数必须在 `contract.workload` 范围内；多场景或多候选时该 Skill 必须 `batch_allowed`。即使用户点名 Skill 也不得跳过比例和数量确认。
+2. **确认 Skill、比例、数量**：用户确认正式 Skill 名后，用 `image_skill_pipeline` 的 `create`（`skill_confirmed=true`，`display_name` 必须与 contract 一致）。画幅比例必须在 `contract.output.supported_ratios` 内；场景数与每场景候选数必须在 `contract.workload` 范围内；多场景或多候选时该 Skill 必须 `batch_allowed`。**Codex_Flow 图片包（registry 记录含 `contract.flow` 且 primary_output=image）为用户确认制**：管线在创建边界把 flow 合成内部契约——通用素材槽 `image-material`、场景数 1..6、候选数 1..4（capabilities 含 `image.batch-generate` 才允许批量，否则候选强制 1）、比例用全部 8 个；此时比例/场景数/候选数由用户逐项确认，**无契约上界约束**（仍受平台范围限制，且非批量包实际只允许单场景单候选）。即使用户点名 Skill 也不得跳过比例和数量确认。
 3. **收集素材**：`add_material` 逐槽加入用户素材（只接受 `reference_policy.allowed_slot_ids` 声明的槽，拒绝未声明图片；校验每场景参考图上限；复制到槽的 source 目录，不覆盖原图）。观察素材**必须先建最长边 ≤1024px 的预览**（`image_preview`），不得直接观察原图；发送给生成层前校正 EXIF 方向，最长边超过 1920px 的副本等比缩小到项目私有目录。
 4. **锁定素材**：`lock_materials`（`use_source=true` 把 source 复制到 final 并锁定）。素材变化会作废提示词与确认。
 5. **提示词 V1（必须完整加载业务 Skill 知识）**：由所选业务 Skill 产出提示词 V1——**创作前必须完整读取该 Skill 的 `contract.json`（严格按素材槽顺序绑定）、`SKILL.md`、以及 `references/` 下全部文件：`creative-guidance.md`（事实账本/创作指导）、`failure-cases.md`（定稿前规避）、`examples.md`（纯文字提示词范例，绝不定义契约、绝不覆盖用户指令）**。用 `image_skill_pipeline` 的 `set_prompt` 写入（`author=business_skill`），然后 `confirm_prompt` 锁定素材哈希与提示词哈希。

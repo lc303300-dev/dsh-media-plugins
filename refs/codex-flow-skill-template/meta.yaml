@@ -1,0 +1,35 @@
+schema: codex-flow-skill/v1
+name: {{skill_id}}
+version: 1.0.0
+display-name-zh: {{display_name}}
+source: codex-flow
+release-tier: experimental
+primary-output: video
+intermediate-outputs:
+  - prompt
+workflow-profile: staged
+interaction-profile: conversation
+tags:
+  - {{skill_id}}
+aliases:
+  - {{display_name}}
+exclude-intents: []
+capabilities:
+  - video.generate
+references:
+  creative_guidance:
+    path: references/creative-guidance.md
+    load-at:
+      - authoring
+  community_experience:
+    path: references/community-experience.md
+    load-at:
+      - authoring
+  failure_cases:
+    path: references/failure-cases.md
+    load-at:
+      - final-qc
+  examples:
+    path: references/examples.md
+    load-at:
+      - authoring

@@ -6,9 +6,10 @@ whenToUse: 用户要生成视频、文生视频、图片生视频、多图/参�
 
 # 默认视频生成（Seedance/Dreamina）
 
-1. 默认模型 `seedance2.5`、默认分辨率 `480p`。只有当前用户明确要求时才能使用 seedance2.0 系列（普通显式 2.0 会归一化为 `seedance2.0_vip`）。
+1. 默认模型 `seedance2.5`、默认分辨率 `480p`（seedance2.5 支持 `480p/720p/1080p`；seedance2.0_vip 支持 `480p/720p/1080p/4k`）。只有当前用户明确要求时才能使用 seedance2.0 系列（普通显式 2.0 会归一化为 `seedance2.0_vip`）。
 2. 只传 `prompt` → text2video；传任意 `images`/`videos`/`audios` 参考 → 全能参考模式 multimodal2video。两张图且用户明确表达首尾帧语义 → frames2video。`multiframe2video` 是禁用的遗留命令，不得选择或提交。
 3. 每个真实提交前用相应子命令 `-h` 做本地校验（generate_video 已内置）。
-4. 执行模式：普通请求用默认 production（提交+轮询+下载）；仅当用户明确要求"只提交/测试通道"时用 `production_submit_only` 或 `test_submit_only`（测试通道返回 submit_id 后请用户到即梦后台查看，绝不自动轮询下载）。
-5. 素材顺序即素材编号；prompt 中用中文裸标签（图片1、视频1、音频1）引用素材，序号对应该类素材传入顺序。
-6. 每次调用消耗积分：生成前确认意图与时长/比例；不确定结果（needs_review）绝不重复提交。
+4. 执行模式：普通请求用默认 production（提交+轮询+下载）；仅当用户明确要求"只提交/测试通道"时用 `production_submit_only` 或 `test_submit_only`（测试通道返回 submit_id 后请用户到即梦后台查看，绝不自动轮询下载；测试通道必须提供 `video_group`）。
+5. 批量：用户要求一次提交多条相同参数视频时用 `video_count`（1-10，仅提交不自动轮询下载，返回聚合状态与各 submit_id）；需要同会话分组时用 `video_group`（自动加 `YYYY_MM_DD-` 日期前缀，复用或创建即梦会话）。
+6. 素材顺序即素材编号；prompt 中用中文裸标签（图片1、视频1、音频1）引用素材，序号对应该类素材传入顺序。
+7. 每次调用消耗积分：生成前确认意图与时长/比例；不确定结果（needs_review）绝不重复提交。

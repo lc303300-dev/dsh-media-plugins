@@ -1,6 +1,6 @@
 import { t as SkillRegistry } from "./registry-core.js";
 import { a as ensureDir, c as readJsonSafe, d as resolvePrivateRoot, f as sha256File, i as atomicWriteJson } from "./private-runtime.js";
-import { a as buildSubmissionPayload, c as lockFinalMaterials, d as transition, f as validateVideoSettings, i as assessSlotCounts, l as mediaExtensions, n as addMaterial, o as confirmPrompt, r as addPrompt, s as createProject, u as planSlots } from "./project-core.js";
+import { a as buildSubmissionPayload, c as isFlowVideoSkill, d as planSlots, f as synthesizeVideoContractFromFlow, i as assessSlotCounts, l as lockFinalMaterials, m as validateVideoSettings, n as addMaterial, o as confirmPrompt, p as transition, r as addPrompt, s as createProject, u as mediaExtensions } from "./project-core.js";
 import { t as buildRevisionRequest } from "./revision-core.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
@@ -12,6 +12,20 @@ const name = "Ws_tool-project";
 const inject = ["tools"];
 const Config = z.object({ privateDir: z.string().default("") });
 /**
+* 项目创建边界识别：注册库记录是 Codex_Flow 视频包（contract.flow 存在且
+* capabilities 含 video.generate，或 primary_output==='video'）即返回 true。
+* flow 包无 contract.json，后续槽计划/素材收集走合成契约路径。
+*/
+async function isFlowSkill(privateRoot, skillName) {
+	const registry = new SkillRegistry(join(privateRoot, "registry", "registry.db"));
+	try {
+		const rec = registry.get(skillName);
+		return isFlowVideoSkill(rec?.contract);
+	} finally {
+		registry.close();
+	}
+}
+/**
 * Build per-slot collection plans from the skill's published contract
 * (read from the registry package) and create source/final directories.
 */
@@ -22,8 +36,17 @@ async function applySlotPlans(state, duration, privateRoot, projectsRoot, worksp
 	try {
 		const rec = registry.get(state.skillName);
 		if (!rec?.packageRoot) return state;
-		const contract = JSON.parse(readFileSync(join(rec.packageRoot, "contract.json"), "utf8"));
-		const refs = Array.isArray(contract.references) ? contract.references : [];
+		let refs;
+		if (isFlowVideoSkill(rec.contract)) refs = synthesizeVideoContractFromFlow(rec.contract.flow, {
+			name: rec.name,
+			version: rec.version,
+			description: rec.description,
+			taxonomy: rec.taxonomy
+		}).slots ?? [];
+		else {
+			const contract = JSON.parse(readFileSync(join(rec.packageRoot, "contract.json"), "utf8"));
+			refs = Array.isArray(contract.references) ? contract.references : [];
+		}
 		if (refs.length === 0) return state;
 		const slotsRoot = join(projectsRoot, state.projectId, "slots");
 		const plans = planSlots(refs, Number(duration), slotsRoot);
@@ -93,7 +116,7 @@ async function listFinalFiles(plan) {
 function apply(ctx, config) {
 	ctx.tools.register(defineTool({
 		name: "project_pipeline",
-		description: "项目管线状态机（Codex_CS project-pipeline 的 DSH 重建）：从确认业务 Skill 到生成最终 submission_payload 的显式生命周期。状态：awaiting_skill_confirmation → awaiting_video_settings → project_initialized → awaiting_image_stage_choice → collecting_user_materials|generating_images → final_images_ready → authoring_prompt → awaiting_prompt_confirmation → revision_requested → dt_revision（可循环）→ prompt_confirmed → generating_video → completed。authoring_prompt（V1）创作前必须完整加载业务 Skill 的 contract.json + SKILL.md + references/ 全部 4 个文件（creative-guidance / community-experience / failure-cases / examples 提示词范例），按范例组织方式写作、逐张声明场景唯一语义、按 count_rule 推导时间轴并追加\"不生成音乐，仅生成音效。\"；未完整加载知识不得 set_prompt。确认提示词时锁定最终素材清单（sha256）与提示词哈希；build_payload 提交前重新校验素材哈希未变，防止未确认版本被生成。状态持久化在私有运行目录，跨会话可恢复。",
+		description: "项目管线状态机（Codex_CS project-pipeline 的 DSH 重建）：从确认业务 Skill 到生成最终 submission_payload 的显式生命周期。状态：awaiting_skill_confirmation → awaiting_video_settings → project_initialized → awaiting_image_stage_choice → collecting_user_materials|generating_images → final_images_ready → authoring_prompt → awaiting_prompt_confirmation → revision_requested → dt_revision（可循环）→ prompt_confirmed → generating_video → completed。create/confirm_skill 边界识别 Codex_Flow 视频包（registry get 的 contract.flow 存在且 capabilities 含 video.generate 或 primary_output==='video'，项目标注 skillFormat=flow）：flow 包无 contract.json，槽计划用合成的通用契约（单一 reference-material 素材槽，图片，min 1、无上限、recommended 节奏），知识加载改读 SKILL.md + meta.yaml（references 的 load-at 阶段）+ workflow.yaml；旧格式则读 contract.json + SKILL.md + references/ 全部 4 个文件（creative-guidance / community-experience / failure-cases / examples 提示词范例）。authoring_prompt（V1）创作前必须完整加载上述业务 Skill 知识，按范例组织方式写作、逐张声明场景唯一语义、按 count_rule（旧格式）或 Skill 知识（flow 包）推导时间轴并追加\"不生成音乐，仅生成音效。\"；未完整加载知识不得 set_prompt。确认提示词时锁定最终素材清单（sha256）与提示词哈希；build_payload 提交前重新校验素材哈希未变，防止未确认版本被生成。状态持久化在私有运行目录，跨会话可恢复。",
 		parameters: {
 			command: {
 				type: "string",
@@ -245,6 +268,13 @@ function apply(ctx, config) {
 			if (command === "create") {
 				const id = projectId || `proj-${Date.now().toString(36)}`;
 				let state = createProject(id, args.skill_name);
+				if (args.skill_name) {
+					const flow = await isFlowSkill(privateRoot, String(args.skill_name));
+					state = {
+						...state,
+						skillFormat: flow ? "flow" : "legacy"
+					};
+				}
 				if (args.ratio && args.duration !== void 0) {
 					validateVideoSettings(args.ratio, Number(args.duration));
 					state = transition(state, "awaiting_video_settings", "skill confirmed");
@@ -279,9 +309,11 @@ function apply(ctx, config) {
 						ok: false,
 						message: "skill_name is required"
 					};
+					const flow = await isFlowSkill(privateRoot, String(args.skill_name));
 					const next = {
-						...transition(state, "awaiting_video_settings", `skill ${args.skill_name} confirmed`),
-						skillName: args.skill_name
+						...transition(state, "awaiting_video_settings", `skill ${args.skill_name} confirmed (${flow ? "flow" : "legacy"})`),
+						skillName: args.skill_name,
+						skillFormat: flow ? "flow" : "legacy"
 					};
 					return {
 						ok: true,
@@ -330,7 +362,12 @@ function apply(ctx, config) {
 						const registry = new SkillRegistry(join(privateRoot, "registry", "registry.db"));
 						try {
 							const rec = registry.get(state.skillName);
-							if (rec?.contract?.slots) slots = rec.contract.slots;
+							if (rec) slots = isFlowVideoSkill(rec.contract) ? synthesizeVideoContractFromFlow(rec.contract.flow, {
+								name: rec.name,
+								version: rec.version,
+								description: rec.description,
+								taxonomy: rec.taxonomy
+							}).slots : rec.contract.slots;
 						} finally {
 							registry.close();
 						}

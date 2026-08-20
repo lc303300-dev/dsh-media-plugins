@@ -13,9 +13,10 @@ import {
   validateImageSettings,
   type ImageProject,
 } from './shared/image-project-core.ts'
-import { imagePackageSha256, validateImageReceipt } from './shared/image-skill-core.ts'
+import { flowSkillToImageContractShape, imagePackageSha256, validateImageReceipt } from './shared/image-skill-core.ts'
 import { atomicWriteJson, ensureDir, readJsonSafe, resolvePrivateRoot, sha256File } from './shared/private-runtime.ts'
 import { SkillRegistry } from './shared/registry-core.ts'
+import { flowPackageSha256, validateCodexFlowPackage } from './shared/flow-format.ts'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { copyFile, readdir, readFile, stat, writeFile } from 'node:fs/promises'
@@ -43,11 +44,31 @@ function isImageFile(path: string): boolean {
 }
 
 /** Resolve the published image Skill package from the registry and verify
- *  its receipt + package hash (verify_skill port). */
-async function resolveSkill(registry: SkillRegistry, skillId: string, privateRoot: string): Promise<{ packageRoot: string; contract: Record<string, unknown>; packageHash: string; contractHash: string }> {
+ *  its receipt + package hash (verify_skill port). Codex_Flow 图片包（registry
+ *  record 含 contract.flow 且 primary_output==='image'）在创建边界把 flow 合成
+ *  现有内部图片契约形状（flow 包无 contract.json，校验走 flow 收据 + STALE_RECEIPT
+ *  绑定）；旧图片包走原 validateImageReceipt 路径。 */
+export async function resolveSkill(
+  registry: SkillRegistry,
+  skillId: string,
+  privateRoot: string,
+): Promise<{ packageRoot: string; contract: Record<string, unknown>; packageHash: string; contractHash: string }> {
   const record = registry.get(skillId)
   if (!record?.packageRoot) throw new Error(`published Skill not found in registry: ${skillId}`)
   const packageRoot = record.packageRoot
+  const flow = record.contract?.flow
+  if (flow && flow.primary_output === 'image') {
+    const issues = validateCodexFlowPackage(packageRoot, true)
+    if (issues.length > 0) throw new Error(`published Skill receipt is missing or invalid: ${issues.join(', ')}`)
+    const packageHash = flowPackageSha256(packageRoot)
+    const contract = flowSkillToImageContractShape(flow, String(record.name), String(flow.display_name ?? record.name), record.description)
+    return {
+      packageRoot,
+      contract,
+      packageHash,
+      contractHash: imageSha256Text(JSON.stringify(contract)),
+    }
+  }
   if (!existsSync(join(packageRoot, 'contract.json'))) throw new Error(`published Skill contract not found: ${join(packageRoot, 'contract.json')}`)
   const { receipt, issues } = validateImageReceipt(packageRoot, skillId)
   if (issues.length > 0 || !receipt) throw new Error(`published Skill receipt is missing or invalid: ${issues.join(', ')}`)
@@ -65,7 +86,7 @@ async function resolveSkill(registry: SkillRegistry, skillId: string, privateRoo
 function apply(ctx: any, config: any) {
   ctx.tools.register(defineTool({
     name: 'image_skill_pipeline',
-    description: '图片业务 Skill 项目管线（Codex_IS project-pipeline 的 DSH 重建）：契约驱动、哈希锁定的图片项目状态机。create 校验已发布图片 Skill 的收据与包哈希、比例/场景数/候选数须落在 contract 的 workload 与 supported_ratios 内，按 references 声明逐场景生成素材槽目录（含可点击链接）；add_material 只接受 reference_policy.allowed_slot_ids 声明的槽（reject_uncontracted_images），并校验每场景参考图上限；lock_materials 计算最终素材 sha256 快照，素材变化会作废提示词与确认；set_prompt/confirm_prompt 锁定提示词哈希与素材哈希（变化即拒绝确认）；多场景或多候选在确认提示词后进入 awaiting_paid_batch_confirmation，须 confirm_paid_batch 付费批次确认；start_generation --dry-run 生成执行清单（单候选 generate_image / 多候选 batch-image-generation），不调用付费工具。状态持久化在私有运行目录，跨会话可恢复。',
+    description: '图片业务 Skill 项目管线（Codex_IS project-pipeline 的 DSH 重建）：契约驱动、哈希锁定的图片项目状态机。create 校验已发布图片 Skill 的收据与包哈希、比例/场景数/候选数须落在 contract 的 workload 与 supported_ratios 内，按 references 声明逐场景生成素材槽目录（含可点击链接）；所选 Skill 为 Codex_Flow 图片包（registry record 含 contract.flow 且 primary_output=image）时，在创建边界把 flow 合成内部图片契约（通用槽 image-material、scene 1..6、候选 1..4、batch 由 capabilities 决定、比例/数量为用户确认制），收据校验走 flow 收据；add_material 只接受 reference_policy.allowed_slot_ids 声明的槽（reject_uncontracted_images），并校验每场景参考图上限；lock_materials 计算最终素材 sha256 快照，素材变化会作废提示词与确认；set_prompt/confirm_prompt 锁定提示词哈希与素材哈希（变化即拒绝确认）；多场景或多候选在确认提示词后进入 awaiting_paid_batch_confirmation，须 confirm_paid_batch 付费批次确认；start_generation --dry-run 生成执行清单（单候选 generate_image / 多候选 batch-image-generation），不调用付费工具。状态持久化在私有运行目录，跨会话可恢复。',
     parameters: {
       command: {
         type: 'string',

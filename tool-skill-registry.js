@@ -1,6 +1,7 @@
 import { r as validateContract, t as SkillRegistry } from "./registry-core.js";
 import { d as resolvePrivateRoot } from "./private-runtime.js";
-import { i as imageContractToRegistryContract } from "./image-skill-core.js";
+import { o as validateCodexFlowPackage, r as flowMetaToRegistryShape } from "./flow-format.js";
+import { a as imageContractToRegistryContract } from "./image-skill-core.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { readFile, stat } from "node:fs/promises";
@@ -32,7 +33,7 @@ async function readJsonIfExists(path) {
 function apply(ctx, config) {
 	ctx.tools.register(defineTool({
 		name: "skill_registry",
-		description: "业务 Skill 治理（Codex_CS 的 DSH 重建）：摄取/检索/获取/发布/弃用业务视频 Skill。ingest 从 package_dir 读取 SKILL.md（frontmatter）、contract.json（名称、版本、视频比例/时长、素材槽 min/max/planned_count/count_rule）与 routing.json，做结构校验与去重（name@version + 内容哈希），发布前为 draft。search 用 SQLite FTS5 trigram 做中文友好检索（默认只搜已发布）。检索以用户创作意图为主，素材不作为主要路由依据。",
+		description: "业务 Skill 治理（Codex_Flow 格式的 DSH 重建）：摄取/检索/获取/发布/弃用/路由/编译业务 Skill。ingest 从 package_dir 读取包：优先 Codex_Flow 格式（SKILL.md + meta.yaml + workflow.yaml + references/，校验器 flow-1.0 镜像上游 platform/skill_package.py 规则），兼容旧格式（SKILL.md + contract.json + routing.json）。search 用 SQLite FTS5 trigram 做中文友好检索（默认只搜已发布）。route 是快速路由（capability 过滤 + exclude-intents 排除 + 加权短语评分，≥60 判 specialized_skill，否则 image 能力回退 generic-image）；resolve 取运行时描述（entry/package_hash/references/load-at）；compile 把已发布记录编译为 codex-flow-registry/v2 registry.json。检索以用户创作意图为主，素材不作为主要路由依据。",
 		parameters: {
 			command: {
 				type: "string",
@@ -42,14 +43,17 @@ function apply(ctx, config) {
 					"get",
 					"publish",
 					"deprecate",
-					"list"
+					"list",
+					"route",
+					"resolve",
+					"compile"
 				],
 				required: true,
-				description: "操作：ingest（摄取包目录）、search（检索）、get（取详情/契约）、publish（发布）、deprecate（弃用）、list（列出）。"
+				description: "操作：ingest（摄取包目录）、search（检索）、get（取详情/契约）、publish（发布）、deprecate（弃用）、list（列出）、route（快速路由决策）、resolve（取运行时描述）、compile（编译 registry.json）。"
 			},
 			package_dir: {
 				type: "string",
-				description: "ingest 用：业务 Skill 包目录（含 SKILL.md / contract.json / routing.json）。"
+				description: "ingest 用：业务 Skill 包目录（Codex_Flow 格式：SKILL.md / meta.yaml / workflow.yaml；旧格式：SKILL.md / contract.json / routing.json）。"
 			},
 			query: {
 				type: "string",
@@ -75,7 +79,15 @@ function apply(ctx, config) {
 			},
 			limit: {
 				type: "integer",
-				description: "search/list 返回条数上限，默认 10。"
+				description: "search/list/route 返回条数上限，默认 10。"
+			},
+			capability: {
+				type: "string",
+				description: "route 用：能力过滤（默认 image.generate；视频用 video.generate）。"
+			},
+			registry_path: {
+				type: "string",
+				description: "compile 用：registry.json 输出路径（默认 <private>/registry/registry.json）。"
 			},
 			force: {
 				type: "boolean",
@@ -97,7 +109,21 @@ function apply(ctx, config) {
 						additionalProperties: true
 					},
 					skills: { type: "array" },
-					hits: { type: "array" }
+					hits: { type: "array" },
+					decision: {
+						type: "object",
+						additionalProperties: true
+					},
+					candidates: { type: "array" },
+					runtime: {
+						type: "object",
+						additionalProperties: true
+					},
+					available: { type: "boolean" },
+					indexed: { type: "number" },
+					rejected: { type: "array" },
+					registry: { type: "string" },
+					issues: { type: "array" }
 				}
 			},
 			render(_args, value) {
@@ -120,14 +146,46 @@ function apply(ctx, config) {
 							message: "ingest requires package_dir"
 						};
 						const dir = isAbsolute(args.package_dir) ? args.package_dir : join(workspaceRoot, args.package_dir);
-						const [skillMd, contractRaw, routingRaw] = await Promise.all([
+						const [skillMd, contractRaw, routingRaw, metaRaw] = await Promise.all([
 							readFile(join(dir, "SKILL.md"), "utf8").catch(() => ""),
 							readJsonIfExists(join(dir, "contract.json")),
-							readJsonIfExists(join(dir, "routing.json"))
+							readJsonIfExists(join(dir, "routing.json")),
+							readFile(join(dir, "meta.yaml"), "utf8").catch(() => "")
 						]);
+						if (metaRaw.trim().length > 0) {
+							const flowIssues = validateCodexFlowPackage(dir);
+							if (flowIssues.length > 0) return {
+								ok: false,
+								message: `Codex_Flow validation failed (${flowIssues.length} issue(s)): ${flowIssues.slice(0, 8).join(", ")}`,
+								issues: flowIssues
+							};
+							const shape = flowMetaToRegistryShape(dir);
+							const contract = validateContract({
+								name: shape.name,
+								version: shape.version,
+								description: shape.description,
+								taxonomy: shape.taxonomy,
+								flow: shape.flow
+							});
+							const routing = {
+								aliases: shape.taxonomy,
+								negative_intents: shape.flow.exclude_intents ?? []
+							};
+							const record = registry.ingest({
+								contract,
+								routing,
+								packageRoot: dir,
+								provenance: skillMd ? "SKILL.md+meta.yaml (codex-flow)" : "meta.yaml (codex-flow)"
+							}, { force: Boolean(args.force) });
+							return {
+								ok: true,
+								message: `ingested ${record.name}@${record.version} as ${record.status} (codex-flow)`,
+								skill: record
+							};
+						}
 						if (!contractRaw) return {
 							ok: false,
-							message: `contract.json not found in ${dir}`
+							message: `contract.json not found in ${dir} (no meta.yaml either)`
 						};
 						const fm = parseFrontmatter(skillMd);
 						const isImageSkill = typeof contractRaw.skill_id === "string" && "input_mode" in contractRaw && !("name" in contractRaw);
@@ -205,6 +263,40 @@ function apply(ctx, config) {
 								version: s.version,
 								status: s.status
 							}))
+						};
+					}
+					case "route": {
+						const result = registry.route(String(args.query ?? ""), String(args.capability ?? "image.generate"), args.limit ?? 3);
+						return {
+							ok: true,
+							message: `route decision: ${result.decision.mode} (${result.decision.skill_id ?? "none"})`,
+							decision: result.decision,
+							candidates: result.candidates
+						};
+					}
+					case "resolve": {
+						if (!args.name) return {
+							ok: false,
+							message: "resolve requires name"
+						};
+						const resolved = registry.resolve(args.name, args.version);
+						return {
+							ok: true,
+							message: `resolved ${args.name}@${resolved.record.version}`,
+							skill: resolved.record,
+							runtime: resolved.runtime,
+							available: resolved.available
+						};
+					}
+					case "compile": {
+						const registryPath = args.registry_path && String(args.registry_path).trim().length > 0 ? isAbsolute(args.registry_path) ? args.registry_path : join(workspaceRoot, args.registry_path) : join(privateRoot, "registry", "registry.json");
+						const result = registry.compile(registryPath);
+						return {
+							ok: true,
+							message: `compiled ${result.indexed} skill(s) to ${result.registry}`,
+							indexed: result.indexed,
+							rejected: result.rejected,
+							registry: result.registry
 						};
 					}
 					default: return {

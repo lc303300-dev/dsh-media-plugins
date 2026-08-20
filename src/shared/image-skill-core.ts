@@ -13,6 +13,8 @@
 import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { readYamlFile, validateCodexFlowPackage } from './flow-format.ts'
+import type { FlowContract } from './registry-core.ts'
 
 export const IMAGE_VALIDATOR_VERSION = '2.0.0'
 export const IMAGE_HASH_ALGORITHM = 'codex-is-package-sha256-v2'
@@ -412,6 +414,122 @@ export function validateImageReceipt(root: string, expectedSkillId?: string): { 
 }
 
 // ---------------------------------------------------------------------------
+// Codex_Flow image format (Phase 2 migration): dual-format detection and
+// image-specific validation on top of the shared flow validator.
+// ---------------------------------------------------------------------------
+
+/** True when the package uses the Codex_Flow format (meta.yaml present).
+ *  Dual-format rule: meta.yaml 存在即按 flow 校验/发布，否则走旧图片 contract 路径。 */
+export function isCodexFlowImagePackage(root: string): boolean {
+  return existsSync(join(root, 'meta.yaml'))
+}
+
+/** Validate a Codex_Flow image package: base flow validator (flow-format)
+ *  plus image-specific constraints — capabilities 必须含 image.generate、
+ *  primary-output 必须为 image、生产阶段（声明 capability 的阶段）gate 只能是
+ *  paid-execution 或 batch-approval。图片专属 issue 码统一使用 FLOW_IMAGE_ 前缀。 */
+export function validateCodexFlowImagePackage(root: string, published = false): string[] {
+  const issues = validateCodexFlowPackage(root, published)
+  const metaPath = join(root, 'meta.yaml')
+  if (!existsSync(metaPath)) return issues
+  const meta = readYamlFile(metaPath)
+  const capabilities = Array.isArray(meta.capabilities) ? meta.capabilities.map(String) : []
+  if (!capabilities.includes('image.generate')) issues.push('FLOW_IMAGE_MISSING_CAPABILITY')
+  if (String(meta['primary-output'] ?? '') !== 'image') issues.push('FLOW_IMAGE_PRIMARY_OUTPUT_NOT_IMAGE')
+  const workflowPath = join(root, 'workflow.yaml')
+  if (existsSync(workflowPath)) {
+    const workflow = readYamlFile(workflowPath)
+    const stages = Array.isArray(workflow.stages) ? workflow.stages : []
+    for (const stage of stages) {
+      if (!stage || typeof stage !== 'object') continue
+      const record = stage as Record<string, unknown>
+      // 生产阶段 = 声明了 capability 的阶段；其 gate 只允许付费执行或付费批次批准
+      if (typeof record.capability === 'string' && record.capability.trim().length > 0) {
+        const gate = String(record.gate ?? 'none')
+        if (gate !== 'paid-execution' && gate !== 'batch-approval') {
+          issues.push(`FLOW_IMAGE_INVALID_PRODUCTION_GATE:${String(record.id ?? '?')}:${gate}`)
+        }
+      }
+    }
+  }
+  return [...new Set(issues)].sort()
+}
+
+/** Synthesize the internal Codex_IS image contract shape from a registered
+ *  Codex_Flow image skill (used by the image pipeline at the create boundary).
+ *  Flow 包不声明素材槽：使用一个通用场景槽 image-material；比例/场景数/候选数
+ *  为用户确认制（scene 1..6、候选 1..4），capabilities 含 image.batch-generate
+ *  时 batch_allowed=true，否则候选 max 强制 1。 */
+export function flowSkillToImageContractShape(
+  flow: FlowContract,
+  name: string,
+  displayName?: string,
+  description?: string,
+): Record<string, unknown> {
+  const capabilities = Array.isArray(flow.capabilities) ? flow.capabilities.map(String) : []
+  const batchAllowed = capabilities.includes('image.batch-generate')
+  const display = displayName ?? String(flow.display_name ?? name)
+  return {
+    schema_version: 1,
+    skill_id: name,
+    display_name: display,
+    description: description ?? display,
+    input_mode: 'reference_conditioned',
+    references: [
+      {
+        id: 'image-material',
+        media_type: 'image',
+        role: 'scene',
+        scope: 'scene',
+        required: true,
+        min_count: 1,
+        max_count: null,
+        ordered: true,
+        observation_required: true,
+        send_to_generation: true,
+        description: '用户确认的图片素材（Codex_Flow 包无槽声明，统一使用通用图片素材槽）',
+      },
+    ],
+    reference_policy: {
+      allowed_slot_ids: ['image-material'],
+      reject_uncontracted_images: true,
+      maximum_reference_images_per_scene: null,
+      preserve_reference_order: true,
+    },
+    workload: {
+      scene_count: { min: 1, max: 6 },
+      candidate_count_per_scene: { min: 1, max: batchAllowed ? 4 : 1 },
+      batch_allowed: batchAllowed,
+    },
+    output: {
+      media_type: 'image',
+      requires_ratio_confirmation: true,
+      supported_ratios: [...IMAGE_RATIOS],
+    },
+    authoring: {
+      primary_language: 'zh-CN',
+      requires_reference_binding: true,
+      requires_prompt_confirmation: true,
+      user_instruction_priority: 'highest',
+    },
+    execution: {
+      provider_neutral: true,
+      single_candidate_entry: 'generate_image',
+      batch_entry: 'batch-image-generation',
+      requires_paid_batch_confirmation: true,
+      automatic_retry: false,
+      automatic_visual_ranking: false,
+    },
+    knowledge: {
+      creative_guidance: 'references/creative-guidance.md',
+      failure_cases: 'references/failure-cases.md',
+      examples: 'references/examples.md',
+    },
+    business_constraints: {},
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Intake audit / approval / publish / upgrade / scaffold (curator scripts ports).
 // ---------------------------------------------------------------------------
 
@@ -537,13 +655,16 @@ export function stageImagePublish(packageDir: string, stagingRoot: string, sourc
 }
 
 /** Scaffold a draft image business Skill from the template
- *  (scaffold_business_skill.py port). Returns the destination. */
-export function scaffoldImageSkill(templateRoot: string, skillId: string, outputRoot: string, displayName?: string): string {
+ *  (scaffold_business_skill.py port). Returns the destination. Renders
+ *  {{skill_id}}/{{display_name}}/{{description}}; missing displayName or
+ *  description keeps the placeholder for the curator to fill in. */
+export function scaffoldImageSkill(templateRoot: string, skillId: string, outputRoot: string, displayName?: string, description?: string): string {
   if (!IMAGE_SKILL_ID_PATTERN.test(skillId) || skillId.length > 63) throw new Error('skill_id must be lowercase hyphen-case and at most 63 characters')
   const destination = join(outputRoot, skillId)
   if (existsSync(destination)) throw new Error(`Refusing to overwrite: ${destination}`)
   copyTree(templateRoot, destination)
   const display = displayName || '{{display_name}}'
+  const descriptionText = description || '{{description}}'
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir)) {
       const path = join(dir, entry)
@@ -554,7 +675,7 @@ export function scaffoldImageSkill(templateRoot: string, skillId: string, output
       const ext = path.slice(path.lastIndexOf('.')).toLowerCase()
       if (!['.md', '.json', '.yaml', '.yml'].includes(ext)) continue
       let text = readFileSync(path, 'utf8')
-      text = text.split('{{skill_id}}').join(skillId).split('{{display_name}}').join(display)
+      text = text.split('{{skill_id}}').join(skillId).split('{{display_name}}').join(display).split('{{description}}').join(descriptionText)
       writeFileSync(path, text, 'utf8')
     }
   }

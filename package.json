@@ -1,7 +1,7 @@
 {
   "name": "dsh-media-plugins",
-  "version": "0.2.0",
-  "description": "DSH Studio 媒体能力包（15 工具 + 9 技能）：generate_image（统一媒体路由器，三级串行回退）、generate_video（即梦 Seedance，含测试通道）、describe_image（火山方舟看图）、skill_registry（业务 Skill 治理，SQLite FTS5）、skill_curator（业务 Skill 录入治理）、project_pipeline（项目状态机+哈希锁定）、dt_batch（批次/预览/审阅页）、prompt_revision（提示词修订）、batch_image（确定性批量调度器）、video_to_gif（FFmpeg 双遍）、image_preview（1024px 预览）、split_grid_sheet（九宫格拆格）、image_skill_curator / image_skill_pipeline（受治理图片业务 Skill）、media_status（就绪检查）、完成通知",
+  "version": "0.3.0",
+  "description": "DSH Studio 媒体能力包（15 工具 + 9 技能）：generate_image（统一媒体路由器，三级串行回退）、generate_video（即梦 Seedance，含测试通道）、describe_image（火山方舟看图）、skill_registry（业务 Skill 治理，SQLite FTS5，Codex_Flow 双格式）、skill_curator（业务 Skill 录入治理，Codex_Flow 默认格式）、project_pipeline（项目状态机+哈希锁定）、dt_batch（批次/预览/审阅页）、prompt_revision（提示词修订）、batch_image（确定性批量调度器）、video_to_gif（FFmpeg 双遍）、image_preview（1024px 预览）、split_grid_sheet（九宫格拆格）、image_skill_curator / image_skill_pipeline（受治理图片业务 Skill）、media_status（就绪检查）、完成通知",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lc303300-dev/dsh-media-plugins.git"

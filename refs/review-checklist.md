@@ -46,6 +46,15 @@
 - 四份知识文档存在且没有模板标记。
 - 不包含绝对路径、凭据、日志或运行产物。
 
+## flow 格式（Codex_Flow 包）
+
+- `meta.yaml` 必需字段齐全：`schema` / `name` / `version` / `primary-output` / `workflow-profile` / `interaction-profile`。
+- `capabilities` 声明了可执行能力（如 `video.generate`），且与 `primary_output`（如 `video`）一致。
+- `workflow.yaml` 阶段依赖无环、`gate` 合法；`paid_points`（`paid-execution` / `batch-approval` 阶段）已识别并展示。
+- `references` 声明了知识文件与 `load-at` 阶段；无未引用资源、无重复资源、无逃逸路径。
+- 无 provider、模型、凭据、本机路径污染。
+- flow 包不声明素材槽与 count_rule：项目管线合成通用素材槽 `reference-material`（min 1、无上限、recommended 节奏），知识加载走 `meta.yaml` 的 `references`（load-at）。
+
 ## 发布确认
 
 向用户明确展示：
@@ -55,6 +64,7 @@
 - 合并、删除、降级或隔离的规则；
 - 尚存歧义；
 - 与现有 Skill 的重复情况；
-- 验证结果。
+- 验证结果；
+- flow 包：`capabilities`、`paid_points`、`primary_output`、`workflow_profile`（旧格式：`contract.json` 素材槽与 count_rule）。
 
 只有用户明确确认这份报告后才能发布。

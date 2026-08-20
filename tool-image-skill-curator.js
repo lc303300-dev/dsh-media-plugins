@@ -1,6 +1,7 @@
-import { t as SkillRegistry } from "./registry-core.js";
+import { r as validateContract, t as SkillRegistry } from "./registry-core.js";
 import { d as resolvePrivateRoot } from "./private-runtime.js";
-import { a as imageFileSha256, c as stageImagePublish, i as imageContractToRegistryContract, l as validateImagePackage, n as approveImageIntakeReport, o as imagePackageSha256, r as auditImageSkill, s as scaffoldImageSkill, t as IMAGE_SKILL_ID_PATTERN } from "./image-skill-core.js";
+import { i as flowPackageSha256, n as buildFlowReviewCard, r as flowMetaToRegistryShape, t as buildFlowIntakeReceipt } from "./flow-format.js";
+import { a as imageContractToRegistryContract, c as isCodexFlowImagePackage, d as stageImagePublish, f as validateCodexFlowImagePackage, l as scaffoldImageSkill, n as approveImageIntakeReport, o as imageFileSha256, p as validateImagePackage, r as auditImageSkill, s as imagePackageSha256, t as IMAGE_SKILL_ID_PATTERN, u as sealImageSources } from "./image-skill-core.js";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { copyFile, mkdir, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -57,10 +58,31 @@ async function copyPackageToLibrary(source, libraryDir) {
 		throw error;
 	}
 }
+/** Codex_Flow 发布来源：优先 intake-sources.json 封存来源，其次显式 sources 参数。 */
+function flowSealedSources(packageDir, args, resolvePath) {
+	try {
+		const raw = JSON.parse(readFileSync(join(packageDir, "intake-sources.json"), "utf8"));
+		if (Array.isArray(raw.sources) && raw.sources.length > 0) return raw.sources.map((s) => ({
+			name: String(s.name),
+			sha256: String(s.sha256)
+		}));
+	} catch {}
+	if (Array.isArray(args.sources) && args.sources.length > 0) return args.sources.map((p) => ({
+		name: basename(String(p)),
+		sha256: imageFileSha256(resolvePath(String(p)))
+	}));
+	return [];
+}
+/** 图片版 flow 模板根目录：优先打包目录（built chunk 位于包根），其次源码仓库 refs/。 */
+function flowImageTemplateRoot() {
+	const here = pluginRoot();
+	const candidates = [join(here, "refs", "codex-flow-image-template"), join(here, "..", "refs", "codex-flow-image-template")];
+	return candidates.find((c) => existsSync(join(c, "meta.yaml"))) ?? candidates[0];
+}
 function apply(ctx, config) {
 	ctx.tools.register(defineTool({
 		name: "image_skill_curator",
-		description: "图片业务 Skill 录入治理（Codex_IS image-skill-curator 的 DSH 重建）：把用户上传的图片业务 Skill 资料整理为可审计、可验证、可发布的受治理图片业务 Skill 包。scaffold 用 image-skill-template 生成骨架（contract.json/routing.json/SKILL.md/agents/references）；audit 生成 intake-report.json（validator 2.0.0：契约/路由/收据 schema、反泛化与反污染扫描、来源哈希）；approve 由用户明确批准（approved_by=user）；validate 复验；publish 原子发布到图片 Skill 库并重建注册表（禁覆盖）；upgrade 原子升级已发布包（备份+回滚）；seed_library 把插件自带的正式图片 Skill 库同步进私有库并注册。全程 provider-neutral，不选择模型、不提交媒体。",
+		description: "图片业务 Skill 录入治理（Codex_IS image-skill-curator 的 DSH 重建）：把用户上传的图片业务 Skill 资料整理为可审计、可验证、可发布的受治理图片业务 Skill 包。双格式：scaffold 默认生成 Codex_Flow 图片格式（SKILL.md/meta.yaml/workflow.yaml/references）；包内存在 meta.yaml 时 audit/validate/publish/upgrade 走 flow 校验（validateCodexFlowImagePackage + buildFlowReviewCard + buildFlowIntakeReceipt + flowMetaToRegistryShape 入注册库），否则走旧 contract.json 路径（validator 2.0.0：契约/路由/收据 schema、反泛化与反污染扫描、来源哈希）。audit 生成来源封存（flow）或 intake-report.json（旧格式）；approve 仅旧格式使用（approved_by=user）；publish 需 approved=true 审核门，原子发布到图片 Skill 库并重建注册表（禁覆盖）；upgrade 原子升级已发布包（备份+回滚）；seed_library 把插件自带的正式图片 Skill 库同步进私有库并注册。全程 provider-neutral，不选择模型、不提交媒体。",
 		parameters: {
 			command: {
 				type: "string",
@@ -83,6 +105,10 @@ function apply(ctx, config) {
 			display_name: {
 				type: "string",
 				description: "scaffold 用：展示名（缺省保留模板占位符）。"
+			},
+			description: {
+				type: "string",
+				description: "scaffold 用：能力与触发条件描述（flow 模板渲染 {{description}}；缺省保留模板占位符）。"
 			},
 			package_dir: {
 				type: "string",
@@ -226,16 +252,16 @@ function apply(ctx, config) {
 						message: "skill_id must be lowercase hyphen-case and at most 63 characters"
 					};
 					const outputRoot = resolvePath(String(args.output_dir ?? "outputs/image-skills"));
-					const template = join(pluginRoot(), "refs", "image-skill-template");
-					if (!existsSync(join(template, "contract.json"))) return {
+					const template = flowImageTemplateRoot();
+					if (!existsSync(join(template, "meta.yaml"))) return {
 						ok: false,
-						message: `image-skill-template not found: ${template}`
+						message: `codex-flow-image-template not found: ${template}`
 					};
 					try {
-						const destination = scaffoldImageSkill(template, skillId, outputRoot, args.display_name ? String(args.display_name) : void 0);
+						const destination = scaffoldImageSkill(template, skillId, outputRoot, args.display_name ? String(args.display_name) : void 0, args.description ? String(args.description) : void 0);
 						return {
 							ok: true,
-							message: `scaffolded: ${destination}`,
+							message: `scaffolded (codex-flow): ${destination}`,
 							package_path: destination
 						};
 					} catch (error) {
@@ -256,6 +282,28 @@ function apply(ctx, config) {
 						ok: false,
 						message: "audit requires at least one source path"
 					};
+					if (isCodexFlowImagePackage(packageDir)) {
+						const issues = validateCodexFlowImagePackage(packageDir);
+						const sealed = sealImageSources(sources);
+						await writeFile(join(packageDir, "intake-sources.json"), JSON.stringify({
+							schema_version: 1,
+							sources: sealed
+						}, null, 2) + "\n", "utf8");
+						const ok = issues.length === 0;
+						return {
+							ok,
+							message: ok ? "intake-sources written (codex-flow, ready_for_approval)" : `flow validation: ${issues.length} issue(s)`,
+							report: {
+								schema_version: 1,
+								status: ok ? "ready_for_approval" : "needs_review",
+								skill_id: basename(packageDir),
+								sources: sealed,
+								validation_issues: issues
+							},
+							issues,
+							package_path: packageDir
+						};
+					}
 					const report = auditImageSkill(packageDir, sources);
 					await writeFile(join(packageDir, "intake-report.json"), JSON.stringify(report, null, 2) + "\n", "utf8");
 					const ok = report.validation_issues.length === 0;
@@ -277,6 +325,10 @@ function apply(ctx, config) {
 						message: "package_dir is required"
 					};
 					const packageDir = resolvePath(String(args.package_dir));
+					if (isCodexFlowImagePackage(packageDir)) return {
+						ok: false,
+						message: "Codex_Flow 包无 intake-report；批准通过 publish（approved=true）审核门完成"
+					};
 					try {
 						const report = approveImageIntakeReport(packageDir);
 						await writeFile(join(packageDir, "intake-report.json"), JSON.stringify(report, null, 2) + "\n", "utf8");
@@ -299,6 +351,16 @@ function apply(ctx, config) {
 						message: "package_dir is required"
 					};
 					const packageDir = resolvePath(String(args.package_dir));
+					if (isCodexFlowImagePackage(packageDir)) {
+						const issues = validateCodexFlowImagePackage(packageDir, Boolean(args.require_report));
+						return {
+							ok: issues.length === 0,
+							message: issues.length === 0 ? "package valid (codex-flow image)" : `${issues.length} issue(s)`,
+							issues,
+							package_path: packageDir,
+							package_sha256: flowPackageSha256(packageDir)
+						};
+					}
 					const issues = validateImagePackage(packageDir, { requireReport: Boolean(args.require_report) });
 					return {
 						ok: issues.length === 0,
@@ -314,6 +376,142 @@ function apply(ctx, config) {
 						message: "package_dir is required"
 					};
 					const packageDir = resolvePath(String(args.package_dir));
+					if (isCodexFlowImagePackage(packageDir)) {
+						const issues = validateCodexFlowImagePackage(packageDir, false);
+						if (issues.length > 0) return {
+							ok: false,
+							message: `validation failed (${issues.length} issue(s)); fix before publish`,
+							issues
+						};
+						const shape = flowMetaToRegistryShape(packageDir);
+						const name = String(shape.name);
+						const version = String(args.version ?? shape.version);
+						if (args.approved !== true) {
+							let card;
+							try {
+								card = buildFlowReviewCard(packageDir);
+							} catch (error) {
+								return {
+									ok: false,
+									message: String(error instanceof Error ? error.message : error)
+								};
+							}
+							const sealed = flowSealedSources(packageDir, args, resolvePath);
+							return {
+								ok: false,
+								message: "publish requires explicit user approval (approved=true) after reviewing the checklist",
+								checklist: {
+									skill_id: name,
+									display_name: String(card.display_name ?? ""),
+									primary_output: card.primary_output,
+									capabilities: card.capabilities,
+									paid_points: card.paid_points,
+									workflow_profile: card.workflow_profile,
+									source_hashes: sealed.length > 0 ? sealed.map((s) => ({
+										name: s.name,
+										sha256: s.sha256.slice(0, 16) + "…"
+									})) : null,
+									package_hash: String(card.package_hash ?? ""),
+									validation: `${issues.length} issue(s)`,
+									instruction: "请向用户展示以上审核项并获得明确确认后，以 approved=true 重新调用 publish/upgrade"
+								}
+							};
+						}
+						const sources = flowSealedSources(packageDir, args, resolvePath);
+						if (sources.length === 0) return {
+							ok: false,
+							message: "no sealed sources; run audit with sources first"
+						};
+						await mkdir(libRoot, { recursive: true });
+						const staging = await mkdtemp(join(libRoot, ".stage-"));
+						let moved = false;
+						try {
+							const stagedPath = join(staging, name);
+							await copyTree(packageDir, stagedPath);
+							const receipt = buildFlowIntakeReceipt(stagedPath, sources, { version });
+							await writeFile(join(stagedPath, "intake-receipt.json"), JSON.stringify(receipt, null, 2) + "\n", "utf8");
+							const publishedIssues = validateCodexFlowImagePackage(stagedPath, true);
+							if (publishedIssues.length > 0) return {
+								ok: false,
+								message: `receipt validation failed: ${publishedIssues.join(", ")}`,
+								issues: publishedIssues
+							};
+							const destination = join(libRoot, name);
+							if (command === "publish") {
+								if (existsSync(destination)) return {
+									ok: false,
+									message: `Refusing to overwrite published Skill: ${destination}（修订请走 upgrade）`
+								};
+								await rename(stagedPath, destination);
+								moved = true;
+							} else {
+								const backup = join(libRoot, `${name}.upgrade-backup`);
+								if (existsSync(backup)) return {
+									ok: false,
+									message: `Backup path already exists: ${backup}`
+								};
+								if (!existsSync(destination)) return {
+									ok: false,
+									message: `published Skill not found: ${destination}`
+								};
+								await rename(destination, backup);
+								try {
+									await rename(stagedPath, destination);
+								} catch (error) {
+									if (!existsSync(destination)) await rename(backup, destination);
+									throw error;
+								}
+								await rm(backup, {
+									recursive: true,
+									force: true
+								});
+								moved = true;
+							}
+							const destShape = flowMetaToRegistryShape(destination);
+							const record = registry.ingest({
+								contract: validateContract({
+									name: String(destShape.name),
+									version,
+									description: String(destShape.description),
+									taxonomy: destShape.taxonomy,
+									flow: destShape.flow
+								}),
+								routing: {
+									aliases: destShape.taxonomy,
+									negative_intents: Array.isArray(destShape.flow.exclude_intents) ? destShape.flow.exclude_intents : []
+								},
+								packageRoot: destination,
+								provenance: command === "upgrade" ? "image-skill-curator:upgrade (codex-flow)" : "image-skill-curator:publish (codex-flow)"
+							}, { force: command === "upgrade" });
+							registry.setStatus(record.name, record.version, "published");
+							return {
+								ok: true,
+								message: `${command === "upgrade" ? "upgraded" : "published"} ${record.name}@${record.version} with intake receipt (codex-flow)`,
+								skill: {
+									id: record.id,
+									name: record.name,
+									version: record.version,
+									status: record.status
+								},
+								receipt,
+								package_path: destination
+							};
+						} catch (error) {
+							if (moved) await rm(join(libRoot, name), {
+								recursive: true,
+								force: true
+							}).catch(() => void 0);
+							return {
+								ok: false,
+								message: String(error instanceof Error ? error.message : error)
+							};
+						} finally {
+							await rm(staging, {
+								recursive: true,
+								force: true
+							}).catch(() => void 0);
+						}
+					}
 					const report = JSON.parse(readFileSync(join(packageDir, "intake-report.json"), "utf8"));
 					const skillId = String(report.skill_id ?? basename(packageDir));
 					const sealedSources = Array.isArray(report.sources) ? report.sources.map((s) => ({

@@ -1,0 +1,12 @@
+schema: codex-flow-workflow/v1
+profile: staged
+stages:
+  - id: brief
+    output: brief
+    gate: decision
+  - id: image
+    capability: image.generate
+    depends-on:
+      - brief
+    output: image
+    gate: paid-execution

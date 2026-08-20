@@ -17,6 +17,7 @@
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { plannedCount } from './curator-core.ts'
+import type { FlowContract, SkillContract } from './registry-core.ts'
 
 export type ProjectStatus =
   | 'awaiting_skill_confirmation'
@@ -68,6 +69,8 @@ export interface ProjectState {
   projectId: string
   status: ProjectStatus
   skillName?: string
+  /** 已确认 Skill 的包格式：'flow'（Codex_Flow：SKILL.md+meta.yaml+workflow.yaml）或 'legacy'（contract.json）。 */
+  skillFormat?: 'legacy' | 'flow'
   ratio?: string
   duration?: number
   imageStage?: 'user_materials' | 'generating_images'
@@ -393,5 +396,66 @@ export function buildSubmissionPayload(state: ProjectState, currentHashes: Recor
     prompt_version: prompt.version,
     locked_material_hashes: state.lockedMaterialHashes,
     confirmed_at: state.updatedAt,
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Codex_Flow 视频包适配（Phase 3）：flow → 内部契约合成               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 判断注册库记录是否为 Codex_Flow 视频包：contract.flow 存在且
+ * capabilities 含 video.generate（或 primary_output === 'video'）。
+ * 在项目创建边界（create/confirm_skill）用于识别 flow 包，从而走
+ * 合成契约路径（无 contract.json）而非旧格式路径。
+ */
+export function isFlowVideoSkill(contract: { flow?: FlowContract } | undefined): boolean {
+  const flow = contract?.flow
+  if (!flow) return false
+  const caps = Array.isArray(flow.capabilities) ? flow.capabilities : []
+  return caps.includes('video.generate') || flow.primary_output === 'video'
+}
+
+/**
+ * 把 Codex_Flow 视频包的 flow 元数据合成为项目管线既有的 SkillContract 形状：
+ * - video：全量支持比例 + 4-30 秒（实际比例/时长仍由 set_settings 确认）；
+ * - slots：单个通用素材槽 reference-material（flow 包不声明素材槽/count_rule，
+ *   min=1、不设上限、recommended 默认节奏）；SlotPlan 推导保持现有逻辑；
+ * - prompt：zh + up_to_3_examples；
+ * - description/taxonomy 从注册记录（identity）带过来。
+ * 合成契约必须能通过 registry-core 的 validateContract 与项目管线全部既有校验：
+ * validateContract 的 slot.max 仅接受整数、addMaterial 对 max 做 `length >= max`
+ * 比较，故"不设上限"用省略 max 字段 + max_count: null（planSlots 读 min_count/
+ * max_count，max_count=null 即无上限）。
+ */
+export function synthesizeVideoContractFromFlow(
+  flow: FlowContract,
+  identity?: { name: string; version: string; description?: string; taxonomy?: string[] },
+): SkillContract {
+  const name = identity?.name?.trim() || flow.display_name?.trim() || 'flow-video-skill'
+  const version = identity?.version?.trim() || '1.0.0'
+  return {
+    name,
+    version,
+    description: identity?.description ?? flow.display_name ?? '',
+    taxonomy: identity?.taxonomy ?? [],
+    video: {
+      ratios: [...VIDEO_RATIOS],
+      duration_min: 4,
+      duration_max: 30,
+    },
+    slots: [
+      {
+        id: 'reference-material',
+        label: '参考素材（flow 包无槽声明，按业务 Skill 指导收集）',
+        media_type: 'image',
+        min: 1,
+        min_count: 1,
+        max_count: null,
+        count_rule: 'per_second',
+      },
+    ],
+    prompt: { lang: 'zh', corpus_policy: 'up_to_3_examples' },
+    flow,
   }
 }

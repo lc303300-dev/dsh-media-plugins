@@ -1,5 +1,7 @@
 # Codex_CS 视频业务 Skill 包标准
 
+> 本文档同时规范**两种格式**：第 1-9 节描述旧版 `contract.json` 格式（存量兼容），第 10 节描述 **Codex_Flow 新格式**（新入库默认，镜像上游 `packages/Codex_Flow` 平台）。新包优先按第 10 节创建。
+
 ## 1. 设计目标
 
 标准只统一确定性接口，不统一创意内容。不同 Skill 可以拥有完全不同的视觉语言、镜头方法和社区经验，但必须使用相同的素材契约、知识分层、验证与发布机制。
@@ -132,3 +134,48 @@ description: 说明该 Skill 做什么，以及哪些用户请求应触发它。
 - 未处理的模板占位符。
 
 历史模型或平台经验可以保留在参考文档，但必须标记为来源背景，不得决定当前执行。
+
+## 10. Codex_Flow 新格式（默认）
+
+新入库的视频业务 Skill 使用 Codex_Flow 平台格式（上游 `packages/Codex_Flow/business-skills/`），把"业务创意"与"平台执行"分离。
+
+### 10.1 标准目录
+
+```text
+<skill-id>/
+├─ SKILL.md
+├─ meta.yaml
+├─ workflow.yaml          # staged profile 必须
+├─ intake-receipt.json    # 仅由发布器生成
+└─ references/
+   ├─ creative-guidance.md
+   ├─ community-experience.md
+   ├─ failure-cases.md
+   └─ examples.md
+```
+
+### 10.2 meta.yaml（schema `codex-flow-skill/v1`）
+
+必须字段：`schema`、`name`、`version`、`primary-output`、`workflow-profile`（`simple`|`staged`）、`interaction-profile`（`conversation`|`gui`|`hybrid`）。建议字段：`display-name-zh`、`source`、`release-tier`、`intermediate-outputs`、`tags`、`aliases`、`exclude-intents`、`capabilities`（视频用 `video.generate`）、`references`（每个引用声明 `path` 与 `load-at` 阶段，如 `authoring`/`final-qc`）。
+
+### 10.3 workflow.yaml（schema `codex-flow-workflow/v1`）
+
+`stages` 列表，每阶段声明 `id`、`output`、`gate`（`none`/`decision`/`approval`/`paid-execution`/`batch-approval`）、可选 `capability` 与 `depends-on`。依赖必须完整且无环。付费点由 `paid-execution`/`batch-approval` 门禁推导，`intake-receipt` 审阅卡展示 `paid_points`。
+
+### 10.4 命名与一致性
+
+目录名、frontmatter `name`、meta `name` 三者必须一致。frontmatter 只能有 `name` 与 `description`。
+
+### 10.5 禁止内容（污染扫描）
+
+`SKILL.md` frontmatter+正文与 `meta.yaml` 中不得出现：provider 名（Seedance/Dreamina/Jimeng/Gemini/Kling 等）、模型标识（seedance 2.x/gpt-image/gemini-\d 等）、DAG/工作流 id 泄漏、API Key/Authorization/Cookie、本机绝对路径、危险命令。平台执行细节（模型版本、分辨率、轮询、下载、付费策略）一律不进业务包。
+
+### 10.6 发布凭证
+
+`intake-receipt.json`（schema `codex-flow-receipt/v1`）由发布器生成：skill_id、version、validator、approved_by、来源哈希、`package_hash`（全包 SHA-256，跳过 `.codex-flow-private`）、创建时间。包内容变化后旧凭证立即失效（`STALE_RECEIPT`），必须重新审核与发布。
+
+### 10.7 与旧格式的关系
+
+- `skill_curator` 的 `validate`/`publish` 自动识别：包内存在 `meta.yaml` 即按 Codex_Flow 校验与发布，否则走旧 contract 路径。
+- `add_count_rules`/`planned_counts` 仅适用于旧格式；新格式不声明素材槽，计划数由 workflow 阶段与用户确认决定。
+- `skill_registry` 的 `ingest` 同样双格式识别；新格式记录携带 `flow` 元数据（capabilities/exclude_intents/package_sha256/references load-at/entry），`route` 按 capability 过滤并加权评分（≥60 → specialized_skill，否则 image 能力回退 `generic-image`），`resolve` 返回运行时描述，`compile` 输出 `codex-flow-registry/v2` registry.json。

@@ -345,5 +345,55 @@ function buildSubmissionPayload(state, currentHashes) {
 		confirmed_at: state.updatedAt
 	};
 }
+/**
+* 判断注册库记录是否为 Codex_Flow 视频包：contract.flow 存在且
+* capabilities 含 video.generate（或 primary_output === 'video'）。
+* 在项目创建边界（create/confirm_skill）用于识别 flow 包，从而走
+* 合成契约路径（无 contract.json）而非旧格式路径。
+*/
+function isFlowVideoSkill(contract) {
+	const flow = contract?.flow;
+	if (!flow) return false;
+	return (Array.isArray(flow.capabilities) ? flow.capabilities : []).includes("video.generate") || flow.primary_output === "video";
+}
+/**
+* 把 Codex_Flow 视频包的 flow 元数据合成为项目管线既有的 SkillContract 形状：
+* - video：全量支持比例 + 4-30 秒（实际比例/时长仍由 set_settings 确认）；
+* - slots：单个通用素材槽 reference-material（flow 包不声明素材槽/count_rule，
+*   min=1、不设上限、recommended 默认节奏）；SlotPlan 推导保持现有逻辑；
+* - prompt：zh + up_to_3_examples；
+* - description/taxonomy 从注册记录（identity）带过来。
+* 合成契约必须能通过 registry-core 的 validateContract 与项目管线全部既有校验：
+* validateContract 的 slot.max 仅接受整数、addMaterial 对 max 做 `length >= max`
+* 比较，故"不设上限"用省略 max 字段 + max_count: null（planSlots 读 min_count/
+* max_count，max_count=null 即无上限）。
+*/
+function synthesizeVideoContractFromFlow(flow, identity) {
+	return {
+		name: identity?.name?.trim() || flow.display_name?.trim() || "flow-video-skill",
+		version: identity?.version?.trim() || "1.0.0",
+		description: identity?.description ?? flow.display_name ?? "",
+		taxonomy: identity?.taxonomy ?? [],
+		video: {
+			ratios: [...VIDEO_RATIOS],
+			duration_min: 4,
+			duration_max: 30
+		},
+		slots: [{
+			id: "reference-material",
+			label: "参考素材（flow 包无槽声明，按业务 Skill 指导收集）",
+			media_type: "image",
+			min: 1,
+			min_count: 1,
+			max_count: null,
+			count_rule: "per_second"
+		}],
+		prompt: {
+			lang: "zh",
+			corpus_policy: "up_to_3_examples"
+		},
+		flow
+	};
+}
 //#endregion
-export { buildSubmissionPayload as a, lockFinalMaterials as c, transition as d, validateVideoSettings as f, assessSlotCounts as i, mediaExtensions as l, addMaterial as n, confirmPrompt as o, addPrompt as r, createProject as s, VIDEO_RATIOS as t, planSlots as u };
+export { buildSubmissionPayload as a, isFlowVideoSkill as c, planSlots as d, synthesizeVideoContractFromFlow as f, assessSlotCounts as i, lockFinalMaterials as l, validateVideoSettings as m, addMaterial as n, confirmPrompt as o, transition as p, addPrompt as r, createProject as s, VIDEO_RATIOS as t, mediaExtensions as u };
