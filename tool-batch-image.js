@@ -379,6 +379,17 @@ function apply(ctx, config) {
 			} finally {
 				db.close();
 			}
+		},
+		presentCall(args) {
+			if (args?.command === "contact_sheet" && typeof args.job_key === "string" && args.job_key.length > 0) {
+				const rel = `${config.outputDir.replace(/\\/g, "/")}/contact-${args.job_key}.html`;
+				return {
+					card: "generic",
+					kind: "edit",
+					title: `批量联系表 ${args.job_key}`,
+					locations: [{ path: rel }]
+				};
+			}
 		}
 	}));
 }

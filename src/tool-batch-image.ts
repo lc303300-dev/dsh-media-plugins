@@ -13,6 +13,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
@@ -261,6 +262,23 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         } finally {
           db.close()
         }
+      },
+      presentCall(args: any) {
+        // Declare the contact-sheet output as a produced path so the Web
+        // client's inline-code mentions link it (the produced-files seam
+        // matches write/edit locations only). The path is relative to the
+        // session workspace, exactly like the scheduler's own output
+        // layout: <outputDir>/contact-<jobKey>.html.
+        if (args?.command === 'contact_sheet' && typeof args.job_key === 'string' && args.job_key.length > 0) {
+          const rel = `${config.outputDir.replace(/\\/g, '/')}/contact-${args.job_key}.html`
+          return {
+            card: 'generic',
+            kind: 'edit',
+            title: `批量联系表 ${args.job_key}`,
+            locations: [{ path: rel }],
+          } as GenericCallView
+        }
+        return undefined
       },
     }),
   )
