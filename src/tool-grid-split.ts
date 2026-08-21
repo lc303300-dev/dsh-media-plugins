@@ -94,6 +94,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           const workEdge = Number.isInteger(args.work_edge) ? args.work_edge : 1024
           const normalizeRatio = String(args.normalize_ratio ?? '').trim() || null
           const result = await splitGridSheet(sheetPath, outDir, { insetPercent, workEdge, normalizeRatio })
+          // 省略未规范比例时的 null 字段，避免输出 schema（string 类型）校验失败
           return {
             ok: result.ok,
             method: result.method,
@@ -101,7 +102,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             width: result.width,
             height: result.height,
             lines: result.lines,
-            normalized_ratio: result.normalized_ratio,
+            ...(result.normalized_ratio ? { normalized_ratio: result.normalized_ratio } : {}),
             inset_percent: result.inset_percent,
             panels: result.panels,
             review_page: result.review_page,

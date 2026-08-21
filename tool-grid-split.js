@@ -478,7 +478,7 @@ function apply(ctx, config) {
 					width: result.width,
 					height: result.height,
 					lines: result.lines,
-					normalized_ratio: result.normalized_ratio,
+					...result.normalized_ratio ? { normalized_ratio: result.normalized_ratio } : {},
 					inset_percent: result.inset_percent,
 					panels: result.panels,
 					review_page: result.review_page,
