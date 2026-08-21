@@ -127,6 +127,43 @@ function apply(ctx, config) {
 				}
 			},
 			render(_args, value) {
+				if (value?.hits && Array.isArray(value.hits)) {
+					const lines = value.hits.map((h, i) => {
+						const reasons = Array.isArray(h.matched_reasons) ? h.matched_reasons.join("；") : "";
+						const neg = Array.isArray(h.negative_hits) && h.negative_hits.length > 0 ? `（排除：${h.negative_hits.join("、")}）` : "";
+						return `${i + 1}. ${h.name}@${h.version} [${h.status}] 评分${h.score ?? ""}\n   ${h.description ?? ""}${reasons ? `\n   匹配：${reasons}` : ""}${neg}`;
+					});
+					return [{
+						type: "text",
+						text: `${value.message ?? ""}\n${lines.join("\n")}`
+					}];
+				}
+				if (value?.skills && Array.isArray(value.skills)) {
+					const lines = value.skills.map((s, i) => `${i + 1}. ${s.name}@${s.version} [${s.status}]`);
+					return [{
+						type: "text",
+						text: `${value.message ?? ""}\n${lines.join("\n")}`
+					}];
+				}
+				if (value?.skill && typeof value.skill === "object") {
+					const s = value.skill;
+					const parts = [`${s.name}@${s.version} [${s.status}]`, s.description ? `描述：${s.description}` : ""];
+					const contract = s.contract ?? {};
+					if (contract.video) {
+						const v = contract.video;
+						parts.push(`视频：比例 ${(v.ratios ?? []).join("/")}，时长 ${v.duration_min ?? "?"}-${v.duration_max ?? "?"}s`);
+					}
+					if (contract.image) {
+						const im = contract.image;
+						parts.push(`图片：${im.input_mode ?? ""}，比例 ${(im.supported_ratios ?? []).join("/")}，场景 ${im.scene_count?.min ?? 1}-${im.scene_count?.max ?? 1}，候选 ${im.candidate_count_per_scene?.min ?? 1}-${im.candidate_count_per_scene?.max ?? 1}，批量${im.batch_allowed ? "支持" : "不支持"}`);
+					}
+					if (Array.isArray(contract.slots)) for (const slot of contract.slots) parts.push(`槽 ${slot.id}：${slot.label ?? ""} min ${slot.min ?? 0} max ${slot.max ?? 0}`);
+					if (Array.isArray(contract.references)) for (const ref of contract.references) parts.push(`素材 ${ref.id}：${ref.description ?? ""} 必选${ref.required ? "是" : "否"} ${ref.min_count ?? 0}-${ref.max_count ?? 0}张`);
+					return [{
+						type: "text",
+						text: `${value.message ?? ""}\n${parts.filter(Boolean).join("\n")}`
+					}];
+				}
 				return [{
 					type: "text",
 					text: value.message ?? JSON.stringify(value)
