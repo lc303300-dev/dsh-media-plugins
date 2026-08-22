@@ -7,7 +7,7 @@ DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 15 �
 |---|---|---|---|
 | `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 值、`image_resolution`（1K/2K/4K，Gemini 默认 2K / GPT 4K / Dreamina 1K）、`image_provider` 显式线路直达不回退；3 级适配器严格串行回退（comfly-gemini-flash-preview → comfly-gpt-image-2 → dreamina-image），单适配器 120s / 整任务 300s，失败分类 + needs_review 禁重试 + 每适配器连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px，跨进程容量锁（默认 6，dreamina 图/视频共享 `seedance-cli`） | Comfly / Dreamina CLI | `COMFLY_API_KEY` + VPN 代理 |
 | `generate_video` | 生视频：默认 seedance2.5 / 480p；text2video / multimodal2video；`video_execution_mode`：production（提交+轮询+下载）、production_submit_only（仅提交）、test_submit_only（强制非 VIP 2.0/720p，仅返回 submit_id，到即梦后台查看） | 即梦 Dreamina 本地 CLI（`dreamina.exe`） | OAuth 登录态 |
-| `describe_image` | 看图（识别/描述本地图片） | 火山方舟 Doubao（`doubao-seed-2-0-mini`） | `VOLCANO_ENGINE_API_KEY` |
+| `describe_image` | 兜底看图：仅当当前主模型无法读图时用 Doubao 返回中文描述；主模型可读图时请直接用核心 `read_image`（本工具会拒绝并提示） | 火山方舟 Doubao（`doubao-seed-2-0-mini`） | `VOLCANO_ENGINE_API_KEY` |
 | `skill_registry` | 业务 Skill 治理（Codex_CS）：ingest/search/get/publish/deprecate/list，contract 校验、name@version 去重、内容哈希防漂移、FTS5 trigram 中文检索 | node:sqlite + FTS5（零原生依赖） | 无 |
 | `skill_curator` | 业务 Skill 录入治理（Codex_CS codex-cs-skill-curator）：scaffold / validate（validator 1.2.0）/ add_count_rules / planned_counts / migrate / publish（intake-receipt） | 内置模板 `refs/skill-template/` | 无 |
 | `project_pipeline` | 项目状态机（Codex_CS）：显式状态流转、素材槽 min/max 校验、素材/提示词 sha256 锁定、`build_payload` 提交前哈希复核防未确认版本 | 原子 JSON 状态（私有运行目录） | 无 |

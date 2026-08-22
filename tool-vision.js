@@ -29,7 +29,7 @@ function apply(ctx, config) {
 	const resolved = config;
 	ctx.tools.register(defineTool({
 		name: "describe_image",
-		description: "用火山方舟 Doubao 视觉模型分析一张本地图片，返回图片内容的中文描述。当你需要看图（识别文字、对象、界面、报错截图等）但当前主模型无法直接读图时，调用本工具。",
+		description: "兜底看图工具：仅当当前主模型无法直接读图时，用火山方舟 Doubao 视觉模型分析本地图片并返回中文描述。若主模型可读图（视觉模型），请直接使用 read_image 读图，不要调用本工具——本工具此时会拒绝并提示改用 read_image。",
 		parameters: {
 			file_path: {
 				type: "string",
@@ -63,6 +63,12 @@ function apply(ctx, config) {
 			const dot = filePath.lastIndexOf(".");
 			const mediaType = IMAGE_MEDIA[dot >= 0 ? filePath.slice(dot).toLowerCase() : ""];
 			if (mediaType === void 0) throw new Error("describe_image only accepts PNG/JPEG/WebP/GIF paths");
+			const routed = exec.agent?.session.requestHeader()?.config;
+			const provider = routed?.provider ?? exec.agent?.options.provider;
+			const model = routed?.model ?? exec.agent?.options.model;
+			if (provider !== void 0 && model !== void 0 && ctx.tools.get("read_image") !== void 0) {
+				if ((await ctx.llm.resolveModelInfo(provider, model, exec.signal)).inputModalities?.includes("image")) throw new Error(`describe_image is a fallback-only tool: the current main model ("${model}") can read images natively, so use the read_image tool on this file instead. describe_image only applies when the main model cannot read images.`);
+			}
 			const prompt = args.prompt?.trim() || "Describe the image in detail.";
 			const target = await ctx.fs.resolve(filePath);
 			const data = await ctx.fs.readBytes(target, exec.signal, 10485760);
