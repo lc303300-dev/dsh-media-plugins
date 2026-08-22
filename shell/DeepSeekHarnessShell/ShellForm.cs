@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -11,7 +13,7 @@ public sealed class ShellForm : Form
 {
     private static readonly int[] CandidatePorts = [9785, 9786, 9787, 9788, 9789];
 
-    private readonly string? root;
+    private readonly string root;
     private readonly string privateDir;
     private readonly Icon appIcon;
     private readonly NotifyIcon trayIcon;
@@ -19,13 +21,15 @@ public sealed class ShellForm : Form
     private readonly Label loadingLabel;
     private Process? serverProcess;
     private bool exitRequested;
+    private bool recoveryAttempted;
     private Uri? appUrl;
     private int? serverPort;
+    private string? serverErrorLog;
 
     public ShellForm()
     {
         root = ResolveRoot();
-        privateDir = ResolvePrivateDir(root);
+        privateDir = Path.Combine(root, "scripts", "local", ".shell-private");
         Directory.CreateDirectory(privateDir);
         appIcon = LoadAppIcon();
 
@@ -72,14 +76,7 @@ public sealed class ShellForm : Form
         Shown += async (_, _) => await StartAsync();
     }
 
-    /// <summary>
-    /// Resolve a DeepSeek Harness SOURCE checkout (the dev-only launch path) by
-    /// walking up from the executable. Returns null when no source tree is
-    /// present — the packaged shell then launches the installed <c>dsh</c> CLI
-    /// instead, so a new machine needs only <c>@deepseek-ai/dsh</c>, not the
-    /// monorepo.
-    /// </summary>
-    private static string? ResolveRoot()
+    private static string ResolveRoot()
     {
         var configured = Environment.GetEnvironmentVariable("DEEPSEEK_HARNESS_ROOT");
         if (!string.IsNullOrWhiteSpace(configured) && Directory.Exists(configured))
@@ -105,33 +102,13 @@ public sealed class ShellForm : Form
             current = parent.FullName;
         }
 
-        return null;
-    }
-
-    /// <summary>
-    /// Shell-private runtime root: beside the dev checkout when one is present,
-    /// otherwise under the user's LocalApplicationData (WebView2 profile + logs).
-    /// </summary>
-    private static string ResolvePrivateDir(string? root)
-    {
-        if (root is not null)
+        const string fallback = @"D:\AI\DeepseekHarness";
+        if (Directory.Exists(fallback))
         {
-            return Path.Combine(root, "scripts", "local", ".shell-private");
+            return fallback;
         }
 
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "DeepSeekHarnessShell");
-    }
-
-    /// <summary>
-    /// The <c>dsh</c> launcher word used in packaged mode, overridable via
-    /// <c>DSH_WEB_COMMAND</c> for a custom binary or wrapper.
-    /// </summary>
-    private static string DshWebCommand()
-    {
-        var configured = Environment.GetEnvironmentVariable("DSH_WEB_COMMAND");
-        return string.IsNullOrWhiteSpace(configured) ? "dsh" : configured.Trim();
+        throw new DirectoryNotFoundException("DeepSeek Harness root was not found.");
     }
 
     private static Icon LoadAppIcon()
@@ -170,6 +147,7 @@ public sealed class ShellForm : Form
     {
         try
         {
+            await PrepareRuntimeAsync(force: false);
             appUrl = await EnsureServerAsync();
             serverPort = appUrl.Port;
             await Task.Delay(1000);
@@ -179,7 +157,7 @@ public sealed class ShellForm : Form
             await webView.EnsureCoreWebView2Async(environment);
             webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
             webView.CoreWebView2.Settings.AreDevToolsEnabled = true;
-            webView.CoreWebView2.NavigationCompleted += (_, args) =>
+            webView.CoreWebView2.NavigationCompleted += async (_, args) =>
             {
                 if (args.IsSuccess)
                 {
@@ -188,42 +166,155 @@ public sealed class ShellForm : Form
                     return;
                 }
 
-                loadingLabel.Text = $"DeepSeek Harness failed to load: {args.WebErrorStatus}";
+                if (!recoveryAttempted && serverProcess?.HasExited == true)
+                {
+                    recoveryAttempted = true;
+                    loadingLabel.Text = "Backend stopped. Repairing and retrying once...";
+                    loadingLabel.Show();
+                    loadingLabel.BringToFront();
+                    try
+                    {
+                        await PrepareRuntimeAsync(force: true);
+                        appUrl = await EnsureServerAsync();
+                        serverPort = appUrl.Port;
+                        webView.Source = appUrl;
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        loadingLabel.Text = FormatFailure(ex);
+                        return;
+                    }
+                }
+
+                loadingLabel.Text = FormatFailure(new InvalidOperationException($"WebView error: {args.WebErrorStatus}"));
                 loadingLabel.Show();
                 loadingLabel.BringToFront();
             };
-            // External hyperlinks render with target="_blank" (web search
-            // citations, URL-promoted inline code, Web blocks). WebView2 has no
-            // window chrome for those, so an unhandled NewWindowRequested leaves
-            // every such link dead. Route browser-scheme requests to the system
-            // default browser instead; anything else stays inert.
+            // Keep all navigation inside the native shell. In particular, do
+            // not forward startup-triggered target="_blank" requests to the
+            // system browser, which would create a second UI window.
             webView.CoreWebView2.NewWindowRequested += (_, args) =>
             {
                 args.Handled = true;
-                var uri = args.Uri;
-                if (string.IsNullOrWhiteSpace(uri)) return;
-                if (!(uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-                    || uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-                    || uri.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase)))
-                {
-                    return;
-                }
-                try
-                {
-                    Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
-                }
-                catch
-                {
-                    // No default browser (or a broken association): leave the
-                    // link inert rather than crashing the shell.
-                }
             };
             webView.Source = appUrl;
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "DeepSeek Harness failed to start", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            loadingLabel.Text = FormatFailure(ex);
+            loadingLabel.Show();
+            loadingLabel.BringToFront();
+            MessageBox.Show(this, FormatFailure(ex), "DeepSeek Harness failed to start", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private async Task PrepareRuntimeAsync(bool force)
+    {
+        var lockfile = Path.Combine(root, "pnpm-lock.yaml");
+        var packageFile = Path.Combine(root, "package.json");
+        if (!File.Exists(lockfile) || !File.Exists(packageFile))
+        {
+            throw new InvalidOperationException("Repository metadata is incomplete: package.json or pnpm-lock.yaml is missing.");
+        }
+
+        var stateFile = Path.Combine(privateDir, "runtime-state.txt");
+        var lockHash = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(lockfile)));
+        var revision = await ReadProcessOutputAsync("git.exe", ["rev-parse", "HEAD"], root, TimeSpan.FromSeconds(10));
+        var expectedState = $"lock={lockHash}\nrevision={revision.Trim()}\n";
+        var previousState = File.Exists(stateFile) ? await File.ReadAllTextAsync(stateFile) : string.Empty;
+        var installedLockfile = Path.Combine(root, "node_modules", ".pnpm", "lock.yaml");
+        var requiredArtifacts = new[]
+        {
+            Path.Combine(root, "packages", "context", "session-reference", "lib", "typert.host.js"),
+            Path.Combine(root, "packages", "client", "ui-renderer", "lib", "client.js"),
+            Path.Combine(root, "packages", "client", "ui-brand-official", "lib", "client.js"),
+            Path.Combine(root, "packages", "client", "ui-attachment", "lib", "client.js"),
+            Path.Combine(root, "packages", "client", "ui-reference", "lib", "client.js")
+        };
+
+        var installNeeded = force || !File.Exists(installedLockfile);
+        var buildNeeded = force || !string.Equals(previousState, expectedState, StringComparison.Ordinal)
+            || requiredArtifacts.Any(path => !File.Exists(path));
+        if (!installNeeded && !buildNeeded)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(Path.Combine(root, ".codex-image-private", "logs"));
+        if (installNeeded || !string.Equals(previousState, expectedState, StringComparison.Ordinal))
+        {
+            loadingLabel.Text = "Repository changed. Synchronizing dependencies...";
+            await RunMaintenanceAsync("install", "pnpm install --frozen-lockfile");
+        }
+
+        loadingLabel.Text = "Building updated DeepSeek Harness components...";
+        await RunMaintenanceAsync("build", "pnpm run build");
+        await WriteAtomicAsync(stateFile, expectedState);
+        loadingLabel.Text = "Starting DeepSeek Harness...";
+    }
+
+    private async Task RunMaintenanceAsync(string name, string command)
+    {
+        var logDir = Path.Combine(root, ".codex-image-private", "logs");
+        var logPath = Path.Combine(logDir, $"shell-{name}-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            WorkingDirectory = root,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        startInfo.ArgumentList.Add("/d");
+        startInfo.ArgumentList.Add("/s");
+        startInfo.ArgumentList.Add("/c");
+        startInfo.ArgumentList.Add(command);
+        startInfo.Environment["CI"] = "true";
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException($"Failed to start maintenance command: {command}");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        var output = await stdout + await stderr;
+        await File.WriteAllTextAsync(logPath, output, Encoding.UTF8);
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Automatic {name} failed (exit {process.ExitCode}).\n{Tail(output, 14)}\nFull log: {logPath}");
+        }
+    }
+
+    private static async Task<string> ReadProcessOutputAsync(string fileName, string[] arguments, string workingDirectory, TimeSpan timeout)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = fileName,
+            WorkingDirectory = workingDirectory,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException($"Failed to start {fileName}.");
+        using var cts = new CancellationTokenSource(timeout);
+        await process.WaitForExitAsync(cts.Token);
+        var output = await process.StandardOutput.ReadToEndAsync();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"{fileName} exited with code {process.ExitCode}: {await process.StandardError.ReadToEndAsync()}");
+        }
+        return output;
+    }
+
+    private static async Task WriteAtomicAsync(string path, string content)
+    {
+        var temporary = path + ".tmp";
+        await File.WriteAllTextAsync(temporary, content, Encoding.UTF8);
+        File.Move(temporary, path, overwrite: true);
     }
 
     private async Task<Uri> EnsureServerAsync()
@@ -247,44 +338,27 @@ public sealed class ShellForm : Form
 
     private async Task<Uri> StartServerAsync(int port)
     {
-        var logDir = Path.Combine(privateDir, "logs");
+        var logDir = Path.Combine(root, ".codex-image-private", "logs");
         Directory.CreateDirectory(logDir);
         var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
         var stdout = Path.Combine(logDir, $"dsh-web-{port}-{stamp}.out.log");
         var stderr = Path.Combine(logDir, $"dsh-web-{port}-{stamp}.err.log");
+        serverErrorLog = stderr;
 
-        // Dev mode (a source checkout is reachable): run the monorepo CLI from
-        // source. Packaged mode (no source tree): run the installed `dsh` CLI
-        // through cmd.exe so the npm `.cmd` shim resolves like a shell would.
-        var startInfo = root is null
-            ? new ProcessStartInfo
-            {
-                FileName = "cmd.exe",
-                Arguments = $"/c {DshWebCommand()} web --host 127.0.0.1 --port {port}",
-                WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            }
-            : new ProcessStartInfo
-            {
-                FileName = "node.exe",
-                Arguments = $"--import tsx/esm apps/cli/src/bin.ts web --host 127.0.0.1 --port {port}",
-                WorkingDirectory = root,
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-
-        serverProcess = Process.Start(startInfo);
+        serverProcess = Process.Start(new ProcessStartInfo
+        {
+            FileName = "node.exe",
+            Arguments = $"--import tsx/esm apps/cli/src/bin.ts web --host 127.0.0.1 --port {port} --no-open",
+            WorkingDirectory = root,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        });
 
         if (serverProcess is null)
         {
-            throw new InvalidOperationException(root is null
-                ? "Failed to launch dsh web. Is @deepseek-ai/dsh installed (dsh in PATH)?"
-                : "Failed to launch node.exe.");
+            throw new InvalidOperationException("Failed to launch node.exe.");
         }
 
         _ = Task.Run(async () => await RedirectAsync(serverProcess.StandardOutput, stdout));
@@ -296,7 +370,9 @@ public sealed class ShellForm : Form
         {
             if (serverProcess.HasExited)
             {
-                throw new InvalidOperationException($"DeepSeek Harness exited before becoming ready. Check logs in {logDir}.");
+                await Task.Delay(250);
+                var detail = File.Exists(stderr) ? Tail(await File.ReadAllTextAsync(stderr), 18) : "No backend error log was produced.";
+                throw new InvalidOperationException($"Backend exited before becoming ready.\n{detail}\nFull log: {stderr}");
             }
 
             if (await IsHttpOkAsync(uri))
@@ -351,6 +427,29 @@ public sealed class ShellForm : Form
         {
             return false;
         }
+    }
+
+    private string FormatFailure(Exception exception)
+    {
+        var detail = exception.Message;
+        if (serverProcess?.HasExited == true && serverErrorLog is not null && File.Exists(serverErrorLog))
+        {
+            try
+            {
+                detail += $"\n\nBackend log:\n{Tail(File.ReadAllText(serverErrorLog), 12)}";
+            }
+            catch (IOException)
+            {
+                // The log writer may still be flushing; the original exception remains useful.
+            }
+        }
+        return $"DeepSeek Harness could not start.\n\n{detail}";
+    }
+
+    private static string Tail(string value, int lineCount)
+    {
+        var lines = value.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        return string.Join(Environment.NewLine, lines.TakeLast(lineCount));
     }
 
     private void ShowWindow()
