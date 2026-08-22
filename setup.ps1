@@ -45,7 +45,10 @@ function Read-Key([string]$name, [string]$prompt, [string]$current) {
         return $answer
     }
 }
+Write-Host "  官方入口（先去充值 / 获取 Key 再填）：" -ForegroundColor Gray
+Write-Host "    火山方舟: 获取/管理 https://console.volcengine.com/ark ｜ 充值 https://console.volcengine.com/finance/" -ForegroundColor Gray
 $volcano = Read-Key "VOLCANO_ENGINE_API_KEY" "火山方舟 Key（看图，可留空跳过）" $creds["VOLCANO_ENGINE_API_KEY"]
+Write-Host "    Comfly:   充值 https://pay.comfly.chat/pay/ ｜ 获取/管理 https://comfly.chat" -ForegroundColor Gray
 $comfly = Read-Key "COMFLY_API_KEY" "Comfly Key（生图主通道，可留空跳过）" $creds["COMFLY_API_KEY"]
 if ($volcano) { $creds["VOLCANO_ENGINE_API_KEY"] = $volcano }
 if ($comfly) { $creds["COMFLY_API_KEY"] = $comfly }
@@ -86,6 +89,7 @@ Write-Host ""
 Write-Host "[4/5] Dreamina 登录（生视频，OAuth 需浏览器授权）" -ForegroundColor Yellow
 Write-Host "  即将运行 $dreamina login" -ForegroundColor Gray
 Write-Host "  终端会打印 verification_uri 与 user_code，请在浏览器打开并授权。" -ForegroundColor Gray
+Write-Host "  即梦创作平台（会员/积分充值）：https://jimeng.jianying.com" -ForegroundColor Gray
 $doLogin = Read-Host "  现在登录？（y/n，回车=y）"
 if ($doLogin -eq '' -or $doLogin -eq 'y') {
     & $dreamina login
@@ -121,3 +125,8 @@ Write-Host "== 完成 ==" -ForegroundColor Cyan
 Write-Host "  1. 用 dsh plugin add 安装本 bundle（见 README）。"
 Write-Host "  2. 生图需 VPN 代理：按需改 cordis.patch.yml 的 proxyUrl。"
 Write-Host "  3. 重启 dsh 后即可使用 generate_image / generate_video / describe_image / skill_registry / project_pipeline / dt_batch / batch_image / video_to_gif / image_preview 与 Studio 技能。"
+Write-Host ""
+Write-Host "  官方充值与 API 管理入口：" -ForegroundColor Cyan
+Write-Host "    火山方舟: 管理 https://console.volcengine.com/ark ｜ 充值 https://console.volcengine.com/finance/" -ForegroundColor Cyan
+Write-Host "    Comfly:   充值 https://pay.comfly.chat/pay/ ｜ 管理 https://comfly.chat" -ForegroundColor Cyan
+Write-Host "    即梦:     https://jimeng.jianying.com（创作平台，登录后会员/积分充值）" -ForegroundColor Cyan

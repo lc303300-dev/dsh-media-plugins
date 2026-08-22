@@ -53,15 +53,19 @@ dsh plugin --profile <name> add ./dsh-media-plugins-0.2.0.tgz   # tarball
 `$DSH_HOME/settings.yaml` 配置 `llm-pi-ai.providers.volcengine`（见 `setup.ps1` 或旧版 README）。
 Key 写入 `$DSH_HOME/.credentials.yaml`。
 
+官方入口：获取/管理 Key → <https://console.volcengine.com/ark>；充值 → <https://console.volcengine.com/finance/>
+
 ### 2. Comfly（生图回退链）
 
 - `COMFLY_API_KEY`（必填，回退链 1–2 级共用）
 - 需要 **VPN 代理**：`cordis.patch.yml` 里默认 `proxyUrl: 'http://127.0.0.1:7897'`，按本机代理端口改。
+- 官方入口：充值 → <https://pay.comfly.chat/pay/>；获取/管理 Key → <https://comfly.chat>
 
 ### 3. 即梦 Dreamina（生视频）
 
 - `dreamina.exe` 由 `setup.ps1` 下载到本包 `bin/`（不随仓库分发）。
 - **OAuth 登录**：`.\bin\dreamina.exe login`，登录态存于 `~\.dreamina_cli\credential.json`。
+- 即梦创作平台（会员/积分充值）：<https://jimeng.jianying.com>
 
 ### 4. FFmpeg（video_to_gif）
 

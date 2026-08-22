@@ -3,7 +3,7 @@
 #
 # 用法:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-upstream.ps1
-#   [-CodexRepo D:\AI\Deepseek\codex-wsstudio-latest] [-NoFetch] [-NoCheckpoint]
+#   [-CodexRepo <路径>] [-NoFetch] [-NoCheckpoint]   # CodexRepo 缺省时提示 clone 上游
 #
 # 行为:
 #   1) fetch 参考仓库 origin（-NoFetch 跳过；网络失败只警告不中断）
@@ -12,12 +12,17 @@
 #   4) 更新检查点文件 <CodexRepo>/.git/upstream-last-check（-NoCheckpoint 跳过）
 [CmdletBinding()]
 param(
-    [string]$CodexRepo = 'D:\AI\Deepseek\codex-wsstudio-latest',
+    [string]$CodexRepo = '',
     [switch]$NoFetch,
     [switch]$NoCheckpoint
 )
 $ErrorActionPreference = 'Stop'
 
+if (-not $CodexRepo) {
+    Write-Host "未指定参考仓库（-CodexRepo）。" -ForegroundColor Yellow
+    Write-Host "请先 clone 上游：git clone https://github.com/lc303300-dev/Codex_Wsstudio.git <路径>，再以 -CodexRepo <路径> 运行本脚本。" -ForegroundColor Yellow
+    exit 1
+}
 $CodexRepo = [System.IO.Path]::GetFullPath($CodexRepo)
 if (-not (Test-Path (Join-Path $CodexRepo '.git'))) {
     throw "参考仓库不存在或不是 git 仓库: $CodexRepo"
