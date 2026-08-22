@@ -9,8 +9,8 @@
 
 import { readFileSync } from 'node:fs'
 import { accessSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
+import { packageRootOf } from './pkg-root.ts'
 
 export interface CorpusRow {
   id: string
@@ -45,10 +45,10 @@ export interface CorpusMatch {
 
 let cachedRows: CorpusRow[] | null = null
 
-/** Locate the bundled corpus index (built chunk at package root vs src tree). */
+/** Locate the bundled corpus index (relative to the package root). */
 export function resolveIndexPath(explicit?: string): string {
   if (explicit && explicit.trim().length > 0) return explicit
-  const here = dirname(fileURLToPath(import.meta.url))
+  const here = packageRootOf(import.meta.url)
   const candidates = [
     join(here, 'refs', 'forge-index.jsonl'),
     join(here, '..', '..', 'refs', 'forge-index.jsonl'),

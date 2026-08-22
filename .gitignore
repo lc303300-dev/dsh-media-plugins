@@ -1,5 +1,6 @@
 # 依赖与构建
 node_modules/
+dist/
 *.tgz
 obj/
 

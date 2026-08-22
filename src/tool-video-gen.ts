@@ -22,10 +22,10 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { fileURLToPath } from 'node:url'
 import { access, mkdir, readdir, rename } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { mediaErrors } from './shared/failure.ts'
+import { packageRootOf } from './shared/pkg-root.ts'
 import {
   TaskStore,
   appendSafeLog,
@@ -36,8 +36,8 @@ import {
 
 const execFileAsync = promisify(execFile)
 
-/** Bundle root: the built tool file lives at the package root. */
-const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
+/** Bundle root: the built tool file lives in dist/, so resolve from the package root. */
+const PACKAGE_ROOT = packageRootOf(import.meta.url)
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-video-gen'

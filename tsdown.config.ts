@@ -4,6 +4,7 @@ import { defineConfig } from 'tsdown'
 // 所有 @deepseek-ai/*、node:*、undici、sharp 依赖由宿主/bundle 提供，标记 neverBundle 不打包。
 export default defineConfig({
   entry: {
+    'index': 'src/index.ts',
     'tool-vision': 'src/tool-vision.ts',
     'tool-image-gen': 'src/tool-image-gen.ts',
     'tool-video-gen': 'src/tool-video-gen.ts',
@@ -22,11 +23,11 @@ export default defineConfig({
     'notify': 'src/notify.ts',
   },
   format: ['esm'],
-  outDir: '.',
+  outDir: 'dist',
   platform: 'node',
   target: 'es2024',
   dts: false,
-  clean: false,
+  clean: true,
   hash: false,
   fixedExtension: false,
   deps: {

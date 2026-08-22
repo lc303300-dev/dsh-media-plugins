@@ -7,12 +7,12 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { execFile } from 'node:child_process'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
+import { packageRootOf } from './shared/pkg-root.ts'
 
 export const name = 'Ws_completion-notify'
 
-const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
+const PACKAGE_ROOT = packageRootOf(import.meta.url)
 const TOAST_SCRIPT = join(PACKAGE_ROOT, 'scripts', 'notify-toast.ps1')
 
 interface ContentBlockLike {

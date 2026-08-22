@@ -18,8 +18,8 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { join, isAbsolute, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { dirname, join, isAbsolute } from 'node:path'
+import { packageRootOf } from './shared/pkg-root.ts'
 import {
   buildContactSheetHtml,
   computeDeadline,
@@ -30,8 +30,8 @@ import {
 import { runImageRouter, type RouterConfig } from './shared/adapters.ts'
 import { appendSafeLog, ensureDir, resolvePrivateRoot, sha256Text } from './shared/private-runtime.ts'
 
-/** Bundle root: the built tool file lives at the package root. */
-const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
+/** Bundle root: the built tool file lives in dist/, so resolve from the package root. */
+const PACKAGE_ROOT = packageRootOf(import.meta.url)
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-batch-image'

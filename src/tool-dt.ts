@@ -13,8 +13,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { copyFile, mkdir, readdir, stat, writeFile } from 'node:fs/promises'
-import { dirname, join, isAbsolute, basename } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, isAbsolute, basename } from 'node:path'
+import { packageRootOf } from './shared/pkg-root.ts'
 
 const execFileAsync = promisify(execFile)
 import { makePreview } from './shared/image-ops.ts'
@@ -61,7 +61,7 @@ export interface Config {
   dreaminaPath?: string
 }
 
-const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
+const PACKAGE_ROOT = packageRootOf(import.meta.url)
 
 export const Config: z<Config> = z.object({
   privateDir: z.string().default(''),

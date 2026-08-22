@@ -25,8 +25,8 @@ import {
 } from './shared/flow-format.ts'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { basename, dirname, isAbsolute, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { basename, isAbsolute, join } from 'node:path'
+import { packageRootOf } from './shared/pkg-root.ts'
 import { existsSync, readFileSync } from 'node:fs'
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -36,9 +36,9 @@ const name = 'Ws_tool-image-skill-curator'
 const inject = ['tools']
 const Config = z.object({ privateDir: z.string().default(''), libraryRoot: z.string().default('') })
 
-/** Bundle template root: built chunk lives at the package root. */
+/** Bundle template root: asset paths are resolved from the package root. */
 function pluginRoot(): string {
-  return dirname(fileURLToPath(import.meta.url))
+  return packageRootOf(import.meta.url)
 }
 
 /** Default library root for published image business Skills (private runtime). */

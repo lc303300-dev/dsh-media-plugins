@@ -128,7 +128,7 @@ image_skill_pipeline(command="start_generation", project_id=..., dry_run=true)
 ## 开发与测试
 
 ```sh
-pnpm build   # tsdown：src/*.ts → 包根 *.js（profile 用 link: 安装，改完重启 dsh 生效）
+pnpm build   # tsdown：src/*.ts → dist/*.js（profile 用 link: 安装，改完重启 dsh 生效）
 pnpm test    # node --test（103 个离线单测，覆盖路由/失败分类/熔断/状态机/注册库/批量/锁/GIF/修订/图片 Skill 治理与项目管线）
 ```
 

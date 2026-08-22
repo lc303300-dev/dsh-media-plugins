@@ -28,7 +28,7 @@ import type {} from '@deepseek-ai/dsh-fs'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { copyFile, rename } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { packageRootOf } from './shared/pkg-root.ts'
 import {
   SUPPORTED_RATIOS,
   SUPPORTED_RESOLUTIONS,
@@ -47,8 +47,8 @@ import {
   resolvePrivateRoot,
 } from './shared/private-runtime.ts'
 
-/** Bundle root: the built tool file lives at the package root. */
-const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
+/** Bundle root: the built tool file lives in dist/, so resolve from the package root. */
+const PACKAGE_ROOT = packageRootOf(import.meta.url)
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-image-gen'

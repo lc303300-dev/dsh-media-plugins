@@ -15,11 +15,11 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { access, mkdir } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { resolvePrivateRoot } from './shared/private-runtime.ts'
 import { corpusSize, resolveIndexPath } from './shared/corpus-core.ts'
 import { resolveFfmpeg } from './shared/gif-core.ts'
+import { packageRootOf } from './shared/pkg-root.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -27,7 +27,7 @@ const execFileAsync = promisify(execFile)
 export const name = 'Ws_tool-status'
 export const inject = ['tools', 'credentials']
 
-const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
+const PACKAGE_ROOT = packageRootOf(import.meta.url)
 
 export interface Config {
   privateDir?: string

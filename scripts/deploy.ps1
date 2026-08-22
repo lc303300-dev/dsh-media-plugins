@@ -1,4 +1,4 @@
-﻿# dsh-media-plugins 一键部署（对应 Codex new-machine-deploy/bootstrap-new-machine）
+# dsh-media-plugins 一键部署（对应 Codex new-machine-deploy/bootstrap-new-machine）
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy.ps1 [-SkipBuild] [-SkipSetup] [-SkipVerify] [-SkipShell]
 [CmdletBinding()]
 param(
@@ -35,7 +35,7 @@ Write-Host "[2/6] 仓库结构完整" -ForegroundColor Green
 
 # 3. 依赖 + 构建
 if (-not $SkipBuild) {
-    Write-Host "[3/6] pnpm install + build（tsdown 生成包根 *.js）..." -ForegroundColor Yellow
+    Write-Host "[3/6] pnpm install + build（tsdown 生成 dist/*.js）..." -ForegroundColor Yellow
     Push-Location $root
     try {
         & pnpm install 2>&1 | Out-Host

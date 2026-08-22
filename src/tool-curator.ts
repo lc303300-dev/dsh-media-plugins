@@ -12,8 +12,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, copyFileSync, existsSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { basename, isAbsolute, join } from 'node:path'
+import { packageRootOf } from './shared/pkg-root.ts'
 import {
   addMissingCountRules,
   buildIntakeReceipt,
@@ -53,7 +53,7 @@ type ResolvedConfig = Required<Config>
  *  Codex_Flow skill template (SKILL.md + meta.yaml + workflow.yaml); fall back
  *  to the legacy contract template for old flows. */
 function templateRoot(): string {
-  const here = dirname(fileURLToPath(import.meta.url))
+  const here = packageRootOf(import.meta.url)
   const candidates = [
     join(here, 'refs', 'codex-flow-skill-template'),
     join(here, '..', '..', 'refs', 'codex-flow-skill-template'),
