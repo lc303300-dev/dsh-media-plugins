@@ -13,6 +13,7 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { buildRevisionRequest, validateRevisionInput, validateRevisionResult } from './shared/revision-core.ts'
 import { searchCorpus, corpusSize } from './shared/corpus-core.ts'
+import { classifyVideoPromptCompleteness, completenessRequiresCorpus, authoringCorpusGateError } from './shared/video-pipeline.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-revision'
@@ -38,11 +39,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
       parameters: {
         command: {
           type: 'string',
-          enum: ['classify', 'search_corpus', 'validate_result', 'corpus_stats'],
+          enum: ['classify', 'search_corpus', 'validate_result', 'corpus_stats', 'authoring_gate'],
           required: true,
-          description: '操作：classify（分类+生成修订请求）、search_corpus（语料检索）、validate_result（校验修订结果）、corpus_stats（语料规模）。',
+          description: '操作：classify（分类+生成修订请求）、search_corpus（语料检索）、validate_result（校验修订结果）、corpus_stats（语料规模）、authoring_gate（完整/不完整判断门：不完整提示词必须已检索语料）。',
         },
-        current_prompt: { type: 'string', description: 'classify 用：当前提示词（CS Skill 首稿）。' },
+        current_prompt: { type: 'string', description: 'classify/authoring_gate 用：当前/待创作提示词。' },
         user_feedback: { type: 'string', description: 'classify 用：用户本轮修改意见。' },
         locked_context: {
           type: 'object',
@@ -53,6 +54,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         limit: { type: 'integer', description: 'search_corpus 用：返回条数上限（默认 3，契约上限 3）。' },
         result: { type: 'object', additionalProperties: true, description: 'validate_result 用：修订结果 JSON。' },
         request: { type: 'object', additionalProperties: true, description: 'validate_result 用：对应的修订请求（含 locked_context_sha256）。' },
+        media: { type: 'object', additionalProperties: true, description: 'authoring_gate 用：{images, videos, audios} 素材数量。' },
+        corpus_hits: { type: 'integer', description: 'authoring_gate 用：已检索到的语料命中数（search_corpus 结果数）。' },
       },
       output: {
         schema: {
@@ -101,6 +104,22 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         if (command === 'validate_result') {
           const check = validateRevisionResult(args.result, args.request ?? undefined)
           return { ok: check.ok, message: check.ok ? 'revision result valid' : `invalid: ${check.errors.join('; ')}`, errors: check.errors }
+        }
+        if (command === 'authoring_gate') {
+          const media = args.media ?? { images: 0, videos: 0, audios: 0 }
+          const { verdict, reasons } = classifyVideoPromptCompleteness(String(args.current_prompt ?? ''), media)
+          const requiresCorpus = completenessRequiresCorpus(verdict)
+          const hits = Number(args.corpus_hits ?? 0)
+          const err = authoringCorpusGateError(verdict, hits)
+          return {
+            ok: !err,
+            message: err ?? (requiresCorpus ? `incomplete (${reasons.join('; ')}) — corpus consulted (${hits})` : `complete — no corpus required`),
+            completeness: verdict,
+            requires_corpus: requiresCorpus,
+            reasons,
+            corpus_hits: hits,
+            errors: err ? [err] : [],
+          }
         }
         return { ok: false, message: `unknown command: ${command}` }
       },

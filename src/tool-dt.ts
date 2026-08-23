@@ -125,6 +125,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             tasks: { type: 'array' },
             matches: { type: 'array' },
             plan: { type: 'array' },
+            submission: { type: 'object', additionalProperties: true },
             summary: { type: 'object', additionalProperties: true },
           },
         },
@@ -237,6 +238,18 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           case 'subagent_tasks': {
             const taskDir = await ensureDir(join(dir, 'subagent-tasks'))
             const jobs = await loadJobs(dir)
+            // 子代理创作前必须读取的导演知识/结构参考（Codex video-director-prompt 对齐）
+            const dp = join(PACKAGE_ROOT, 'skills', 'video-director-prompt')
+            const knowledgeRefs = [
+              join(PACKAGE_ROOT, 'refs', 'director-corpus.md'),
+              join(dp, 'references', 'directing-methods.md'),
+              join(dp, 'references', 'prompt-structure.md'),
+              join(dp, 'references', 'community-techniques.md'),
+              join(dp, 'references', 'structure-guide.md'),
+            ].join('\n- ')
+            const knowledgeHint =
+              '先用 read 读取下列导演知识/结构参考再创作：\n- ' + knowledgeRefs +
+              '\n\n创作要求（务必执行）：1) 输出结构：参考素材绑定与逐张唯一语义 → 全局身份/材质/转场/音频默认项（保留"不生成音乐，仅生成音效。"）→ 逐段时间轴（每段分别写摄影机动作与主体动作、物理反馈、段末状态）→ 整体约束 → 负面约束。2) 首帧非空且空间关系明确；把抽象情绪转成可见表演（眼神/呼吸/停顿/手部动作/空间关系）。3) 运镜与主体动作分开写，每个镜头只给一个主导运镜。4) 保留有用英文术语并给中文释义。5) 输出纯中文提示词，不要包含平台/模型/分辨率/参数/标签语法。6) 不写"同上/继续上一镜"等无法独立解析的指代。'
             const tasks: Array<{ task_id: string; image: string; prompt: string }> = []
             for (let i = 0; i < manifest.materials.length; i += 1) {
               const m = manifest.materials[i]
@@ -249,7 +262,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
                 ratio: manifest.ratio,
                 model: manifest.model,
                 user_requirements: manifest.user_requirements,
-                instruction: '为这张素材编写一段可执行中文视频提示词：导演知识负责场面、镜头、表演、光色与声音；最终输出纯中文提示词，不要包含平台标签。',
+                instruction: knowledgeHint,
               }
               await atomicWriteJson(join(taskDir, `${taskId}.task.json`), task)
               jobs.tasks[taskId] = { image: m.path, status: 'pending', agent_id: null, prompt: null }
@@ -356,15 +369,24 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             if (!args.confirm) return { ok: false, message: `run_batch requires confirm=true; ${ready}/${plan.length} ready`, plan }
             const missing = plan.filter((item: any) => !item.ready)
             if (missing.length > 0) return { ok: false, message: `${missing.length} material(s) lack a confirmed prompt`, plan }
-            return {
-              ok: true,
-              message: `submission plan ready (${plan.length} item(s)): call generate_video per item with images=[material], prompt, duration=${manifest.duration}, ratio=${manifest.ratio}, model_version=${manifest.model}`,
-              plan: plan.map((item: any) => ({
+            const shared = {
+              duration: manifest.duration,
+              ratio: manifest.ratio,
+              model_version: manifest.model,
+              video_resolution: manifest.video_resolution ?? '480p',
+              video_confirmation_model: manifest.model,
+              video_confirmation_resolution: manifest.video_resolution ?? '480p',
+              video_confirmation_duration: manifest.duration,
+              surface: manifest.surface ?? 'jimeng-zh',
+              mode: manifest.mode ?? 'first-frame',
+              model_selection: manifest.model_selection,
+            }
+            // 统一管线：一次 generate_video 调用，tasks 数组逐素材，设置项在调用级共享
+            const submission: Record<string, unknown> = {
+              ...shared,
+              tasks: plan.map((item: any) => ({
                 images: [item.material],
                 prompt: item.prompt,
-                duration: manifest.duration,
-                ratio: manifest.ratio,
-                model_version: manifest.model,
                 asset_manifest: {
                   assets: [{
                     modality: 'image',
@@ -375,12 +397,13 @@ function apply(ctx: Context, config: ResolvedConfig): void {
                     primary_role: 'first_frame_reference',
                   }],
                 },
-                prompt_binding: 'ordered_cli_image_arguments',
-                surface: manifest.surface ?? 'jimeng-zh',
-                mode: manifest.mode ?? 'first-frame',
-                model_selection: manifest.model_selection,
-                resolution: manifest.video_resolution ?? '480p',
               })),
+            }
+            return {
+              ok: true,
+              message: `submission plan ready (${plan.length} task(s)): call generate_video ONCE with the shared settings below (tasks + duration/ratio/model_version/video_resolution + video_confirmation_*)`,
+              submission,
+              plan: submission.tasks,
             }
           }
           case 'update_forge_matches': {

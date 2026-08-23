@@ -2,11 +2,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   VIDEO_EXECUTION_MODES,
+  VIDEO_COMMANDS,
   resolveVideoModel,
   resolveVideoResolution,
   limitsFor,
   normalizeModel,
   selectVideoSubcommand,
+  selectVideoCommand,
+  promptPreferences,
+  requiresExplicitSelectionSource,
+  isSupportedVideoModel,
 } from '../src/shared/video-policy.ts'
 
 test('model policy: default 2.5; ordinary explicit 2.0-series normalizes to seedance2.0_vip', () => {
@@ -60,4 +65,49 @@ test('model aliases auto-complete the seedance prefix; unknown passthrough', () 
 
 test('execution modes are exactly the three contract values', () => {
   assert.deepEqual([...VIDEO_EXECUTION_MODES], ['production', 'production_submit_only', 'test_submit_only'])
+})
+
+test('command set is text2video/image2video/frames2video/multimodal2video', () => {
+  assert.deepEqual([...VIDEO_COMMANDS], ['text2video', 'image2video', 'frames2video', 'multimodal2video'])
+})
+
+test('selectVideoCommand: auto-selection duplicates upstream video_router', () => {
+  assert.equal(selectVideoCommand({ prompt: 'a cat runs', images: 0, videos: 0, audios: 0 }), 'text2video')
+  assert.equal(selectVideoCommand({ prompt: 'p', images: 1, videos: 0, audios: 0 }), 'multimodal2video')
+  assert.equal(selectVideoCommand({ prompt: 'p', images: 3, videos: 0, audios: 0 }), 'multimodal2video')
+  assert.equal(selectVideoCommand({ prompt: 'p', images: 0, videos: 1, audios: 0 }), 'multimodal2video')
+  assert.equal(selectVideoCommand({ prompt: 'p', images: 0, videos: 0, audios: 1 }), 'multimodal2video')
+  assert.equal(selectVideoCommand({ prompt: 'p 首尾帧 使用', images: 2, videos: 0, audios: 0 }), 'frames2video')
+  assert.equal(selectVideoCommand({ prompt: 'p first last frame', images: 2, videos: 0, audios: 0 }), 'frames2video')
+  // two images WITHOUT first/last semantics stay multimodal
+  assert.equal(selectVideoCommand({ prompt: 'p 两个参考', images: 2, videos: 0, audios: 0 }), 'multimodal2video')
+})
+
+test('selectVideoCommand: explicit video_command override; legacy multiframe rejected', () => {
+  assert.equal(selectVideoCommand({ prompt: 'p', images: 1, videos: 0, audios: 0, video_command: 'image2video' }), 'image2video')
+  assert.throws(() => selectVideoCommand({ prompt: 'p', images: 2, videos: 0, audios: 0, video_command: 'multiframe2video' }), /disabled legacy/)
+  assert.throws(() => selectVideoCommand({ prompt: 'p', images: 0, videos: 0, audios: 0, video_command: 'nope' }), /Unsupported video command/)
+})
+
+test('promptPreferences: ratio and labelled/bare duration hints, excluding terminal noise', () => {
+  assert.deepEqual(promptPreferences('16:9 全片'), { ratio: '16:9', duration: undefined })
+  assert.deepEqual(promptPreferences('视频时长：8 秒，夜景'), { ratio: undefined, duration: 8 })
+  assert.deepEqual(promptPreferences('0-3 秒 特写，一共 12 秒'), { ratio: undefined, duration: 12 })
+  // terminal telemetry ("Wall time: 0.6 seconds") must never be read as a generation duration
+  assert.deepEqual(promptPreferences('Wall time: 0.6 seconds, 16:9'), { ratio: '16:9', duration: undefined })
+})
+
+test('requiresExplicitSelectionSource: any non-default 2.0-family model requires user_explicit', () => {
+  assert.equal(requiresExplicitSelectionSource('seedance2.5', 'production'), false)
+  assert.equal(requiresExplicitSelectionSource('seedance2.0_vip', 'production'), true)
+  assert.equal(requiresExplicitSelectionSource('seedance2.0', 'production'), true)
+  assert.equal(requiresExplicitSelectionSource('seedance2.0_vip', 'test_submit_only'), false)
+})
+
+test('isSupportedVideoModel: only the documented CLI video models are accepted', () => {
+  assert.equal(isSupportedVideoModel('seedance2.5'), true)
+  assert.equal(isSupportedVideoModel('seedance2.0_vip'), true)
+  assert.equal(isSupportedVideoModel('seedance2.0mini'), true)
+  assert.equal(isSupportedVideoModel('seedance3.0'), false)
+  assert.equal(isSupportedVideoModel('seedance1.5pro'), false)
 })

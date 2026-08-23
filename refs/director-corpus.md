@@ -3,6 +3,13 @@
 > 平台中立知识：用于编写/修订中文视频提示词时的结构参考。资料只回答"怎么拍"；
 > 模型选择、标签语法、时长与分辨率限制交给下游适配器。语料/来源的模型版本
 > 只是 provenance 元数据，绝不用于选择实际生成模型。
+>
+> **完整导演创作层请加载 `video-director-prompt` 技能**（`skill` 工具），按其
+> `references` 路由：`directing-methods.md`（可视化/场面调度/表演/光色/物理/声音，
+> 每次必读）、`prompt-structure.md`（提示词区块/剪辑/素材语义/交付格式）、
+> `community-techniques.md`（特殊视角/高速/复杂转场/极端 FOV/社区实战技巧）、
+> `structure-guide.md`（seedance-forge 结构指南），并对照其"交付前检查清单"。
+> 本文件保留 DSH 专用的语料检索与证据分级规则，作为速查索引。
 
 ## 一、导演创作工作流（video-director-prompt 移植）
 
