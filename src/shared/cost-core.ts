@@ -131,3 +131,28 @@ export function stepCost(usage: StepUsage, price: CostPrice): StepCost {
 export function zeroCost(): StepCost {
   return { input: 0, cacheHit: 0, cacheWrite: 0, output: 0, total: 0 }
 }
+
+/** Bundled fallback row (USD/token) for a DeepSeek-style chat model. */
+export const DEEPSEEK_FALLBACK_ROW: LitellmPriceRow = {
+  input_cost_per_token: DEFAULT_BASE_PRICE.inputMiss / PER_MILLION / DEFAULT_FX_RMB_PER_USD,
+  input_cost_per_token_cache_hit: DEFAULT_BASE_PRICE.cacheHit / PER_MILLION / DEFAULT_FX_RMB_PER_USD,
+  input_cost_per_token_cache_write: DEFAULT_BASE_PRICE.cacheWrite / PER_MILLION / DEFAULT_FX_RMB_PER_USD,
+  output_cost_per_token: DEFAULT_BASE_PRICE.output / PER_MILLION / DEFAULT_FX_RMB_PER_USD,
+}
+
+/** Default litellm price-table URL (community-maintained USD/token). */
+export const DEFAULT_LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
+
+/** Find the closest litellm row for a model id (exact, then prefix/substring). */
+export function findModelRow(
+  table: Readonly<Record<string, LitellmPriceRow>>,
+  model: string | undefined,
+): LitellmPriceRow | undefined {
+  if (model === undefined) return undefined
+  if (table[model] !== undefined) return table[model]
+  const lower = model.toLowerCase()
+  for (const [id, row] of Object.entries(table)) {
+    if (id.toLowerCase().includes(lower) || lower.includes(id.toLowerCase())) return row
+  }
+  return undefined
+}

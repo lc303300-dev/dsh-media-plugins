@@ -65,6 +65,10 @@
 
     - id: Ws_tool-cost
       name: dsh-media-plugins/Ws_tool-cost
+      config:
+        # 外网（litellm 价表）走本机代理；每 6 小时自动刷新一次官方价。
+        proxyUrl: 'http://127.0.0.1:7897'
+        refreshMs: 21600000
 
     - id: Ws_completion-notify
       name: dsh-media-plugins/Ws_completion-notify
