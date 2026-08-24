@@ -20,6 +20,7 @@ export default defineConfig({
     'tool-preview': 'src/tool-preview.ts',
     'tool-grid-split': 'src/tool-grid-split.ts',
     'tool-status': 'src/tool-status.ts',
+    'tool-cost': 'src/tool-cost.ts',
     'notify': 'src/notify.ts',
   },
   format: ['esm'],

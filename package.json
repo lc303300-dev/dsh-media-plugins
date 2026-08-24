@@ -40,6 +40,8 @@
     "./Ws_tool-grid-split": "./dist/tool-grid-split.js",
     "./tool-status": "./dist/tool-status.js",
     "./Ws_tool-status": "./dist/tool-status.js",
+    "./tool-cost": "./dist/tool-cost.js",
+    "./Ws_tool-cost": "./dist/tool-cost.js",
     "./notify": "./dist/notify.js",
     "./Ws_completion-notify": "./dist/notify.js",
     "./package.json": "./package.json"

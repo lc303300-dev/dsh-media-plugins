@@ -63,5 +63,8 @@
     - id: Ws_tool-status
       name: dsh-media-plugins/Ws_tool-status
 
+    - id: Ws_tool-cost
+      name: dsh-media-plugins/Ws_tool-cost
+
     - id: Ws_completion-notify
       name: dsh-media-plugins/Ws_completion-notify
