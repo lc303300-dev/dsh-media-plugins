@@ -153,7 +153,7 @@ index 0000000000..f20f74c772
 +    breakdownLine(t('cost.cacheHit'), cacheHitTokens, costValue.cacheHit),
 +    breakdownLine(t('cost.cacheWrite'), cacheWriteTokens, costValue.cacheWrite),
 +    breakdownLine(t('cost.output'), outputTokens, costValue.output),
-+    `${t('cost.windowNow')} ${t(offPeak ? 'cost.offPeak' : 'cost.peak')}${offPeak ? `（${t('cost.offPeakNote')}）` : ''}`,
++    `${t('cost.windowNow')} ${t(offPeak ? 'cost.offPeak' : 'cost.peak')}${offPeak ? `锛?{t('cost.offPeakNote')}锛塦 : ''}`,
 +    `${t('cost.totalLabel')} ${formatRmb(costValue.total)}`,
 +  ].join('\n')
 +
@@ -170,7 +170,7 @@ index 0000000000..f20f74c772
 +          {t(offPeak ? 'cost.offPeakShort' : 'cost.peakShort')}
 +        </span>
 +        <span className={css.total}>{formatRmb(costValue.total)}</span>
-+        <span className={css.sep} aria-hidden>·</span>
++        <span className={css.sep} aria-hidden>路</span>
 +        <span className={css.summary}>{summary}</span>
 +      </button>
 +    </Tooltip>
@@ -220,7 +220,7 @@ index 0000000000..59ee914bf6
 +// Window info is a DISPLAY mirror of the host's DEFAULT_WINDOWS in
 +// packages/llm/token-meter/src/cost-pricing.ts. Keep in sync: the authoritative
 +// per-request pricing rides the host `sessionCost` projection, so this only
-+// labels the CURRENT instant (峰/谷) for the user's awareness.
++// labels the CURRENT instant (宄?璋? for the user's awareness.
 +const BEIJING_UTC_OFFSET_MINUTES = 480
 +const OFF_PEAK_START_MINUTE = 30
 +const OFF_PEAK_END_MINUTE = 510
@@ -240,14 +240,14 @@ index 0000000000..59ee914bf6
 + * four decimals below it so a sub-cent session still shows a real figure.
 + */
 +export function formatRmb(yuan: number): string {
-+  if (!Number.isFinite(yuan) || yuan <= 0) return '¥0'
-+  if (yuan >= 0.01) return `¥${yuan.toFixed(2)}`
-+  return `¥${yuan.toFixed(4)}`
++  if (!Number.isFinite(yuan) || yuan <= 0) return '楼0'
++  if (yuan >= 0.01) return `楼${yuan.toFixed(2)}`
++  return `楼${yuan.toFixed(4)}`
 +}
 +
 +/** One-line hover breakdown for a token bucket. */
 +export function breakdownLine(label: string, tokensText: string, yuan: number): string {
-+  return `${label} ${tokensText} · ${formatRmb(yuan)}`
++  return `${label} ${tokensText} 路 ${formatRmb(yuan)}`
 +}
 +
 +/** Legacy per-bucket compute used only as a display fallback (see cost-pricing on the host). */
@@ -268,31 +268,31 @@ index f4e7a7c59a..810d442d8e 100644
 +++ b/packages/client/ui-conversation/src/client/locales.ts
 @@ -62,6 +62,22 @@ export const zh = {
    'stats.tokensPerSecond': '{throughput} tok/s',
-   'stats.cacheHit': '缓存命中 {percent}%',
-   'stats.tokens': '输入 {input} tok · 输出 {output} tok',
-+  'cost.aria': '已消耗',
-+  'cost.totalLabel': '总计',
-+  'cost.inputShort': '输入',
-+  'cost.cacheHitShort': '命中',
-+  'cost.cacheWriteShort': '写入',
-+  'cost.outputShort': '输出',
-+  'cost.input': '输入（未命中）',
-+  'cost.cacheHit': '缓存命中',
-+  'cost.cacheWrite': '缓存写入',
-+  'cost.output': '输出',
-+  'cost.peakShort': '峰',
-+  'cost.offPeakShort': '谷',
-+  'cost.peak': '峰时',
-+  'cost.offPeak': '谷时',
-+  'cost.windowNow': '当前时段',
-+  'cost.offPeakNote': '谷时折扣：输入/缓存/写入 ×0.25 · 输出 ×0.125',
-   'settings.enter.title': '繁忙时 Enter 键行为',
-   'settings.enter.description': '仅在智能体运行时生效；Cmd/Ctrl+Enter 使用另一行为',
-   'settings.enter.queue': '排队发送',
+   'stats.cacheHit': '缂撳瓨鍛戒腑 {percent}%',
+   'stats.tokens': '杈撳叆 {input} tok 路 杈撳嚭 {output} tok',
++  'cost.aria': '宸叉秷鑰?,
++  'cost.totalLabel': '鎬昏',
++  'cost.inputShort': '杈撳叆',
++  'cost.cacheHitShort': '鍛戒腑',
++  'cost.cacheWriteShort': '鍐欏叆',
++  'cost.outputShort': '杈撳嚭',
++  'cost.input': '杈撳叆锛堟湭鍛戒腑锛?,
++  'cost.cacheHit': '缂撳瓨鍛戒腑',
++  'cost.cacheWrite': '缂撳瓨鍐欏叆',
++  'cost.output': '杈撳嚭',
++  'cost.peakShort': '宄?,
++  'cost.offPeakShort': '璋?,
++  'cost.peak': '宄版椂',
++  'cost.offPeak': '璋锋椂',
++  'cost.windowNow': '褰撳墠鏃舵',
++  'cost.offPeakNote': '璋锋椂鎶樻墸锛氳緭鍏?缂撳瓨/鍐欏叆 脳0.25 路 杈撳嚭 脳0.125',
+   'settings.enter.title': '绻佸繖鏃?Enter 閿涓?,
+   'settings.enter.description': '浠呭湪鏅鸿兘浣撹繍琛屾椂鐢熸晥锛汣md/Ctrl+Enter 浣跨敤鍙︿竴琛屼负',
+   'settings.enter.queue': '鎺掗槦鍙戦€?,
 @@ -239,6 +255,22 @@ export const en = {
    'stats.tokensPerSecond': '{throughput} tok/s',
    'stats.cacheHit': 'Cache hit {percent}%',
-   'stats.tokens': 'Input {input} tok · Output {output} tok',
+   'stats.tokens': 'Input {input} tok 路 Output {output} tok',
 +  'cost.aria': 'Spent',
 +  'cost.totalLabel': 'Total',
 +  'cost.inputShort': 'in',
@@ -308,7 +308,7 @@ index f4e7a7c59a..810d442d8e 100644
 +  'cost.peak': 'Peak',
 +  'cost.offPeak': 'Off-peak',
 +  'cost.windowNow': 'Window',
-+  'cost.offPeakNote': 'off-peak: input/cache/write ×0.25 · output ×0.125',
++  'cost.offPeakNote': 'off-peak: input/cache/write 脳0.25 路 output 脳0.125',
    'settings.enter.title': 'Enter behavior while busy',
    'settings.enter.description': 'Busy only; Cmd/Ctrl+Enter uses the other behavior',
    'settings.enter.queue': 'Queue',
@@ -352,18 +352,18 @@ index 0000000000..4e51f59c1c
 +
 +describe('formatRmb', () => {
 +  it('shows two decimals from a cent upward', () => {
-+    expect(formatRmb(0)).toBe('¥0')
-+    expect(formatRmb(1.234)).toBe('¥1.23')
-+    expect(formatRmb(0.5)).toBe('¥0.50')
++    expect(formatRmb(0)).toBe('楼0')
++    expect(formatRmb(1.234)).toBe('楼1.23')
++    expect(formatRmb(0.5)).toBe('楼0.50')
 +  })
 +  it('shows four decimals below a cent', () => {
-+    expect(formatRmb(0.0071)).toBe('¥0.0071')
++    expect(formatRmb(0.0071)).toBe('楼0.0071')
 +  })
 +})
 +
 +describe('breakdownLine', () => {
 +  it('joins label, token text, and yuan amount', () => {
-+    expect(breakdownLine('输出', '1.2K', 0.0096)).toBe('输出 1.2K · ¥0.0096')
++    expect(breakdownLine('杈撳嚭', '1.2K', 0.0096)).toBe('杈撳嚭 1.2K 路 楼0.0096')
 +  })
 +})
 diff --git a/packages/llm/token-meter/src/cost-pricing.ts b/packages/llm/token-meter/src/cost-pricing.ts
@@ -425,7 +425,7 @@ index 0000000000..62f6c6e38b
 +
 +const PER_MILLION = 1_000_000
 +
-+/** Default USD→CNY rate; override with pricing.fxRate config or auto-refresh. */
++/** Default USD鈫扖NY rate; override with pricing.fxRate config or auto-refresh. */
 +export const DEFAULT_FX_RMB_PER_USD = 7.2
 +
 +/** Convert a litellm USD-per-token row to RMB per million tokens. */
@@ -457,7 +457,7 @@ index 0000000000..62f6c6e38b
 +  readonly outputFactor: number
 +}
 +
-+/** Default DeepSeek-style off-peak window (00:30–08:30, Beijing). Editable. */
++/** Default DeepSeek-style off-peak window (00:30鈥?8:30, Beijing). Editable. */
 +export const DEFAULT_WINDOWS: readonly TimeWindow[] = [
 +  { startMinute: 30, endMinute: 510, inputFactor: 0.25, cacheHitFactor: 0.25, cacheWriteFactor: 0.25, outputFactor: 0.125 },
 +]
@@ -542,7 +542,7 @@ index 2fa53f78f1..1c3e75abcd 100644
 +  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_PRICING_REFRESH_MS
 +}
 +
-+/** USD→CNY rate; env `DSH_COST_FX_RMB` overrides the default. */
++/** USD鈫扖NY rate; env `DSH_COST_FX_RMB` overrides the default. */
 +function pricingFxRmbPerUsd(): number | undefined {
 +  const raw = Number(process.env.DSH_COST_FX_RMB)
 +  return Number.isFinite(raw) && raw > 0 ? raw : undefined
@@ -558,7 +558,7 @@ index 2fa53f78f1..1c3e75abcd 100644
 +    // Incremental RMB cost priced per request instant. The resolver starts on
 +    // the bundled DeepSeek fallback table, then swaps in the litellm price
 +    // table when it is fetched over the proxy (offline-safe). The fold is
-+    // incremental (①): a refresh prices only NEW requests, never history.
++    // incremental (鈶?: a refresh prices only NEW requests, never history.
 +    // Startup pull + periodic refresh (default 6h) keep it following the
 +    // latest litellm prices; both are overridable via env.
 +    const fx = pricingFxRmbPerUsd()
@@ -629,7 +629,7 @@ index 0000000000..9b1a2c3a86
 +  'deepseek-v4-flash-vision-exp': 'deepseek-v4-flash',
 +}
 +
-+/** Parse a litellm JSON response into a model-id → row table. */
++/** Parse a litellm JSON response into a model-id 鈫?row table. */
 +export function parseLitellmTable(raw: string): LitellmTable {
 +  const parsed: unknown = JSON.parse(raw)
 +  if (typeof parsed !== 'object' || parsed === null) return {}
@@ -662,7 +662,7 @@ index 0000000000..9b1a2c3a86
 +  return undefined
 +}
 +
-+/** Build a static resolver: row→RMB/M via FX, then time-window discount. */
++/** Build a static resolver: row鈫扲MB/M via FX, then time-window discount. */
 +export function buildCostPriceAt(config: PricingConfig): CostPriceAt {
 +  const fx = config.fxRmbPerUsd ?? DEFAULT_FX_RMB_PER_USD
 +  const windows = config.windows ?? DEFAULT_WINDOWS
@@ -945,7 +945,7 @@ index 0000000000..2c283e414f
 + * wall-clock instant, using a price resolver injected at registration time. The
 + * fold is INCREMENTAL: a previously-seen turn/step is replaced (not re-added),
 + * so a repeated final-usage sample never double counts, and a price-table
-+ * refresh never rewrites history (① 增量计费).
++ * refresh never rewrites history (鈶?澧為噺璁¤垂).
 + *
 + * @module @deepseek-ai/dsh-token-meter/session-cost-projection
 + */
@@ -1118,7 +1118,7 @@ index 0000000000..2607a28330
 +})
 +
 +describe('windowAt / priceAtTs', () => {
-+  it('applies the off-peak discount inside the window (Beijing 00:30–08:30)', () => {
++  it('applies the off-peak discount inside the window (Beijing 00:30鈥?8:30)', () => {
 +    expect(windowAt(OFF_PEAK_MS)).toBeDefined()
 +    const discounted = priceAtTs(BASIC_PRICE, OFF_PEAK_MS)
 +    expect(discounted.inputMiss).toBeCloseTo(0.5)
@@ -1149,7 +1149,7 @@ index 0000000000..2607a28330
 +    expect(def.wire!.view(state).total).toBe(0)
 +  })
 +
-+  it('adds cost for a new step (incremental ①)', () => {
++  it('adds cost for a new step (incremental 鈶?', () => {
 +    const def = buildSessionCostProjection(priceAt)
 +    let state = def.apply(def.init(), header('m'))
 +    const cost = def.wire!.view(def.apply(state, usageEvt(1, 1, USAGE, PEAK_MS)))

@@ -1,4 +1,5 @@
-# Keep patch/diff files LF-only so they remain valid `git apply` input on any
-# machine, regardless of core.autocrlf (which would otherwise turn them CRLF).
-*.patch text eol=lf
-*.diff text eol=lf
+# Patch/diff files must stay byte-identical LF so they remain valid
+# `git apply` input on any machine. `-text` (= no EOL conversion / autocrlf
+# bypass) stores and checks them out verbatim; leave the file LF on disk.
+*.patch -text
+*.diff -text
