@@ -1,0 +1,1220 @@
+diff --git a/packages/client/ui-conversation/src/client/apply.ts b/packages/client/ui-conversation/src/client/apply.ts
+index 7920104d68..605fba650e 100644
+--- a/packages/client/ui-conversation/src/client/apply.ts
++++ b/packages/client/ui-conversation/src/client/apply.ts
+@@ -29,6 +29,7 @@ import { EnterBehaviorRow } from './settings/EnterBehaviorRow.tsx'
+ import type { EnterBehaviorRowInjected } from './settings/EnterBehaviorRow.tsx'
+ import { ChatView } from './chat/ChatView.tsx'
+ import { StatsLine } from './chat/StatsLine.tsx'
++import { CostWindow } from './chat/CostWindow.tsx'
+ import { ApprovalPanel } from './skeleton/ApprovalPanel.tsx'
+ import { todoDockEntry } from './skeleton/TodoPanel.tsx'
+ import { queueDockEntry } from './queue/QueueDock.tsx'
+@@ -430,6 +431,15 @@ export function apply(ctx: Context): void {
+   // Session stats stick with the composer (composer.dock = stats-line family).
+   slots.register({ name: 'conversation.composer.dock', id: 'stats', order: 0, locale: NS }, StatsLine)
+ 
++  // Session RMB cost readout in the header action row: compact tokens + total
++  // with a hover per-bucket breakdown (durable sessionCost projection).
++  slots.register({
++    name: 'conversation.session.header.actions',
++    id: 'cost',
++    order: 40,
++    locale: NS,
++  }, CostWindow)
++
+   // Class-plugin mount (packages/AGENTS.md service form): the service
+   // registers itself as `conversation` and lives on its own child fiber.
+   // Presentation registrants depend directly on their slot declarations;
+diff --git a/packages/client/ui-conversation/src/client/chat/CostWindow.module.css b/packages/client/ui-conversation/src/client/chat/CostWindow.module.css
+new file mode 100644
+index 0000000000..0356fd6a14
+--- /dev/null
++++ b/packages/client/ui-conversation/src/client/chat/CostWindow.module.css
+@@ -0,0 +1,61 @@
++/* Session-header cost pill: compact readout with a hover breakdown. */
++
++.trigger {
++  display: inline-flex;
++  align-items: center;
++  gap: 4px;
++  min-height: 28px;
++  padding: 3px 8px;
++  border: 1px solid transparent;
++  border-radius: 6px;
++  background: transparent;
++  color: var(--dsw-alias-label-secondary);
++  font-size: 12px;
++  line-height: 18px;
++  font-variant-numeric: tabular-nums;
++  white-space: nowrap;
++  cursor: pointer;
++}
++
++.trigger:hover,
++.trigger:focus-visible {
++  border-color: var(--dsw-alias-border-l2);
++  background: var(--dsw-alias-fill-l2);
++  color: var(--dsw-alias-label-primary);
++}
++
++.badgePeak,
++.badgeOffPeak {
++  flex: none;
++  padding: 1px 5px;
++  border-radius: 5px;
++  font-size: 11px;
++  line-height: 16px;
++  font-weight: 600;
++  background: var(--dsw-alias-fill-l2);
++}
++
++.badgePeak {
++  color: var(--dsw-alias-label-secondary);
++}
++
++.badgeOffPeak {
++  color: var(--dsw-alias-label-primary);
++}
++
++.total {
++  flex: none;
++  font-weight: 600;
++  color: var(--dsw-alias-label-primary);
++}
++
++.sep {
++  flex: none;
++  color: var(--dsw-alias-label-tertiary);
++}
++
++.summary {
++  flex: none;
++  color: var(--dsw-alias-label-tertiary);
++  font-variant-numeric: tabular-nums;
++}
+diff --git a/packages/client/ui-conversation/src/client/chat/CostWindow.tsx b/packages/client/ui-conversation/src/client/chat/CostWindow.tsx
+new file mode 100644
+index 0000000000..f20f74c772
+--- /dev/null
++++ b/packages/client/ui-conversation/src/client/chat/CostWindow.tsx
+@@ -0,0 +1,77 @@
++// Session-header cost window: a compact pill that shows the current session's
++// billed tokens (input / cache-hit / cache-write / output) and RMB total, with
++// a hover breakdown of the RMB cost per bucket. RMB rides the durable
++// `sessionCost` projection (priced per request instant on the host); token
++// counts ride `tokenUsage`.
++
++import { useMemo } from 'react'
++import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
++import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
++// Type-only: pulls the conversation slot/keys SlotMap augmentation for PropsRuntime.
++import type {} from '../contract/slots.ts'
++import { NS } from '../locales.ts'
++import { breakdownLine, formatRmb, isOffPeakNow, zeroCost } from './cost.ts'
++import { formatTokens } from './StatsLine.tsx'
++import css from './CostWindow.module.css'
++
++/** Full props for the session-header cost window. */
++export type CostWindowProps =
++  PropsRuntime<'conversation.session.header.actions'> & PropsLocale<typeof NS>
++
++/**
++ * One click-through cost readout for the open session.
++ * @param props - runtime session kit (sessionId, useProjection) plus the locale seat.
++ * @returns the pill (and its hover breakdown), or null when nothing is billed yet.
++ */
++export function CostWindow({ useProjection, t }: CostWindowProps) {
++  const usage = useProjection('tokenUsage')
++  const cost = useProjection('sessionCost')
++  const costValue = useMemo(() => cost ?? zeroCost(), [cost])
++
++  if (usage === undefined || cost === undefined) return null
++
++  const inputTokens = formatTokens(usage.uncachedInputTokens ?? 0)
++  const cacheHitTokens = formatTokens(usage.cacheReadTokens ?? 0)
++  const cacheWriteTokens = formatTokens(usage.cacheWriteTokens ?? 0)
++  const outputTokens = formatTokens(usage.outputTokens ?? 0)
++  // Current peak/off-peak (display-only label; the authoritative per-request
++  // pricing rides the host sessionCost projection).
++  const offPeak = isOffPeakNow()
++
++  // Compact always-visible summary: the four token counts plus the total RMB.
++  const summary = [
++    `${t('cost.inputShort')}${inputTokens}`,
++    `${t('cost.cacheHitShort')}${cacheHitTokens}`,
++    `${t('cost.cacheWriteShort')}${cacheWriteTokens}`,
++    `${t('cost.outputShort')}${outputTokens}`,
++  ].join(' / ')
++
++  // Hover breakdown: per-bucket RMB, current window, then the total.
++  const breakdown = [
++    breakdownLine(t('cost.input'), inputTokens, costValue.input),
++    breakdownLine(t('cost.cacheHit'), cacheHitTokens, costValue.cacheHit),
++    breakdownLine(t('cost.cacheWrite'), cacheWriteTokens, costValue.cacheWrite),
++    breakdownLine(t('cost.output'), outputTokens, costValue.output),
++    `${t('cost.windowNow')} ${t(offPeak ? 'cost.offPeak' : 'cost.peak')}${offPeak ? `（${t('cost.offPeakNote')}）` : ''}`,
++    `${t('cost.totalLabel')} ${formatRmb(costValue.total)}`,
++  ].join('\n')
++
++  const ariaLabel = `${t('cost.aria')} ${summary} ${t('cost.totalLabel')} ${formatRmb(costValue.total)}`
++
++  return (
++    <Tooltip label={breakdown} side="bottom" delayMs={300} maxWidth={280}>
++      <button
++        type="button"
++        className={css.trigger}
++        aria-label={ariaLabel}
++      >
++        <span className={offPeak ? css.badgeOffPeak : css.badgePeak}>
++          {t(offPeak ? 'cost.offPeakShort' : 'cost.peakShort')}
++        </span>
++        <span className={css.total}>{formatRmb(costValue.total)}</span>
++        <span className={css.sep} aria-hidden>·</span>
++        <span className={css.summary}>{summary}</span>
++      </button>
++    </Tooltip>
++  )
++}
+diff --git a/packages/client/ui-conversation/src/client/chat/cost.ts b/packages/client/ui-conversation/src/client/chat/cost.ts
+new file mode 100644
+index 0000000000..59ee914bf6
+--- /dev/null
++++ b/packages/client/ui-conversation/src/client/chat/cost.ts
+@@ -0,0 +1,80 @@
++/**
++ * Session RMB cost display helpers for the header cost window.
++ *
++ * The host `sessionCost` projection is the authoritative per-request cost; this
++ * module only formats it (RMB + breakdown lines) and mirrors the peak/off-peak
++ * window label for the display. Keep the window constants in sync with the
++ * host defaults in packages/llm/token-meter/src/cost-pricing.ts.
++ */
++
++import type { TokenUsageProjection } from '@deepseek-ai/dsh-token-meter/client'
++
++/** RMB per million tokens, one bucket per billed token class. */
++export interface CostPrice {
++  readonly inputMiss: number
++  readonly cacheHit: number
++  readonly cacheWrite: number
++  readonly output: number
++}
++
++/** One session's cost in yuan, split by bucket. */
++export interface SessionCost {
++  readonly input: number
++  readonly cacheHit: number
++  readonly cacheWrite: number
++  readonly output: number
++  readonly total: number
++}
++
++const PER_MILLION = 1_000_000
++
++/** Zero session cost (display fallback before any projection value arrives). */
++export function zeroCost(): SessionCost {
++  return { input: 0, cacheHit: 0, cacheWrite: 0, output: 0, total: 0 }
++}
++
++// Window info is a DISPLAY mirror of the host's DEFAULT_WINDOWS in
++// packages/llm/token-meter/src/cost-pricing.ts. Keep in sync: the authoritative
++// per-request pricing rides the host `sessionCost` projection, so this only
++// labels the CURRENT instant (峰/谷) for the user's awareness.
++const BEIJING_UTC_OFFSET_MINUTES = 480
++const OFF_PEAK_START_MINUTE = 30
++const OFF_PEAK_END_MINUTE = 510
++
++/**
++ * Whether `nowMs` falls in the (mirrored) off-peak window.
++ * @param nowMs - wall-clock epoch ms; defaults to the current time.
++ * @returns true when an off-peak discount applies right now.
++ */
++export function isOffPeakNow(nowMs: number = Date.now()): boolean {
++  const minute = Math.floor(((nowMs / 60_000) + BEIJING_UTC_OFFSET_MINUTES) % 1440 + 1440) % 1440
++  return minute >= OFF_PEAK_START_MINUTE && minute < OFF_PEAK_END_MINUTE
++}
++
++/**
++ * Format a yuan amount compactly: two decimals once the value reaches a cent,
++ * four decimals below it so a sub-cent session still shows a real figure.
++ */
++export function formatRmb(yuan: number): string {
++  if (!Number.isFinite(yuan) || yuan <= 0) return '¥0'
++  if (yuan >= 0.01) return `¥${yuan.toFixed(2)}`
++  return `¥${yuan.toFixed(4)}`
++}
++
++/** One-line hover breakdown for a token bucket. */
++export function breakdownLine(label: string, tokensText: string, yuan: number): string {
++  return `${label} ${tokensText} · ${formatRmb(yuan)}`
++}
++
++/** Legacy per-bucket compute used only as a display fallback (see cost-pricing on the host). */
++export function computeCost(usage: TokenUsageProjection | undefined, price: CostPrice): SessionCost {
++  const u = usage ?? { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
++  const input = u.uncachedInputTokens * price.inputMiss / PER_MILLION
++  const cacheHit = u.cacheReadTokens * price.cacheHit / PER_MILLION
++  const cacheWrite = u.cacheWriteTokens * price.cacheWrite / PER_MILLION
++  const output = u.outputTokens * price.output / PER_MILLION
++  return { input, cacheHit, cacheWrite, output, total: input + cacheHit + cacheWrite + output }
++}
++
++/** Default full-price RMB/M table (mirror of the host default). */
++export const DEFAULT_PRICE: CostPrice = { inputMiss: 2, cacheHit: 0.5, cacheWrite: 0.5, output: 8 }
+diff --git a/packages/client/ui-conversation/src/client/locales.ts b/packages/client/ui-conversation/src/client/locales.ts
+index f4e7a7c59a..810d442d8e 100644
+--- a/packages/client/ui-conversation/src/client/locales.ts
++++ b/packages/client/ui-conversation/src/client/locales.ts
+@@ -62,6 +62,22 @@ export const zh = {
+   'stats.tokensPerSecond': '{throughput} tok/s',
+   'stats.cacheHit': '缓存命中 {percent}%',
+   'stats.tokens': '输入 {input} tok · 输出 {output} tok',
++  'cost.aria': '已消耗',
++  'cost.totalLabel': '总计',
++  'cost.inputShort': '输入',
++  'cost.cacheHitShort': '命中',
++  'cost.cacheWriteShort': '写入',
++  'cost.outputShort': '输出',
++  'cost.input': '输入（未命中）',
++  'cost.cacheHit': '缓存命中',
++  'cost.cacheWrite': '缓存写入',
++  'cost.output': '输出',
++  'cost.peakShort': '峰',
++  'cost.offPeakShort': '谷',
++  'cost.peak': '峰时',
++  'cost.offPeak': '谷时',
++  'cost.windowNow': '当前时段',
++  'cost.offPeakNote': '谷时折扣：输入/缓存/写入 ×0.25 · 输出 ×0.125',
+   'settings.enter.title': '繁忙时 Enter 键行为',
+   'settings.enter.description': '仅在智能体运行时生效；Cmd/Ctrl+Enter 使用另一行为',
+   'settings.enter.queue': '排队发送',
+@@ -239,6 +255,22 @@ export const en = {
+   'stats.tokensPerSecond': '{throughput} tok/s',
+   'stats.cacheHit': 'Cache hit {percent}%',
+   'stats.tokens': 'Input {input} tok · Output {output} tok',
++  'cost.aria': 'Spent',
++  'cost.totalLabel': 'Total',
++  'cost.inputShort': 'in',
++  'cost.cacheHitShort': 'cache',
++  'cost.cacheWriteShort': 'write',
++  'cost.outputShort': 'out',
++  'cost.input': 'Input (uncached)',
++  'cost.cacheHit': 'Cache hit',
++  'cost.cacheWrite': 'Cache write',
++  'cost.output': 'Output',
++  'cost.peakShort': 'peak',
++  'cost.offPeakShort': 'off',
++  'cost.peak': 'Peak',
++  'cost.offPeak': 'Off-peak',
++  'cost.windowNow': 'Window',
++  'cost.offPeakNote': 'off-peak: input/cache/write ×0.25 · output ×0.125',
+   'settings.enter.title': 'Enter behavior while busy',
+   'settings.enter.description': 'Busy only; Cmd/Ctrl+Enter uses the other behavior',
+   'settings.enter.queue': 'Queue',
+diff --git a/packages/client/ui-conversation/tests/cost.client.spec.ts b/packages/client/ui-conversation/tests/cost.client.spec.ts
+new file mode 100644
+index 0000000000..4e51f59c1c
+--- /dev/null
++++ b/packages/client/ui-conversation/tests/cost.client.spec.ts
+@@ -0,0 +1,48 @@
++// Session RMB cost math: bucket folding under the default price table and the
++// compact RMB formatter.
++
++import { describe, expect, it } from 'vitest'
++import type { TokenUsageProjection } from '@deepseek-ai/dsh-token-meter/client'
++import { breakdownLine, computeCost, DEFAULT_PRICE, formatRmb } from '../src/client/chat/cost.ts'
++
++function usage(partial: Partial<TokenUsageProjection>): TokenUsageProjection {
++  return {
++    uncachedInputTokens: 0,
++    outputTokens: 0,
++    cacheReadTokens: 0,
++    cacheWriteTokens: 0,
++    ...partial,
++  }
++}
++
++describe('computeCost', () => {
++  it('folds zero buckets to a zero total', () => {
++    expect(computeCost(undefined, DEFAULT_PRICE)).toEqual({ input: 0, cacheHit: 0, cacheWrite: 0, output: 0, total: 0 })
++  })
++
++  it('prices each bucket at its RMB-per-million rate', () => {
++    const cost = computeCost(usage({ uncachedInputTokens: 1_000_000, cacheReadTokens: 1_000_000, cacheWriteTokens: 1_000_000, outputTokens: 1_000_000 }), DEFAULT_PRICE)
++    expect(cost.input).toBeCloseTo(2)
++    expect(cost.cacheHit).toBeCloseTo(0.5)
++    expect(cost.cacheWrite).toBeCloseTo(0.5)
++    expect(cost.output).toBeCloseTo(8)
++    expect(cost.total).toBeCloseTo(11)
++  })
++})
++
++describe('formatRmb', () => {
++  it('shows two decimals from a cent upward', () => {
++    expect(formatRmb(0)).toBe('¥0')
++    expect(formatRmb(1.234)).toBe('¥1.23')
++    expect(formatRmb(0.5)).toBe('¥0.50')
++  })
++  it('shows four decimals below a cent', () => {
++    expect(formatRmb(0.0071)).toBe('¥0.0071')
++  })
++})
++
++describe('breakdownLine', () => {
++  it('joins label, token text, and yuan amount', () => {
++    expect(breakdownLine('输出', '1.2K', 0.0096)).toBe('输出 1.2K · ¥0.0096')
++  })
++})
+diff --git a/packages/llm/token-meter/src/cost-pricing.ts b/packages/llm/token-meter/src/cost-pricing.ts
+new file mode 100644
+index 0000000000..62f6c6e38b
+--- /dev/null
++++ b/packages/llm/token-meter/src/cost-pricing.ts
+@@ -0,0 +1,145 @@
++/**
++ * Pure RMB cost pricing engine for the session cost window.
++ *
++ * The harness does not ship real currency pricing, so this module translates a
++ * litellm-style price row (USD per token) into RMB per million tokens, applies
++ * an optional FX conversion, and then applies a time-of-day (peak/off-peak)
++ * schedule to price a request at the moment it happened. Everything here is
++ * pure and deterministic so the cost projection stays replay-consistent.
++ *
++ * Sources:
++ *  - litellm `model_prices_and_context_window.json` (USD/token): https://github.com/BerriAI/litellm
++ *  - DeepSeek off-peak window (editable): https://api-docs.deepseek.com/zh-cn/quick_start/pricing
++ */
++
++/** RMB per million tokens, one bucket per billed token class. */
++export interface CostPrice {
++  /** Uncached (cache-miss) prompt input. */
++  readonly inputMiss: number
++  /** Cache-hit prompt input. */
++  readonly cacheHit: number
++  /** Context cache write. */
++  readonly cacheWrite: number
++  /** Completion output. */
++  readonly output: number
++}
++
++/** A request's cost split by token bucket, in yuan. */
++export interface StepCost {
++  readonly input: number
++  readonly cacheHit: number
++  readonly cacheWrite: number
++  readonly output: number
++  readonly total: number
++}
++
++/** Token counts (the durable projection shape) consumed by one step. */
++export interface StepUsage {
++  readonly uncachedInputTokens: number
++  readonly cacheReadTokens: number
++  readonly cacheWriteTokens: number
++  readonly outputTokens: number
++}
++
++/** A litellm row's price fields, in USD per token (some optional). */
++export interface LitellmPriceRow {
++  readonly input_cost_per_token?: number
++  readonly input_cost_per_token_cache_hit?: number
++  readonly input_cost_per_token_cache_write?: number
++  readonly output_cost_per_token?: number
++}
++
++const PER_MILLION = 1_000_000
++
++/** Default USD→CNY rate; override with pricing.fxRate config or auto-refresh. */
++export const DEFAULT_FX_RMB_PER_USD = 7.2
++
++/** Convert a litellm USD-per-token row to RMB per million tokens. */
++export function costPriceFromLitellm(row: LitellmPriceRow, fxRmbPerUsd: number): CostPrice {
++  const inputPerToken = row.input_cost_per_token ?? 0
++  return {
++    inputMiss: inputPerToken * PER_MILLION * fxRmbPerUsd,
++    cacheHit: (row.input_cost_per_token_cache_hit ?? inputPerToken) * PER_MILLION * fxRmbPerUsd,
++    cacheWrite: (row.input_cost_per_token_cache_write ?? 0) * PER_MILLION * fxRmbPerUsd,
++    output: (row.output_cost_per_token ?? 0) * PER_MILLION * fxRmbPerUsd,
++  }
++}
++
++/** Default full-price RMB/M table, used as the bundled fallback before a fetch. */
++export const DEFAULT_BASE_PRICE: CostPrice = {
++  inputMiss: 2,
++  cacheHit: 0.5,
++  cacheWrite: 0.5,
++  output: 8,
++}
++
++/** One time-of-day window with per-bucket multipliers (1 = full price). */
++export interface TimeWindow {
++  readonly startMinute: number
++  readonly endMinute: number
++  readonly inputFactor: number
++  readonly cacheHitFactor: number
++  readonly cacheWriteFactor: number
++  readonly outputFactor: number
++}
++
++/** Default DeepSeek-style off-peak window (00:30–08:30, Beijing). Editable. */
++export const DEFAULT_WINDOWS: readonly TimeWindow[] = [
++  { startMinute: 30, endMinute: 510, inputFactor: 0.25, cacheHitFactor: 0.25, cacheWriteFactor: 0.25, outputFactor: 0.125 },
++]
++
++/** Beijing is UTC+8, fixed (no DST). */
++export const BEIJING_UTC_OFFSET_MINUTES = 480
++
++/** Active window for a timestamp. */
++export function windowAt(
++  timestampMs: number,
++  windows: readonly TimeWindow[] = DEFAULT_WINDOWS,
++  tzOffsetMinutes = BEIJING_UTC_OFFSET_MINUTES,
++): TimeWindow | undefined {
++  const minute = Math.floor(((timestampMs / 60_000) + tzOffsetMinutes) % 1440 + 1440) % 1440
++  for (const window of windows) {
++    if (window.startMinute < window.endMinute) {
++      if (minute >= window.startMinute && minute < window.endMinute) return window
++    } else if (minute >= window.startMinute || minute < window.endMinute) return window
++  }
++  return undefined
++}
++
++/** Effective RMB/M price at a timestamp: full price, or window-discounted. */
++export function priceAtTs(
++  base: CostPrice,
++  timestampMs: number,
++  windows: readonly TimeWindow[] = DEFAULT_WINDOWS,
++): CostPrice {
++  const window = windowAt(timestampMs, windows)
++  if (window === undefined) return base
++  return {
++    inputMiss: base.inputMiss * window.inputFactor,
++    cacheHit: base.cacheHit * window.cacheHitFactor,
++    cacheWrite: base.cacheWrite * window.cacheWriteFactor,
++    output: base.output * window.outputFactor,
++  }
++}
++
++/** Price one step's token usage under an effective RMB/M table. */
++export function stepCost(usage: StepUsage, price: CostPrice): StepCost {
++  const input = usage.uncachedInputTokens * price.inputMiss / PER_MILLION
++  const cacheHit = usage.cacheReadTokens * price.cacheHit / PER_MILLION
++  const cacheWrite = usage.cacheWriteTokens * price.cacheWrite / PER_MILLION
++  const output = usage.outputTokens * price.output / PER_MILLION
++  return { input, cacheHit, cacheWrite, output, total: input + cacheHit + cacheWrite + output }
++}
++
++/** Zero cost (used before any usage is reported). */
++export function zeroCost(): StepCost {
++  return { input: 0, cacheHit: 0, cacheWrite: 0, output: 0, total: 0 }
++}
++
++/** Bundled fallback row (USD/token) for a DeepSeek-style chat model. */
++export const DEEPSEEK_FALLBACK_ROW: LitellmPriceRow = {
++  input_cost_per_token: DEFAULT_BASE_PRICE.inputMiss / PER_MILLION / DEFAULT_FX_RMB_PER_USD,
++  input_cost_per_token_cache_hit: DEFAULT_BASE_PRICE.cacheHit / PER_MILLION / DEFAULT_FX_RMB_PER_USD,
++  input_cost_per_token_cache_write: DEFAULT_BASE_PRICE.cacheWrite / PER_MILLION / DEFAULT_FX_RMB_PER_USD,
++  output_cost_per_token: DEFAULT_BASE_PRICE.output / PER_MILLION / DEFAULT_FX_RMB_PER_USD,
++}
+diff --git a/packages/llm/token-meter/src/index.ts b/packages/llm/token-meter/src/index.ts
+index 2fa53f78f1..1c3e75abcd 100644
+--- a/packages/llm/token-meter/src/index.ts
++++ b/packages/llm/token-meter/src/index.ts
+@@ -20,6 +20,8 @@ import type {
+ } from './types.ts'
+ import { contextBreakdownProjectionDefinition } from './breakdown-projection.ts'
+ import { contextPressureProjectionDefinition, tokenUsageProjectionDefinition } from './usage-projection.ts'
++import { buildSessionCostProjection } from './session-cost-projection.ts'
++import { createPriceResolver } from './price-source.ts'
+ import { estimateContent, estimateHeader, estimateMessage, ROLE_OVERHEAD } from './estimate.ts'
+ import { foldSurfaceTokens } from './surface-fold.ts'
+ 
+@@ -64,6 +66,20 @@ function validateConfigKeys(config: TokenMeterConfig): void {
+   }
+ }
+ 
++/** Periodic litellm refresh interval in ms; env `DSH_COST_REFRESH_MS` (0 disables). */
++const DEFAULT_PRICING_REFRESH_MS = 6 * 60 * 60 * 1000
++
++function pricingRefreshMs(): number {
++  const raw = Number(process.env.DSH_COST_REFRESH_MS)
++  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_PRICING_REFRESH_MS
++}
++
++/** USD→CNY rate; env `DSH_COST_FX_RMB` overrides the default. */
++function pricingFxRmbPerUsd(): number | undefined {
++  const raw = Number(process.env.DSH_COST_FX_RMB)
++  return Number.isFinite(raw) && raw > 0 ? raw : undefined
++}
++
+ declare module '@deepseek-ai/cordis' {
+   interface Context {
+     tokenMeter: TokenMeter
+@@ -82,14 +98,31 @@ export class TokenMeter extends Service {
+     super(ctx, 'tokenMeter')
+     validateConfigKeys(config)
+ 
++    // Incremental RMB cost priced per request instant. The resolver starts on
++    // the bundled DeepSeek fallback table, then swaps in the litellm price
++    // table when it is fetched over the proxy (offline-safe). The fold is
++    // incremental (①): a refresh prices only NEW requests, never history.
++    // Startup pull + periodic refresh (default 6h) keep it following the
++    // latest litellm prices; both are overridable via env.
++    const fx = pricingFxRmbPerUsd()
++    const priceResolver = createPriceResolver({
++      refreshMs: pricingRefreshMs(),
++      ...(fx === undefined ? {} : { fxRmbPerUsd: fx }),
++    })
++
+     // Projection registration is an optional child: compositions without the
+     // generic registry keep the meter's standalone read shape.
+     ctx.inject(['sessionProjections'], (projectionCtx) => {
+       projectionCtx.sessionProjections.register(tokenUsageProjectionDefinition)
+       projectionCtx.sessionProjections.register(contextPressureProjectionDefinition)
+       projectionCtx.sessionProjections.register(contextBreakdownProjectionDefinition)
++      projectionCtx.sessionProjections.register(buildSessionCostProjection(priceResolver.priceAt))
+     })
+ 
++    // Pull the litellm table over the proxy, fall back silently on failure.
++    void priceResolver.refresh()
++    ctx.effect(() => () => { priceResolver.dispose() }, 'token-meter: pricing resolver cleanup')
++
+     // Readers catch up independently, while eager observation bounds ordinary
+     // read latency without creating state for sessions no consumer has read.
+     ctx.on('session/event', (session) => {
+diff --git a/packages/llm/token-meter/src/price-source.ts b/packages/llm/token-meter/src/price-source.ts
+new file mode 100644
+index 0000000000..9b1a2c3a86
+--- /dev/null
++++ b/packages/llm/token-meter/src/price-source.ts
+@@ -0,0 +1,322 @@
++/**
++ * Host pricing source: fetches the litellm community price table over the
++ * outbound proxy (read from HTTPS_PROXY/HTTP_PROXY/ALL_PROXY, this host =
++ * 127.0.0.1:7897), converts USD/token to RMB (FX), applies the time-of-day
++ * window, and yields a per-(model, instant) price resolver for the
++ * `sessionCost` projection. A bundled DeepSeek fallback keeps billing working
++ * when the fetch fails or the model id is unknown.
++ *
++ * @module @deepseek-ai/dsh-token-meter/price-source
++ */
++
++import { connect } from 'node:net'
++import { connect as tlsConnect, type TLSSocket } from 'node:tls'
++import { request as httpsRequest } from 'node:https'
++import type { IncomingMessage } from 'node:http'
++import type { CostPrice } from './cost-pricing.ts'
++import {
++  costPriceFromLitellm, DEFAULT_BASE_PRICE, DEFAULT_FX_RMB_PER_USD, DEFAULT_WINDOWS,
++  DEEPSEEK_FALLBACK_ROW, priceAtTs, type LitellmPriceRow, type TimeWindow,
++} from './cost-pricing.ts'
++
++/** Effective RMB/M price for one (model, instant). */
++export type CostPriceAt = (model: string | undefined, timestampMs: number) => CostPrice
++
++/** A fetched litellm table keyed by model id. */
++export type LitellmTable = Readonly<Record<string, LitellmPriceRow>>
++
++export interface PricingConfig {
++  readonly litellmUrl?: string
++  readonly table?: LitellmTable
++  readonly fxRmbPerUsd?: number
++  readonly windows?: readonly TimeWindow[]
++  readonly modelAliases?: Readonly<Record<string, string>>
++}
++
++/** Default aliases: variant ids that price the same as a canonical model. */
++export const MODEL_ALIASES: Readonly<Record<string, string>> = {
++  'deepseek-v4-flash-vision-exp': 'deepseek-v4-flash',
++}
++
++/** Parse a litellm JSON response into a model-id → row table. */
++export function parseLitellmTable(raw: string): LitellmTable {
++  const parsed: unknown = JSON.parse(raw)
++  if (typeof parsed !== 'object' || parsed === null) return {}
++  const out: Record<string, LitellmPriceRow> = {}
++  for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
++    if (typeof value !== 'object' || value === null) continue
++    const row = value as Record<string, unknown>
++    const pick = (k: string): number | undefined => {
++      const v = row[k]
++      return typeof v === 'number' ? v : undefined
++    }
++    out[id] = {
++      ...pick('input_cost_per_token') !== undefined ? { input_cost_per_token: pick('input_cost_per_token')! } : {},
++      ...pick('input_cost_per_token_cache_hit') !== undefined ? { input_cost_per_token_cache_hit: pick('input_cost_per_token_cache_hit')! } : {},
++      ...pick('input_cost_per_token_cache_write') !== undefined ? { input_cost_per_token_cache_write: pick('input_cost_per_token_cache_write')! } : {},
++      ...pick('output_cost_per_token') !== undefined ? { output_cost_per_token: pick('output_cost_per_token')! } : {},
++    }
++  }
++  return out
++}
++
++/** Find the closest litellm row for a model id (exact, then a prefix match). */
++export function rowForModel(table: LitellmTable, model: string | undefined): LitellmPriceRow | undefined {
++  if (model === undefined) return undefined
++  if (table[model] !== undefined) return table[model]
++  const lower = model.toLowerCase()
++  for (const [id, row] of Object.entries(table)) {
++    if (id.toLowerCase().includes(lower) || lower.includes(id.toLowerCase())) return row
++  }
++  return undefined
++}
++
++/** Build a static resolver: row→RMB/M via FX, then time-window discount. */
++export function buildCostPriceAt(config: PricingConfig): CostPriceAt {
++  const fx = config.fxRmbPerUsd ?? DEFAULT_FX_RMB_PER_USD
++  const windows = config.windows ?? DEFAULT_WINDOWS
++  const table = config.table ?? {}
++  const aliases = config.modelAliases ?? MODEL_ALIASES
++  const cache = new Map<string, CostPrice>()
++
++  return (model, timestampMs) => {
++    const key = `${model ?? ''}:${timestampMs}`
++    const hit = cache.get(key)
++    if (hit !== undefined) return hit
++    const canonical = model === undefined ? undefined : (aliases[model] ?? model)
++    const row = rowForModel(table, canonical) ?? DEEPSEEK_FALLBACK_ROW
++    let price: CostPrice
++    try {
++      price = costPriceFromLitellm(row, fx)
++    } catch {
++      price = DEFAULT_BASE_PRICE
++    }
++    const effective = priceAtTs(price, timestampMs, windows)
++    cache.set(key, effective)
++    return effective
++  }
++}
++
++/** `(model, timestampMs)` resolver for the no-table case (pure fallback). */
++export function bundledCostPriceAt(config?: PricingConfig): CostPriceAt {
++  return buildCostPriceAt(config ?? {})
++}
++
++/** A live, refreshable price resolver (fetches litellm over the proxy). */
++export interface PriceResolver {
++  readonly priceAt: CostPriceAt
++  refresh(): Promise<void>
++  dispose(): void
++}
++
++/** Default litellm price-table URL (community-maintained USD/token). */
++export const DEFAULT_LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
++
++export interface PriceResolverOptions extends PricingConfig {
++  readonly litellmUrl?: string
++  readonly proxy?: string
++  readonly refreshMs?: number
++  readonly fetchTable?: (url: string) => Promise<LitellmTable>
++}
++
++/** Build a live resolver that starts on the fallback and swaps in litellm. */
++export function createPriceResolver(options: PriceResolverOptions = {}): PriceResolver {
++  let table = options.table ?? {}
++  let disposed = false
++  let timer: ReturnType<typeof setInterval> | undefined
++  const fx = options.fxRmbPerUsd ?? DEFAULT_FX_RMB_PER_USD
++  const windows = options.windows ?? DEFAULT_WINDOWS
++  const aliases = options.modelAliases ?? MODEL_ALIASES
++  const url = options.litellmUrl ?? DEFAULT_LITELLM_URL
++  const cache = new Map<string, CostPrice>()
++
++  const priceAt: CostPriceAt = (model, timestampMs) => {
++    const key = `${model ?? ''}:${timestampMs}`
++    const hit = cache.get(key)
++    if (hit !== undefined) return hit
++    const canonical = model === undefined ? undefined : (aliases[model] ?? model)
++    const row = rowForModel(table, canonical) ?? DEEPSEEK_FALLBACK_ROW
++    let price: CostPrice
++    try {
++      price = costPriceFromLitellm(row, fx)
++    } catch {
++      price = DEFAULT_BASE_PRICE
++    }
++    const effective = priceAtTs(price, timestampMs, windows)
++    cache.set(key, effective)
++    return effective
++  }
++
++  const refresh = async (): Promise<void> => {
++    try {
++      const fetched = await (options.fetchTable === undefined
++        ? fetchLitellmTable(url, options.proxy)
++        : options.fetchTable(url))
++      if (!disposed) {
++        table = fetched
++        cache.clear()
++      }
++    } catch {
++      // Keep the current table; never fail the host.
++    }
++  }
++
++  if (options.refreshMs !== undefined && options.refreshMs > 0) {
++    timer = setInterval(() => { void refresh() }, options.refreshMs)
++  }
++
++  return { priceAt, refresh, dispose: () => { disposed = true; if (timer !== undefined) { clearInterval(timer); timer = undefined } } }
++}
++
++const PROXY_URL = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? process.env.ALL_PROXY ?? ''
++
++type ProxyType = 'http' | 'socks5'
++interface ProxyEndpoint { host: string; port: number; type: ProxyType }
++
++/** Parse a proxy URL into host/port and type. */
++function proxyTarget(proxyUrl: string): ProxyEndpoint | null {
++  const trimmed = proxyUrl.trim()
++  const match = /^(socks5?|https?):\/\/([^:/]+):(\d+)/.exec(trimmed)
++  if (match !== null) {
++    const scheme = match[1]!.toLowerCase()
++    return { host: match[2]!, port: Number(match[3]), type: scheme.startsWith('socks') ? 'socks5' : 'http' }
++  }
++  const bare = /^([^:/]+):(\d+)/.exec(trimmed)
++  if (bare !== null) return { host: bare[1]!, port: Number(bare[2]), type: 'http' }
++  return null
++}
++
++const FETCH_TIMEOUT_MS = 15_000
++
++/** Await a TLS socket through the proxy (HTTP CONNECT or SOCKS5). */
++function tunneledTls(hostname: string, port: number, proxy: ProxyEndpoint): Promise<TLSSocket> {
++  return proxy.type === 'http' ? httpConnectTls(hostname, port, proxy) : socks5Tls(hostname, port, proxy)
++}
++
++function httpConnectTls(hostname: string, port: number, proxy: ProxyEndpoint): Promise<TLSSocket> {
++  return new Promise((resolve, reject) => {
++    const socket = connect(proxy.port, proxy.host, () => {
++      socket.write(`CONNECT ${hostname}:${port} HTTP/1.1\r\nHost: ${hostname}:${port}\r\n\r\n`)
++    })
++    const timeout = setTimeout(() => { socket.destroy(); reject(new Error('pricing: proxy fetch timed out')) }, FETCH_TIMEOUT_MS)
++    let buffer = ''
++    socket.on('data', (chunk) => {
++      buffer += chunk.toString('latin1')
++      if (!buffer.includes('\r\n\r\n')) return
++      clearTimeout(timeout)
++      socket.removeAllListeners('data')
++      const statusLine = buffer.split('\r\n', 1)[0] ?? ''
++      const status = Number(/HTTP\/1\.1 (\d{3})/.exec(statusLine)?.[1]) ?? 0
++      if (status !== 200) { socket.destroy(); reject(new Error(`pricing: proxy CONNECT failed (${statusLine})`)); return }
++      finishTls(socket, hostname, resolve, reject)
++    })
++    socket.once('error', reject)
++  })
++}
++
++function socks5Tls(hostname: string, port: number, proxy: ProxyEndpoint): Promise<TLSSocket> {
++  return new Promise((resolve, reject) => {
++    const socket = connect(proxy.port, proxy.host, () => {
++      socket.write(Buffer.from([0x05, 0x01, 0x00]))
++    })
++    const timeout = setTimeout(() => { socket.destroy(); reject(new Error('pricing: proxy fetch timed out')) }, FETCH_TIMEOUT_MS)
++    let stage = 0
++    let buf = Buffer.alloc(0)
++    socket.on('data', (chunk) => {
++      buf = Buffer.concat([buf, chunk])
++      if (stage === 0) {
++        if (buf.length < 2) return
++        if (buf[0] !== 0x05 || buf[1] !== 0x00) { socket.destroy(); reject(new Error('pricing: SOCKS auth failed')); return }
++        buf = buf.subarray(2)
++        stage = 1
++        const domain = Buffer.from(hostname, 'utf8')
++        socket.write(Buffer.concat([
++          Buffer.from([0x05, 0x01, 0x00, 0x03, domain.length]),
++          domain,
++          Buffer.from([(port >> 8) & 0xff, port & 0xff]),
++        ]))
++        return
++      }
++      if (buf.length < 4) return
++      const rep = buf[1]
++      if (rep !== 0) { socket.destroy(); reject(new Error(`pricing: SOCKS connect failed (rep ${rep})`)); return }
++      const atyp = buf[3]
++      let headerLen = 4
++      if (atyp === 0x01) headerLen += 4
++      else if (atyp === 0x03) {
++        if (buf.length < 5) return
++        headerLen += 1 + buf[4]!
++      } else if (atyp === 0x04) headerLen += 16
++      else { socket.destroy(); reject(new Error('pricing: SOCKS address type unsupported')); return }
++      if (buf.length < headerLen + 2) return
++      clearTimeout(timeout)
++      socket.removeAllListeners('data')
++      finishTls(socket, hostname, resolve, reject)
++    })
++    socket.once('error', reject)
++  })
++}
++
++function finishTls(
++  socket: import('node:net').Socket,
++  hostname: string,
++  resolve: (v: TLSSocket) => void,
++  reject: (e: unknown) => void,
++): void {
++  const tls = tlsConnect({ socket, servername: hostname })
++  tls.once('secureConnect', () => resolve(tls))
++  tls.once('error', reject)
++}
++
++/** Await one tunneled TLS socket; then issue an HTTPS GET and read the body. */
++async function fetchViaProxy(url: string, proxy?: string): Promise<string> {
++  const target = new URL(url)
++  const proxyUrl = proxy ?? PROXY_URL
++  const proxyEndpoint = proxyTarget(proxyUrl)
++  if (proxyEndpoint === null) {
++    throw new Error('pricing: no proxy configured (set HTTPS_PROXY/HTTP_PROXY/ALL_PROXY) for external fetch')
++  }
++  const port = target.port === '' ? 443 : Number(target.port)
++  const tls = await tunneledTls(target.hostname, port, proxyEndpoint)
++  const body = await httpsGetOverSocket(tls, target.hostname, port, target.pathname + target.search)
++  tls.destroy()
++  return body
++}
++
++/** One HTTPS GET hand-written over an already-tunneled TLS socket. */
++function httpsGetOverSocket(
++  tls: TLSSocket,
++  hostname: string,
++  port: number,
++  path: string,
++  hostHeader?: string,
++): Promise<string> {
++  return new Promise((resolve, reject) => {
++    const req = httpsRequest({
++      createConnection: () => tls,
++      hostname,
++      port,
++      path,
++      method: 'GET',
++      headers: { host: hostHeader ?? hostname, accept: 'application/json' },
++    }, (res: IncomingMessage) => {
++      const chunks: Buffer[] = []
++      res.on('data', (c: Buffer) => chunks.push(c))
++      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
++      res.on('error', reject)
++    })
++    req.once('error', reject)
++    req.setTimeout(FETCH_TIMEOUT_MS, () => { req.destroy(new Error('pricing: proxy fetch timed out')) })
++    req.end()
++  })
++}
++
++/** Fetch the litellm table over proxy, returning parsed rows (throws on failure). */
++export async function fetchLitellmTable(url: string, proxy?: string): Promise<LitellmTable> {
++  const body = await fetchViaProxy(url, proxy)
++  return parseLitellmTable(body)
++}
++
++export interface PricingConfigWithTable extends PricingConfig {
++  readonly table?: LitellmTable
++}
+diff --git a/packages/llm/token-meter/src/projection.ts b/packages/llm/token-meter/src/projection.ts
+index 5c451617e9..23a56f12de 100644
+--- a/packages/llm/token-meter/src/projection.ts
++++ b/packages/llm/token-meter/src/projection.ts
+@@ -4,6 +4,8 @@
+  * @module @deepseek-ai/dsh-token-meter/projection
+  */
+ 
++import type { StepCost } from './cost-pricing.ts'
++
+ /**
+  * Durable cumulative provider usage for a complete session log.
+  *
+@@ -73,5 +75,7 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
+     contextPressure: ContextPressureProjection
+     /** Heuristic system/tools/message composition of the next request. */
+     contextBreakdown: ContextBreakdownProjection
++    /** Incremental RMB cost priced per request instant. */
++    sessionCost: StepCost
+   }
+ }
+diff --git a/packages/llm/token-meter/src/session-cost-projection.ts b/packages/llm/token-meter/src/session-cost-projection.ts
+new file mode 100644
+index 0000000000..2c283e414f
+--- /dev/null
++++ b/packages/llm/token-meter/src/session-cost-projection.ts
+@@ -0,0 +1,132 @@
++/**
++ * Incremental, time-aware session cost projection.
++ *
++ * Each billed step (assistant usage) is priced by the step's OWN model and
++ * wall-clock instant, using a price resolver injected at registration time. The
++ * fold is INCREMENTAL: a previously-seen turn/step is replaced (not re-added),
++ * so a repeated final-usage sample never double counts, and a price-table
++ * refresh never rewrites history (① 增量计费).
++ *
++ * @module @deepseek-ai/dsh-token-meter/session-cost-projection
++ */
++
++import { z } from 'zod'
++import type { SessionEvent } from '@deepseek-ai/dsh-session'
++import type { TokenUsage } from '@deepseek-ai/dsh-llm'
++import type { CostPrice, StepCost } from './cost-pricing.ts'
++import { stepCost, zeroCost } from './cost-pricing.ts'
++
++/** Effective price (RMB/M) for a (model, instant) pair; the injected resolver. */
++export type CostPriceAt = (model: string | undefined, timestampMs: number) => CostPrice
++
++/** Fold state: plain JSON so the projection cache can persist it. */
++export interface SessionCostState {
++  readonly model: string
++  readonly totals: StepCost
++  readonly last: { turn: number; step: number; cost: StepCost } | null
++}
++
++const costSchema = z.object({
++  input: z.number().nonnegative(),
++  cacheHit: z.number().nonnegative(),
++  cacheWrite: z.number().nonnegative(),
++  output: z.number().nonnegative(),
++  total: z.number().nonnegative(),
++}).strict()
++
++const stateSchema = z.object({
++  model: z.string(),
++  totals: costSchema,
++  last: z.object({ turn: z.number().int().nonnegative(), step: z.number().int().nonnegative(), cost: costSchema }).nullable(),
++}).strict()
++
++/** Firm up a step's usage into the four disjoint billed buckets. */
++function bucketsOf(usage: TokenUsage): {
++  uncachedInputTokens: number
++  cacheReadTokens: number
++  cacheWriteTokens: number
++  outputTokens: number
++} {
++  return {
++    uncachedInputTokens: usage.inputTokens,
++    cacheReadTokens: usage.cacheReadTokens ?? 0,
++    cacheWriteTokens: usage.cacheWriteTokens ?? 0,
++    outputTokens: usage.outputTokens,
++  }
++}
++
++/** Extract the usage + step identity carried by a chunk/message, if any. */
++function usageOf(event: SessionEvent): { turn: number; step: number; usage: TokenUsage } | undefined {
++  if (event.type === 'assistant/chunk' && event.data.chunk.type === 'usage') {
++    return { turn: event.data.turn, step: event.data.step, usage: event.data.chunk.usage }
++  }
++  if (event.type === 'assistant/message' && event.data.usage !== undefined) {
++    return { turn: event.data.turn, step: event.data.step, usage: event.data.usage }
++  }
++  return undefined
++}
++
++/** Build the `sessionCost` projection unit with an injected price resolver. */
++export function buildSessionCostProjection(priceAt: CostPriceAt): {
++  readonly key: 'sessionCost'
++  readonly stateVersion: number
++  readonly stateSchema: typeof stateSchema
++  readonly init: () => SessionCostState
++  readonly apply: (state: SessionCostState, event: SessionEvent) => SessionCostState
++  readonly wire: { readonly viewSchema: typeof costSchema; readonly view: (state: SessionCostState) => StepCost }
++} {
++  return {
++    key: 'sessionCost',
++    stateVersion: 1,
++    stateSchema,
++    init: () => ({ model: '', totals: zeroCost(), last: null }),
++    apply: (state, event) => {
++      let nextModel = state.model
++      if (event.type === 'request/header') {
++        nextModel = event.data.header?.config?.model ?? state.model
++      }
++
++      const stepped = usageOf(event)
++      if (stepped === undefined) {
++        return nextModel === state.model ? state : { ...state, model: nextModel }
++      }
++
++      const { turn, step, usage } = stepped
++      const cost = stepCost(bucketsOf(usage), priceAt(nextModel, event.time))
++
++      if (state.last !== null && state.last.turn === turn && state.last.step === step) {
++        const previous = state.last.cost
++        return {
++          model: nextModel,
++          totals: {
++            input: state.totals.input - previous.input + cost.input,
++            cacheHit: state.totals.cacheHit - previous.cacheHit + cost.cacheHit,
++            cacheWrite: state.totals.cacheWrite - previous.cacheWrite + cost.cacheWrite,
++            output: state.totals.output - previous.output + cost.output,
++            total: state.totals.total - previous.total + cost.total,
++          },
++          last: { turn, step, cost },
++        }
++      }
++
++      return {
++        model: nextModel,
++        totals: {
++          input: state.totals.input + cost.input,
++          cacheHit: state.totals.cacheHit + cost.cacheHit,
++          cacheWrite: state.totals.cacheWrite + cost.cacheWrite,
++          output: state.totals.output + cost.output,
++          total: state.totals.total + cost.total,
++        },
++        last: { turn, step, cost },
++      }
++    },
++    wire: { viewSchema: costSchema, view: state => state.totals },
++  }
++}
++
++declare module '@deepseek-ai/dsh-session-projection/types' {
++  interface SessionProjectionStateMap {
++    sessionCost: SessionCostState
++  }
++}
+diff --git a/packages/llm/token-meter/tests/cost-pricing.spec.ts b/packages/llm/token-meter/tests/cost-pricing.spec.ts
+new file mode 100644
+index 0000000000..2607a28330
+--- /dev/null
++++ b/packages/llm/token-meter/tests/cost-pricing.spec.ts
+@@ -0,0 +1,142 @@
++// RMB cost pricing engine + incremental sessionCost projection fold.
++
++import { describe, expect, it } from 'vitest'
++import type { SessionEvent } from '@deepseek-ai/dsh-session'
++import {
++  costPriceFromLitellm, DEFAULT_BASE_PRICE, priceAtTs, stepCost, windowAt,
++} from '../src/cost-pricing.ts'
++import { buildSessionCostProjection } from '../src/session-cost-projection.ts'
++import { buildCostPriceAt, bundledCostPriceAt, createPriceResolver, parseLitellmTable, rowForModel } from '../src/price-source.ts'
++
++const BASIC_PRICE = { inputMiss: 2, cacheHit: 0.5, cacheWrite: 0.5, output: 8 }
++
++function header(model: string, seq = 1, time = 0): SessionEvent {
++  return { type: 'request/header', seq, time, data: { header: { config: { provider: 'p', model } } } } as never as SessionEvent
++}
++function usageEvt(turn: number, step: number, usage: Record<string, number>, time: number, seq = 5): SessionEvent {
++  return { type: 'assistant/message', seq, time, data: { turn, step, usage } } as never as SessionEvent
++}
++const USAGE = { inputTokens: 1_000_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1_000_000 }
++
++const beijingMinute = (minute: number): number => (minute - 480) * 60_000
++const PEAK_MS = beijingMinute(12 * 60)
++const OFF_PEAK_MS = beijingMinute(2 * 60)
++
++describe('costPriceFromLitellm', () => {
++  it('converts USD/token to RMB per million under FX', () => {
++    const price = costPriceFromLitellm(
++      { input_cost_per_token: 2 / 1e6 / 7.2, output_cost_per_token: 8 / 1e6 / 7.2, input_cost_per_token_cache_hit: 0.5 / 1e6 / 7.2 },
++      7.2,
++    )
++    expect(price.inputMiss).toBeCloseTo(2)
++    expect(price.cacheHit).toBeCloseTo(0.5)
++    expect(price.output).toBeCloseTo(8)
++  })
++
++  it('falls back to the uncached rate for a missing cache-hit field', () => {
++    const price = costPriceFromLitellm({ input_cost_per_token: 2 / 1e6 / 7.2, output_cost_per_token: 8 / 1e6 / 7.2 }, 7.2)
++    expect(price.cacheHit).toBeCloseTo(2)
++  })
++})
++
++describe('windowAt / priceAtTs', () => {
++  it('applies the off-peak discount inside the window (Beijing 00:30–08:30)', () => {
++    expect(windowAt(OFF_PEAK_MS)).toBeDefined()
++    const discounted = priceAtTs(BASIC_PRICE, OFF_PEAK_MS)
++    expect(discounted.inputMiss).toBeCloseTo(0.5)
++    expect(discounted.output).toBeCloseTo(1)
++  })
++
++  it('returns full price outside any window', () => {
++    expect(windowAt(PEAK_MS)).toBeUndefined()
++    expect(priceAtTs(BASIC_PRICE, PEAK_MS)).toEqual(BASIC_PRICE)
++  })
++})
++
++describe('stepCost', () => {
++  it('prices each bucket at the effective RMB/M rate', () => {
++    const cost = stepCost({ uncachedInputTokens: 1_000_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1_000_000 }, DEFAULT_BASE_PRICE)
++    expect(cost.input).toBeCloseTo(2)
++    expect(cost.output).toBeCloseTo(8)
++    expect(cost.total).toBeCloseTo(10)
++  })
++})
++
++describe('buildSessionCostProjection (incremental)', () => {
++  const priceAt = bundledCostPriceAt()
++
++  it('stays zero until a usage event arrives', () => {
++    const def = buildSessionCostProjection(priceAt)
++    let state = def.apply(def.init(), header('m'))
++    expect(def.wire!.view(state).total).toBe(0)
++  })
++
++  it('adds cost for a new step (incremental ①)', () => {
++    const def = buildSessionCostProjection(priceAt)
++    let state = def.apply(def.init(), header('m'))
++    const cost = def.wire!.view(def.apply(state, usageEvt(1, 1, USAGE, PEAK_MS)))
++    expect(cost.input).toBeCloseTo(2)
++    expect(cost.total).toBeCloseTo(10)
++  })
++
++  it('replaces the same turn/step sample instead of double-counting', () => {
++    const def = buildSessionCostProjection(priceAt)
++    let state = def.apply(def.init(), header('m'))
++    state = def.apply(state, usageEvt(1, 1, USAGE, PEAK_MS))
++    const again = def.wire!.view(def.apply(state, usageEvt(1, 1, USAGE, PEAK_MS)))
++    expect(again.total).toBeCloseTo(10)
++  })
++
++  it('prices an off-peak event cheaper than a peak one', () => {
++    const def = buildSessionCostProjection(priceAt)
++    const peak = def.wire!.view(def.apply(def.apply(def.init(), header('m')), usageEvt(1, 1, USAGE, PEAK_MS)))
++    const offpeak = def.wire!.view(def.apply(def.apply(def.init(), header('m')), usageEvt(1, 1, USAGE, OFF_PEAK_MS)))
++    expect(offpeak.total).toBeLessThan(peak.total)
++  })
++
++  it('tracks the model from request/header for price lookup', () => {
++    const def = buildSessionCostProjection(priceAt)
++    const state = def.apply(def.init(), header('deepseek-chat'))
++    expect(state.model).toBe('deepseek-chat')
++  })
++})
++
++describe('litellm table parsing', () => {
++  it('parses a JSON table and maps model ids', () => {
++    const table = parseLitellmTable(JSON.stringify({ 'deepseek-chat': { input_cost_per_token: 2 / 1e6, output_cost_per_token: 8 / 1e6 } }))
++    const row = rowForModel(table, 'deepseek-chat')
++    expect(row).toBeDefined()
++    expect(row!.output_cost_per_token).toBeCloseTo(8 / 1e6)
++  })
++
++  it('prices a vision-exp alias identically to its canonical model', () => {
++    const table = parseLitellmTable(JSON.stringify({ 'deepseek-v4-flash': { input_cost_per_token: 3 / 1e6, output_cost_per_token: 6 / 1e6 } }))
++    const priceAt = buildCostPriceAt({ table, fxRmbPerUsd: 7.2 })
++    const base = priceAt('deepseek-v4-flash', PEAK_MS)
++    const alias = priceAt('deepseek-v4-flash-vision-exp', PEAK_MS)
++    expect(alias.inputMiss).toBeCloseTo(base.inputMiss)
++    expect(alias.output).toBeCloseTo(base.output)
++    const unknown = priceAt('other-model', PEAK_MS)
++    expect(unknown.inputMiss).not.toBeCloseTo(base.inputMiss)
++  })
++})
++
++describe('createPriceResolver (litellm auto-sync)', () => {
++  it('starts on fallback and swaps to the fetched table after refresh', async () => {
++    const resolver = createPriceResolver({
++      fetchTable: async () => ({ 'deepseek-v4-flash': { input_cost_per_token: 3 / 1e6, output_cost_per_token: 6 / 1e6 } }),
++    })
++    expect(resolver.priceAt('deepseek-v4-flash', PEAK_MS).output).toBeCloseTo(8)
++    await resolver.refresh()
++    expect(resolver.priceAt('deepseek-v4-flash', PEAK_MS).output).toBeCloseTo(6 * 7.2)
++    expect(resolver.priceAt('deepseek-v4-flash-vision-exp', PEAK_MS).output).toBeCloseTo(6 * 7.2)
++    resolver.dispose()
++  })
++
++  it('keeps the fallback when the fetch fails (offline-safe)', async () => {
++    const resolver = createPriceResolver({ fetchTable: async () => { throw new Error('network down') } })
++    await resolver.refresh()
++    expect(resolver.priceAt('deepseek-v4-flash', PEAK_MS).output).toBeCloseTo(8)
++    resolver.dispose()
++  })
++})
