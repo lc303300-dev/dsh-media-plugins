@@ -13,3 +13,6 @@ bin/
 
 # 验收/运行产物
 outputs/
+
+# 本地运行时状态（registry/项目/批次/日志/锁），与仓库无关
+.dsh-media-private/
