@@ -17,7 +17,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { ProxyAgent, fetch as undiciFetch } from 'undici'
 import {
   costPriceFromLitellm, DEFAULT_BASE_PRICE, DEFAULT_FX_RMB_PER_USD,
-  DEFAULT_LITELLM_URL, DEEPSEEK_FALLBACK_ROW, findModelRow, priceAtTs, stepCost,
+  DEFAULT_LITELLM_URL, DEEPSEEK_FALLBACK_ROW, DEEPSEEK_OFFICIAL_PRICES, findModelRow, priceAtTs, stepCost,
   type CostPrice, type LitellmPriceRow, type StepCost, type TimeWindow,
 } from './shared/cost-core.ts'
 
@@ -121,12 +121,19 @@ function makePriceAt(config: ResolvedConfig): (model: string | undefined, ts: nu
 
   return (model, timestampMs) => {
     const canonical = MODEL_ALIASES[model ?? ''] ?? model
-    const row = findModelRow(table, canonical) ?? DEEPSEEK_FALLBACK_ROW
+    // Official DeepSeek prices take precedence over the (sometimes misleading)
+    // litellm provider rows; fall back to litellm, then the bundled default.
+    const official = canonical === undefined ? undefined : DEEPSEEK_OFFICIAL_PRICES[canonical]
     let base: CostPrice
-    try {
-      base = costPriceFromLitellm(row, fx)
-    } catch {
-      base = DEFAULT_BASE_PRICE
+    if (official !== undefined) {
+      base = official
+    } else {
+      const row = findModelRow(table, canonical) ?? DEEPSEEK_FALLBACK_ROW
+      try {
+        base = costPriceFromLitellm(row, fx)
+      } catch {
+        base = DEFAULT_BASE_PRICE
+      }
     }
     return priceAtTs(base, timestampMs, windows)
   }

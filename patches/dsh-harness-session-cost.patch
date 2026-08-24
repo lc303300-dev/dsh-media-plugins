@@ -178,7 +178,7 @@ index 0000000000..f20f74c772
 +}
 diff --git a/packages/client/ui-conversation/src/client/chat/cost.ts b/packages/client/ui-conversation/src/client/chat/cost.ts
 new file mode 100644
-index 0000000000..59ee914bf6
+index 0000000000..b819d3b407
 --- /dev/null
 +++ b/packages/client/ui-conversation/src/client/chat/cost.ts
 @@ -0,0 +1,80 @@
@@ -260,8 +260,8 @@ index 0000000000..59ee914bf6
 +  return { input, cacheHit, cacheWrite, output, total: input + cacheHit + cacheWrite + output }
 +}
 +
-+/** Default full-price RMB/M table (mirror of the host default). */
-+export const DEFAULT_PRICE: CostPrice = { inputMiss: 2, cacheHit: 0.5, cacheWrite: 0.5, output: 8 }
++/** Default full-price RMB/M table (mirror of the host default, deepseek-v4-flash peak). */
++export const DEFAULT_PRICE: CostPrice = { inputMiss: 3, cacheHit: 0.1, cacheWrite: 0, output: 9 }
 diff --git a/packages/client/ui-conversation/src/client/locales.ts b/packages/client/ui-conversation/src/client/locales.ts
 index f4e7a7c59a..810d442d8e 100644
 --- a/packages/client/ui-conversation/src/client/locales.ts
@@ -314,7 +314,7 @@ index f4e7a7c59a..810d442d8e 100644
    'settings.enter.queue': 'Queue',
 diff --git a/packages/client/ui-conversation/tests/cost.client.spec.ts b/packages/client/ui-conversation/tests/cost.client.spec.ts
 new file mode 100644
-index 0000000000..4e51f59c1c
+index 0000000000..9ba38f2c93
 --- /dev/null
 +++ b/packages/client/ui-conversation/tests/cost.client.spec.ts
 @@ -0,0 +1,48 @@
@@ -342,11 +342,11 @@ index 0000000000..4e51f59c1c
 +
 +  it('prices each bucket at its RMB-per-million rate', () => {
 +    const cost = computeCost(usage({ uncachedInputTokens: 1_000_000, cacheReadTokens: 1_000_000, cacheWriteTokens: 1_000_000, outputTokens: 1_000_000 }), DEFAULT_PRICE)
-+    expect(cost.input).toBeCloseTo(2)
-+    expect(cost.cacheHit).toBeCloseTo(0.5)
-+    expect(cost.cacheWrite).toBeCloseTo(0.5)
-+    expect(cost.output).toBeCloseTo(8)
-+    expect(cost.total).toBeCloseTo(11)
++    expect(cost.input).toBeCloseTo(3)
++    expect(cost.cacheHit).toBeCloseTo(0.1)
++    expect(cost.cacheWrite).toBeCloseTo(0)
++    expect(cost.output).toBeCloseTo(9)
++    expect(cost.total).toBeCloseTo(12.1)
 +  })
 +})
 +
@@ -368,10 +368,10 @@ index 0000000000..4e51f59c1c
 +})
 diff --git a/packages/llm/token-meter/src/cost-pricing.ts b/packages/llm/token-meter/src/cost-pricing.ts
 new file mode 100644
-index 0000000000..cb93f625aa
+index 0000000000..cef834a4e9
 --- /dev/null
 +++ b/packages/llm/token-meter/src/cost-pricing.ts
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,158 @@
 +/**
 + * Pure RMB cost pricing engine for the session cost window.
 + *
@@ -425,7 +425,7 @@ index 0000000000..cb93f625aa
 +
 +const PER_MILLION = 1_000_000
 +
-+/** Default USD→RMB rate; override with pricing.fxRate config or auto-refresh. */
++/** Default USD→CNY rate; override with pricing.fxRate config or auto-refresh. */
 +export const DEFAULT_FX_RMB_PER_USD = 7.2
 +
 +/** Convert a litellm USD-per-token row to RMB per million tokens. */
@@ -439,12 +439,25 @@ index 0000000000..cb93f625aa
 +  }
 +}
 +
-+/** Default full-price RMB/M table, used as the bundled fallback before a fetch. */
++/** Default peak RMB/M table for the bundled fallback (deepseek-v4-flash family). */
 +export const DEFAULT_BASE_PRICE: CostPrice = {
-+  inputMiss: 2,
-+  cacheHit: 0.5,
-+  cacheWrite: 0.5,
-+  output: 8,
++  inputMiss: 3,
++  cacheHit: 0.1,
++  cacheWrite: 0,
++  output: 9,
++}
++
++/**
++ * Authoritative DeepSeek official peak RMB/M prices (per million tokens).
++ * Source (highest fact): the official model & price table —
++ * deepseek-v4-flash and deepseek-v4-flash-vision-exp are priced identically;
++ * off-peak is 0.5× peak across every bucket; the table charges no separate
++ * cache-write bucket. Edit/copy these to match your contract.
++ */
++export const DEEPSEEK_OFFICIAL_PRICES: Readonly<Record<string, CostPrice>> = {
++  'deepseek-v4-flash': { inputMiss: 3, cacheHit: 0.10, cacheWrite: 0, output: 9 },
++  'deepseek-v4-flash-vision-exp': { inputMiss: 3, cacheHit: 0.10, cacheWrite: 0, output: 9 },
++  'deepseek-v4-pro': { inputMiss: 9, cacheHit: 0.30, cacheWrite: 0, output: 27 },
 +}
 +
 +/** One time-of-day window with per-bucket multipliers (1 = full price). */
@@ -457,9 +470,9 @@ index 0000000000..cb93f625aa
 +  readonly outputFactor: number
 +}
 +
-+/** Default DeepSeek-style off-peak window (00:30–8:30, Beijing). Editable. */
++/** Default DeepSeek off-peak window (00:30–08:30, Beijing): 0.5× peak everywhere. */
 +export const DEFAULT_WINDOWS: readonly TimeWindow[] = [
-+  { startMinute: 30, endMinute: 510, inputFactor: 0.25, cacheHitFactor: 0.25, cacheWriteFactor: 0.25, outputFactor: 0.125 },
++  { startMinute: 30, endMinute: 510, inputFactor: 0.5, cacheHitFactor: 0.5, cacheWriteFactor: 0, outputFactor: 0.5 },
 +]
 +
 +/** Beijing is UTC+8, fixed (no DST). */
@@ -518,7 +531,7 @@ index 0000000000..cb93f625aa
 +  output_cost_per_token: DEFAULT_BASE_PRICE.output / PER_MILLION / DEFAULT_FX_RMB_PER_USD,
 +}
 diff --git a/packages/llm/token-meter/src/index.ts b/packages/llm/token-meter/src/index.ts
-index 2fa53f78f1..0f649f6e59 100644
+index 2fa53f78f1..1c3e75abcd 100644
 --- a/packages/llm/token-meter/src/index.ts
 +++ b/packages/llm/token-meter/src/index.ts
 @@ -20,6 +20,8 @@ import type {
@@ -542,7 +555,7 @@ index 2fa53f78f1..0f649f6e59 100644
 +  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_PRICING_REFRESH_MS
 +}
 +
-+/** USD→RMB rate; env `DSH_COST_FX_RMB` overrides the default. */
++/** USD→CNY rate; env `DSH_COST_FX_RMB` overrides the default. */
 +function pricingFxRmbPerUsd(): number | undefined {
 +  const raw = Number(process.env.DSH_COST_FX_RMB)
 +  return Number.isFinite(raw) && raw > 0 ? raw : undefined
@@ -558,7 +571,7 @@ index 2fa53f78f1..0f649f6e59 100644
 +    // Incremental RMB cost priced per request instant. The resolver starts on
 +    // the bundled DeepSeek fallback table, then swaps in the litellm price
 +    // table when it is fetched over the proxy (offline-safe). The fold is
-+    // incremental (① : a refresh prices only NEW requests, never history.
++    // incremental (①): a refresh prices only NEW requests, never history.
 +    // Startup pull + periodic refresh (default 6h) keep it following the
 +    // latest litellm prices; both are overridable via env.
 +    const fx = pricingFxRmbPerUsd()
@@ -585,7 +598,7 @@ index 2fa53f78f1..0f649f6e59 100644
      ctx.on('session/event', (session) => {
 diff --git a/packages/llm/token-meter/src/price-source.ts b/packages/llm/token-meter/src/price-source.ts
 new file mode 100644
-index 0000000000..9b1a2c3a86
+index 0000000000..97a0c89ccc
 --- /dev/null
 +++ b/packages/llm/token-meter/src/price-source.ts
 @@ -0,0 +1,322 @@
@@ -607,7 +620,7 @@ index 0000000000..9b1a2c3a86
 +import type { CostPrice } from './cost-pricing.ts'
 +import {
 +  costPriceFromLitellm, DEFAULT_BASE_PRICE, DEFAULT_FX_RMB_PER_USD, DEFAULT_WINDOWS,
-+  DEEPSEEK_FALLBACK_ROW, priceAtTs, type LitellmPriceRow, type TimeWindow,
++  DEEPSEEK_FALLBACK_ROW, DEEPSEEK_OFFICIAL_PRICES, priceAtTs, type LitellmPriceRow, type TimeWindow,
 +} from './cost-pricing.ts'
 +
 +/** Effective RMB/M price for one (model, instant). */
@@ -662,6 +675,18 @@ index 0000000000..9b1a2c3a86
 +  return undefined
 +}
 +
++/** Authoritative peak RMB/M for a canonical model, else litellm row, else default. */
++function resolveBasePrice(canonical: string | undefined, table: LitellmTable, fx: number): CostPrice {
++  const official = canonical === undefined ? undefined : DEEPSEEK_OFFICIAL_PRICES[canonical]
++  if (official !== undefined) return official
++  const row = rowForModel(table, canonical) ?? DEEPSEEK_FALLBACK_ROW
++  try {
++    return costPriceFromLitellm(row, fx)
++  } catch {
++    return DEFAULT_BASE_PRICE
++  }
++}
++
 +/** Build a static resolver: row→RMB/M via FX, then time-window discount. */
 +export function buildCostPriceAt(config: PricingConfig): CostPriceAt {
 +  const fx = config.fxRmbPerUsd ?? DEFAULT_FX_RMB_PER_USD
@@ -675,13 +700,7 @@ index 0000000000..9b1a2c3a86
 +    const hit = cache.get(key)
 +    if (hit !== undefined) return hit
 +    const canonical = model === undefined ? undefined : (aliases[model] ?? model)
-+    const row = rowForModel(table, canonical) ?? DEEPSEEK_FALLBACK_ROW
-+    let price: CostPrice
-+    try {
-+      price = costPriceFromLitellm(row, fx)
-+    } catch {
-+      price = DEFAULT_BASE_PRICE
-+    }
++    const price = resolveBasePrice(canonical, table, fx)
 +    const effective = priceAtTs(price, timestampMs, windows)
 +    cache.set(key, effective)
 +    return effective
@@ -726,13 +745,7 @@ index 0000000000..9b1a2c3a86
 +    const hit = cache.get(key)
 +    if (hit !== undefined) return hit
 +    const canonical = model === undefined ? undefined : (aliases[model] ?? model)
-+    const row = rowForModel(table, canonical) ?? DEEPSEEK_FALLBACK_ROW
-+    let price: CostPrice
-+    try {
-+      price = costPriceFromLitellm(row, fx)
-+    } catch {
-+      price = DEFAULT_BASE_PRICE
-+    }
++    const price = resolveBasePrice(canonical, table, fx)
 +    const effective = priceAtTs(price, timestampMs, windows)
 +    cache.set(key, effective)
 +    return effective
@@ -1072,21 +1085,19 @@ index 0000000000..2c283e414f
 +}
 diff --git a/packages/llm/token-meter/tests/cost-pricing.spec.ts b/packages/llm/token-meter/tests/cost-pricing.spec.ts
 new file mode 100644
-index 0000000000..618c7d3bfe
+index 0000000000..858f520529
 --- /dev/null
 +++ b/packages/llm/token-meter/tests/cost-pricing.spec.ts
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,143 @@
 +// RMB cost pricing engine + incremental sessionCost projection fold.
 +
 +import { describe, expect, it } from 'vitest'
 +import type { SessionEvent } from '@deepseek-ai/dsh-session'
 +import {
-+  costPriceFromLitellm, DEFAULT_BASE_PRICE, priceAtTs, stepCost, windowAt,
++  costPriceFromLitellm, DEFAULT_BASE_PRICE, DEEPSEEK_OFFICIAL_PRICES, priceAtTs, stepCost, windowAt,
 +} from '../src/cost-pricing.ts'
 +import { buildSessionCostProjection } from '../src/session-cost-projection.ts'
-+import { buildCostPriceAt, bundledCostPriceAt, createPriceResolver, parseLitellmTable, rowForModel } from '../src/price-source.ts'
-+
-+const BASIC_PRICE = { inputMiss: 2, cacheHit: 0.5, cacheWrite: 0.5, output: 8 }
++import { bundledCostPriceAt, createPriceResolver, parseLitellmTable, rowForModel } from '../src/price-source.ts'
 +
 +function header(model: string, seq = 1, time = 0): SessionEvent {
 +  return { type: 'request/header', seq, time, data: { header: { config: { provider: 'p', model } } } } as never as SessionEvent
@@ -1110,33 +1121,38 @@ index 0000000000..618c7d3bfe
 +    expect(price.cacheHit).toBeCloseTo(0.5)
 +    expect(price.output).toBeCloseTo(8)
 +  })
-+
-+  it('falls back to the uncached rate for a missing cache-hit field', () => {
-+    const price = costPriceFromLitellm({ input_cost_per_token: 2 / 1e6 / 7.2, output_cost_per_token: 8 / 1e6 / 7.2 }, 7.2)
-+    expect(price.cacheHit).toBeCloseTo(2)
-+  })
 +})
 +
 +describe('windowAt / priceAtTs', () => {
-+  it('applies the off-peak discount inside the window (Beijing 00:30–8:30)', () => {
++  it('applies the off-peak 0.5x discount inside the Beijing window', () => {
 +    expect(windowAt(OFF_PEAK_MS)).toBeDefined()
-+    const discounted = priceAtTs(BASIC_PRICE, OFF_PEAK_MS)
-+    expect(discounted.inputMiss).toBeCloseTo(0.5)
-+    expect(discounted.output).toBeCloseTo(1)
++    const discounted = priceAtTs(DEFAULT_BASE_PRICE, OFF_PEAK_MS)
++    expect(discounted.inputMiss).toBeCloseTo(1.5) // 3 × 0.5
++    expect(discounted.output).toBeCloseTo(4.5) // 9 × 0.5
 +  })
 +
 +  it('returns full price outside any window', () => {
 +    expect(windowAt(PEAK_MS)).toBeUndefined()
-+    expect(priceAtTs(BASIC_PRICE, PEAK_MS)).toEqual(BASIC_PRICE)
++    expect(priceAtTs(DEFAULT_BASE_PRICE, PEAK_MS)).toEqual(DEFAULT_BASE_PRICE)
 +  })
 +})
 +
 +describe('stepCost', () => {
-+  it('prices each bucket at the effective RMB/M rate', () => {
++  it('prices each bucket at the effective RMB/M (flash peak)', () => {
 +    const cost = stepCost({ uncachedInputTokens: 1_000_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1_000_000 }, DEFAULT_BASE_PRICE)
-+    expect(cost.input).toBeCloseTo(2)
-+    expect(cost.output).toBeCloseTo(8)
-+    expect(cost.total).toBeCloseTo(10)
++    expect(cost.input).toBeCloseTo(3)
++    expect(cost.output).toBeCloseTo(9)
++    expect(cost.total).toBeCloseTo(12)
++  })
++})
++
++describe('official DeepSeek prices', () => {
++  it('flash family uses 3 / 0.10 / 0 / 9 (peak, cache-write free)', () => {
++    const p = DEEPSEEK_OFFICIAL_PRICES['deepseek-v4-flash']!
++    expect(p.inputMiss).toBe(3)
++    expect(p.cacheHit).toBeCloseTo(0.1)
++    expect(p.cacheWrite).toBe(0)
++    expect(p.output).toBe(9)
 +  })
 +})
 +
@@ -1145,24 +1161,23 @@ index 0000000000..618c7d3bfe
 +
 +  it('stays zero until a usage event arrives', () => {
 +    const def = buildSessionCostProjection(priceAt)
-+    let state = def.apply(def.init(), header('m'))
++    const state = def.apply(def.init(), header('m'))
 +    expect(def.wire!.view(state).total).toBe(0)
 +  })
 +
-+  it('adds cost for a new step (incremental ① ', () => {
++  it('adds cost for a new step (incremental ①)', () => {
 +    const def = buildSessionCostProjection(priceAt)
-+    let state = def.apply(def.init(), header('m'))
-+    const cost = def.wire!.view(def.apply(state, usageEvt(1, 1, USAGE, PEAK_MS)))
-+    expect(cost.input).toBeCloseTo(2)
-+    expect(cost.total).toBeCloseTo(10)
++    const state = def.apply(def.apply(def.init(), header('m')), usageEvt(1, 1, USAGE, PEAK_MS))
++    const cost = def.wire!.view(state)
++    expect(cost.input).toBeCloseTo(3)
++    expect(cost.total).toBeCloseTo(12)
 +  })
 +
 +  it('replaces the same turn/step sample instead of double-counting', () => {
 +    const def = buildSessionCostProjection(priceAt)
-+    let state = def.apply(def.init(), header('m'))
-+    state = def.apply(state, usageEvt(1, 1, USAGE, PEAK_MS))
-+    const again = def.wire!.view(def.apply(state, usageEvt(1, 1, USAGE, PEAK_MS)))
-+    expect(again.total).toBeCloseTo(10)
++    const base = def.apply(def.apply(def.init(), header('m')), usageEvt(1, 1, USAGE, PEAK_MS))
++    const again = def.wire!.view(def.apply(base, usageEvt(1, 1, USAGE, PEAK_MS)))
++    expect(again.total).toBeCloseTo(12)
 +  })
 +
 +  it('prices an off-peak event cheaper than a peak one', () => {
@@ -1172,49 +1187,48 @@ index 0000000000..618c7d3bfe
 +    expect(offpeak.total).toBeLessThan(peak.total)
 +  })
 +
-+  it('tracks the model from request/header for price lookup', () => {
++  it('prices the flash model by its official peak rate', () => {
 +    const def = buildSessionCostProjection(priceAt)
-+    const state = def.apply(def.init(), header('deepseek-chat'))
-+    expect(state.model).toBe('deepseek-chat')
++    const state = def.apply(def.apply(def.init(), header('deepseek-v4-flash')), usageEvt(1, 1, USAGE, PEAK_MS))
++    const cost = def.wire!.view(state)
++    expect(cost.input).toBeCloseTo(3)
++    expect(cost.output).toBeCloseTo(9)
 +  })
 +})
 +
-+describe('litellm table parsing', () => {
++describe('litellm table parsing / resolver', () => {
 +  it('parses a JSON table and maps model ids', () => {
-+    const table = parseLitellmTable(JSON.stringify({ 'deepseek-chat': { input_cost_per_token: 2 / 1e6, output_cost_per_token: 8 / 1e6 } }))
-+    const row = rowForModel(table, 'deepseek-chat')
++    const table = parseLitellmTable(JSON.stringify({ 'custom-model': { input_cost_per_token: 2 / 1e6, output_cost_per_token: 8 / 1e6 } }))
++    const row = rowForModel(table, 'custom-model')
 +    expect(row).toBeDefined()
 +    expect(row!.output_cost_per_token).toBeCloseTo(8 / 1e6)
 +  })
 +
-+  it('prices a vision-exp alias identically to its canonical model', () => {
-+    const table = parseLitellmTable(JSON.stringify({ 'deepseek-v4-flash': { input_cost_per_token: 3 / 1e6, output_cost_per_token: 6 / 1e6 } }))
-+    const priceAt = buildCostPriceAt({ table, fxRmbPerUsd: 7.2 })
++  it('aliases the vision-exp variant to the canonical official price', () => {
++    const priceAt = bundledCostPriceAt()
 +    const base = priceAt('deepseek-v4-flash', PEAK_MS)
 +    const alias = priceAt('deepseek-v4-flash-vision-exp', PEAK_MS)
 +    expect(alias.inputMiss).toBeCloseTo(base.inputMiss)
 +    expect(alias.output).toBeCloseTo(base.output)
-+    const unknown = priceAt('other-model', PEAK_MS)
-+    expect(unknown.inputMiss).not.toBeCloseTo(base.inputMiss)
++    expect(base.cacheHit).toBeCloseTo(0.10)
 +  })
 +})
 +
 +describe('createPriceResolver (litellm auto-sync)', () => {
-+  it('starts on fallback and swaps to the fetched table after refresh', async () => {
++  it('starts on the fallback and swaps to the fetched table', async () => {
 +    const resolver = createPriceResolver({
-+      fetchTable: async () => ({ 'deepseek-v4-flash': { input_cost_per_token: 3 / 1e6, output_cost_per_token: 6 / 1e6 } }),
++      fetchTable: async () => ({ 'custom-model': { input_cost_per_token: 3 / 1e6, output_cost_per_token: 6 / 1e6 } }),
 +    })
-+    expect(resolver.priceAt('deepseek-v4-flash', PEAK_MS).output).toBeCloseTo(8)
++    expect(resolver.priceAt('custom-model', PEAK_MS).output).toBeCloseTo(9) // default before refresh
 +    await resolver.refresh()
-+    expect(resolver.priceAt('deepseek-v4-flash', PEAK_MS).output).toBeCloseTo(6 * 7.2)
-+    expect(resolver.priceAt('deepseek-v4-flash-vision-exp', PEAK_MS).output).toBeCloseTo(6 * 7.2)
++    expect(resolver.priceAt('custom-model', PEAK_MS).output).toBeCloseTo(6 * 7.2) // fetched row
 +    resolver.dispose()
 +  })
 +
 +  it('keeps the fallback when the fetch fails (offline-safe)', async () => {
 +    const resolver = createPriceResolver({ fetchTable: async () => { throw new Error('network down') } })
 +    await resolver.refresh()
-+    expect(resolver.priceAt('deepseek-v4-flash', PEAK_MS).output).toBeCloseTo(8)
++    expect(resolver.priceAt('custom-model', PEAK_MS).output).toBeCloseTo(9)
 +    resolver.dispose()
 +  })
 +})

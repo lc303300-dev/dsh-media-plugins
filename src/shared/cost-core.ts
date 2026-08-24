@@ -50,12 +50,24 @@ const PER_MILLION = 1_000_000
 /** Default USD→CNY rate; override with cost.fxRmbPerUsd config. */
 export const DEFAULT_FX_RMB_PER_USD = 7.2
 
-/** Default full-price RMB/M table (bundled fallback before a fetch). */
+/** Default peak RMB/M table for the bundled fallback (deepseek-v4-flash family). */
 export const DEFAULT_BASE_PRICE: CostPrice = {
-  inputMiss: 2,
-  cacheHit: 0.5,
-  cacheWrite: 0.5,
-  output: 8,
+  inputMiss: 3,
+  cacheHit: 0.1,
+  cacheWrite: 0,
+  output: 9,
+}
+
+/**
+ * Authoritative DeepSeek official peak RMB/M prices (per million tokens).
+ * deepseek-v4-flash and deepseek-v4-flash-vision-exp are priced identically;
+ * off-peak is 0.5× peak across every bucket; the table charges no separate
+ * cache-write bucket. Edit/copy to match your contract.
+ */
+export const DEEPSEEK_OFFICIAL_PRICES: Readonly<Record<string, CostPrice>> = {
+  'deepseek-v4-flash': { inputMiss: 3, cacheHit: 0.10, cacheWrite: 0, output: 9 },
+  'deepseek-v4-flash-vision-exp': { inputMiss: 3, cacheHit: 0.10, cacheWrite: 0, output: 9 },
+  'deepseek-v4-pro': { inputMiss: 9, cacheHit: 0.30, cacheWrite: 0, output: 27 },
 }
 
 /** Convert a litellm USD/token row to RMB per million tokens. */
@@ -79,9 +91,9 @@ export interface TimeWindow {
   readonly outputFactor: number
 }
 
-/** Default DeepSeek-style off-peak window (00:30–08:30, Beijing). Editable. */
+/** Default DeepSeek off-peak window (00:30–08:30, Beijing): 0.5× peak everywhere. */
 export const DEFAULT_WINDOWS: readonly TimeWindow[] = [
-  { startMinute: 30, endMinute: 510, inputFactor: 0.25, cacheHitFactor: 0.25, cacheWriteFactor: 0.25, outputFactor: 0.125 },
+  { startMinute: 30, endMinute: 510, inputFactor: 0.5, cacheHitFactor: 0.5, cacheWriteFactor: 0, outputFactor: 0.5 },
 ]
 
 /** Beijing is UTC+8, fixed. */
