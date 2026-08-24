@@ -1,0 +1,4 @@
+# Keep patch/diff files LF-only so they remain valid `git apply` input on any
+# machine, regardless of core.autocrlf (which would otherwise turn them CRLF).
+*.patch text eol=lf
+*.diff text eol=lf
