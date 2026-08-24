@@ -17,7 +17,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { ProxyAgent, fetch as undiciFetch } from 'undici'
 import {
   costPriceFromLitellm, DEFAULT_BASE_PRICE, DEFAULT_FX_RMB_PER_USD,
-  DEFAULT_LITELLM_URL, DEEPSEEK_FALLBACK_ROW, DEEPSEEK_OFFICIAL_PRICES, findModelRow, priceAtTs, stepCost,
+  DEFAULT_LITELLM_URL, DEFAULT_WINDOWS, DEEPSEEK_FALLBACK_ROW, DEEPSEEK_OFFICIAL_PRICES, findModelRow, priceAtTs, stepCost,
   type CostPrice, type LitellmPriceRow, type StepCost, type TimeWindow,
 } from './shared/cost-core.ts'
 
@@ -31,10 +31,10 @@ export const Config: z<{
   refreshMs?: number
   windows?: readonly TimeWindow[]
 }> = z.object({
-  fxRmbPerUsd: z.number().optional(),
-  proxyUrl: z.string().optional(),
-  litellmUrl: z.string().optional(),
-  refreshMs: z.number().optional(),
+  fxRmbPerUsd: z.number().default(DEFAULT_FX_RMB_PER_USD),
+  proxyUrl: z.string().default(''),
+  litellmUrl: z.string().default(DEFAULT_LITELLM_URL),
+  refreshMs: z.number().default(21_600_000),
   windows: z.array(z.object({
     startMinute: z.number(),
     endMinute: z.number(),
@@ -42,7 +42,7 @@ export const Config: z<{
     cacheHitFactor: z.number(),
     cacheWriteFactor: z.number(),
     outputFactor: z.number(),
-  })).optional(),
+  })).default([...DEFAULT_WINDOWS]),
 })
 
 type ResolvedConfig = z.infer<typeof Config>
@@ -150,16 +150,17 @@ function apply(ctx: Context, config: ResolvedConfig): void {
       output: {
         schema: {
           type: 'object',
+          additionalProperties: false,
           properties: {
-            ok: { type: 'boolean', required: true },
+            ok: { type: 'boolean' },
             cost: {
               type: 'object',
+              additionalProperties: false,
               properties: {
                 input: { type: 'number' }, cacheHit: { type: 'number' },
                 cacheWrite: { type: 'number' }, output: { type: 'number' },
                 total: { type: 'number' },
               },
-              required: true,
             },
             peak: { type: 'boolean' },
             windowNote: { type: 'string' },
@@ -167,7 +168,6 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             steps: { type: 'number' },
             message: { type: 'string' },
           },
-          required: true,
         },
       },
       async execute(_args: unknown, exec: ExecContextLike) {
