@@ -32,7 +32,7 @@ whenToUse: 用户要从文本、图片、视频或音频生成/测试视频，�
 
 1. **▶ 步骤 1：读取输入**。先读用户有序媒体、请求的时长/比例/风格/运镜/音频偏好/约束。
 2. **▶ 步骤 2：加载导演知识**。**加载 `video-director-prompt` 技能**作为平台无关创作层；按需用其 `directing-methods.md`（可视化/场面调度/表演/光色/物理/声音）、`prompt-structure.md`（区块/剪辑/素材语义/交付格式）、`community-techniques.md`（特殊视角/高速/复杂转场/极端 FOV/社区技巧）、`structure-guide.md`。
-3. **▶ 步骤 3：检索语料并逐条列出命中（不可跳过）**。本路径一律先用 `prompt_revision search_corpus` 检索（≤3 条，只提取可迁移的镜头结构/导演方法，**不复制案例**）；随后用 `prompt_revision authoring_gate` 传 `current_prompt`、`media={images,videos,audios}`、`corpus_hits=实际命中数`——**只有当 authoring_gate 返回 `ok=true` 才可继续创作**；若返回错误（未查语料），必须先检索语料。拿到结果后**逐条向用户展示命中的语料**：每条给 `编号（id）`、`标题`、`得分`、`可迁移结构（portable_pattern）`；`source_model`/版本只作 provenance，**绝不据此选生成模型**。**本路径不再区分"提示词是否完整"，只要走了导演+语料补全就必须查语料。**
+3. **▶ 步骤 3：检索语料并逐条列出命中（不可跳过）**。本路径一律先用 `prompt_revision search_corpus` 检索（≤10 条，只提取可迁移的镜头结构/导演方法，**不复制案例**）；随后用 `prompt_revision authoring_gate` 传 `current_prompt`、`media={images,videos,audios}`、`corpus_hits=实际命中数`——**只有当 authoring_gate 返回 `ok=true` 才可继续创作**；若返回错误（未查语料），必须先检索语料。拿到结果后**逐条向用户展示命中的语料**：每条给 `编号（id）`、`标题`、`得分`、`可迁移结构（portable_pattern）`；`source_model`/版本只作 provenance，**绝不据此选生成模型**。**本路径不再区分"提示词是否完整"，只要走了导演+语料补全就必须查语料。**
 4. **▶ 步骤 4：写提示词**。写一段简洁、可独立执行的中文视频提示词，保留用户的主体/身份/构图/时长/比例/运镜偏好，**用裸标签（图片1、视频1、音频1…）严格绑定传入顺序**，不写 `@图片1` 等 chip 形式。
 5. **▶ 步骤 5：应用参考绑定/清理规则**。每个引用分配明确职责（仅身份/仅服饰/仅首帧/仅运镜…），说明什么**不要**从该源转移；删除模型名、分辨率、参考模式、API/上传/工具调用措辞、系统规则套话（"你是一个专家""请严格遵守"）；正需求只写一次，负面/约束只放一次。
 6. **▶ 步骤 6：音频默认**。**用户未指定音频时，追加 `不生成音乐，仅生成音效。`**（仅创作路径；已定稿提示词不得追加）。
@@ -47,4 +47,4 @@ whenToUse: 用户要从文本、图片、视频或音频生成/测试视频，�
 
 ## 三、受治理的 Codex_CS 修订（业务 Skill V1 之后）
 
-业务 Skill 已产出 V1 时，不要用普通 DT 创作路径替换。用户要求修改时：用 `project_pipeline` 的 `request_revision` 传 `feedback` 原文 → `prompt_revision` 的 `classify` 分类（`explicit_local` 明确局部修改跳过语料；`ambiguous_creative`/`structural_rewrite` 最多检索 3 条，只提取可迁移结构）→ `begin_revision` → 修订后 `set_prompt`（source=dt_revision）→ 再次 `confirm_prompt`。保留用户没要求改的一切；变更比例/时长仅在用户显式改项目设置时。修订结果须通过 `prompt_revision` 的 `validate_result`（回显同一 locked_context_sha256），且修订步不提交视频。
+业务 Skill 已产出 V1 时，不要用普通 DT 创作路径替换。用户要求修改时：用 `project_pipeline` 的 `request_revision` 传 `feedback` 原文 → `prompt_revision` 的 `classify` 分类（`explicit_local` 明确局部修改跳过语料；`ambiguous_creative`/`structural_rewrite` 最多检索 10 条，只提取可迁移结构）→ `begin_revision` → 修订后 `set_prompt`（source=dt_revision）→ 再次 `confirm_prompt`。保留用户没要求改的一切；变更比例/时长仅在用户显式改项目设置时。修订结果须通过 `prompt_revision` 的 `validate_result`（回显同一 locked_context_sha256），且修订步不提交视频。

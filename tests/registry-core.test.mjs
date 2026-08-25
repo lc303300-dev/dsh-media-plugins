@@ -21,7 +21,7 @@ const sampleContract = {
     { id: 'hero', label: '主体图', min: 1, max: 3 },
     { id: 'bg', label: '背景图', min: 0, max: 2 },
   ],
-  prompt: { lang: 'zh', corpus_policy: 'up_to_3_examples' },
+  prompt: { lang: 'zh', corpus_policy: 'up_to_10_examples' },
 }
 
 test('contract validation accepts valid and rejects invalid contracts', () => {

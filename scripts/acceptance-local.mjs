@@ -43,7 +43,7 @@ function record(name, ok, detail) {
       { id: 'hero', label: '主体图', min: 1, max: 3, count_rule: 'per_second' },
       { id: 'bg', label: '背景图', min: 0, max: 2, count_rule: 'fixed' },
     ],
-    prompt: { lang: 'zh', corpus_policy: 'up_to_3_examples' },
+    prompt: { lang: 'zh', corpus_policy: 'up_to_10_examples' },
   }
   writeFileSync(join(skillDir, 'contract.json'), JSON.stringify(contract, null, 2), 'utf8')
   writeFileSync(join(skillDir, 'routing.json'), JSON.stringify({ keywords: ['夜拍', '城市', '夜景'] }, null, 2), 'utf8')

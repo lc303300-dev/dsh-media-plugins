@@ -422,7 +422,7 @@ export function isFlowVideoSkill(contract: { flow?: FlowContract } | undefined):
  * - video：全量支持比例 + 4-30 秒（实际比例/时长仍由 set_settings 确认）；
  * - slots：单个通用素材槽 reference-material（flow 包不声明素材槽/count_rule，
  *   min=1、不设上限、recommended 默认节奏）；SlotPlan 推导保持现有逻辑；
- * - prompt：zh + up_to_3_examples；
+ * - prompt：zh + up_to_10_examples；
  * - description/taxonomy 从注册记录（identity）带过来。
  * 合成契约必须能通过 registry-core 的 validateContract 与项目管线全部既有校验：
  * validateContract 的 slot.max 仅接受整数、addMaterial 对 max 做 `length >= max`
@@ -456,7 +456,7 @@ export function synthesizeVideoContractFromFlow(
         count_rule: 'per_second',
       },
     ],
-    prompt: { lang: 'zh', corpus_policy: 'up_to_3_examples' },
+    prompt: { lang: 'zh', corpus_policy: 'up_to_10_examples' },
     flow,
   }
 }

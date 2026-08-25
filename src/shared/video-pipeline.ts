@@ -182,18 +182,19 @@ export function classifyVideoPromptCompleteness(prompt: string, media: Completen
   return { verdict: reasons.length === 0 ? 'complete' : 'incomplete', reasons }
 }
 
-/** Deterministic rule: an incomplete prompt must consult the corpus before authoring. */
-export function completenessRequiresCorpus(verdict: PromptCompletenessVerdict): boolean {
-  return verdict === 'incomplete'
+/** Deterministic rule: in the director+corpus authoring path, corpus consultation is mandatory regardless of completeness. */
+export function completenessRequiresCorpus(_verdict: PromptCompletenessVerdict): boolean {
+  return true
 }
 
 /**
- * Authoring gate: if the prompt is incomplete but no corpus retrieval was
- * performed, authoring must be rejected so the corpus step cannot be skipped.
+ * Authoring gate: regardless of completeness, the director+corpus authoring
+ * path MUST consult the corpus before authoring; if no retrieval was performed
+ * (corpus_hits < 1), authoring is rejected so the corpus step cannot be skipped.
  */
-export function authoringCorpusGateError(verdict: PromptCompletenessVerdict, corpusHits: number): string | null {
-  if (verdict === 'incomplete' && (!Number.isFinite(corpusHits) || corpusHits < 1)) {
-    return 'incomplete prompt requires corpus retrieval (run prompt_revision search_corpus and pass corpus_hits) before authoring'
+export function authoringCorpusGateError(_verdict: PromptCompletenessVerdict, corpusHits: number): string | null {
+  if (!Number.isFinite(corpusHits) || corpusHits < 1) {
+    return 'director/corpus authoring requires corpus retrieval (run prompt_revision search_corpus and pass corpus_hits) before authoring'
   }
   return null
 }

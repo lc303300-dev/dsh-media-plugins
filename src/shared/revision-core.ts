@@ -5,7 +5,7 @@
  *
  * Contract (docs/prompt_revision_workflow.md + schemas/):
  * - classification: explicit_local | ambiguous_creative | structural_rewrite;
- * - explicit_local never searches the corpus; the other classes cap at 3;
+ * - explicit_local never searches the corpus; the other classes cap at 10;
  * - the result must echo the request's locked_context_sha256 so callers can
  *   reject revisions produced against a stale contract;
  * - the classifier never rewrites prompts, never searches the corpus, never
@@ -141,7 +141,7 @@ export function buildRevisionRequest(payload: RevisionInput): Record<string, unk
     classification_reasons: reasons,
     should_search_corpus: shouldSearch,
     corpus_search: {
-      max_results: shouldSearch ? 3 : 0,
+      max_results: shouldSearch ? 10 : 0,
       purpose: shouldSearch ? '仅提取可迁移的镜头结构或导演方法，不复制案例提示词。' : '明确局部修改不需要语料库。',
     },
     current_prompt: payload.current_prompt,
@@ -214,7 +214,7 @@ export function validateRevisionResult(
     if (typeof usage.searched !== 'boolean') errors.push('corpus_usage.searched must be a boolean')
     const matches = Array.isArray(usage.matches) ? usage.matches : []
     if (!Array.isArray(usage.matches)) errors.push('corpus_usage.matches must be an array')
-    if (matches.length > 3) errors.push(`corpus_usage.matches must be at most 3, got ${matches.length}`)
+    if (matches.length > 10) errors.push(`corpus_usage.matches must be at most 10, got ${matches.length}`)
     for (const match of matches) {
       if (typeof match.id !== 'string' || !match.id) errors.push('every corpus match requires an id')
       if (typeof (match as any).portable_pattern !== 'string' || !(match as any).portable_pattern) {

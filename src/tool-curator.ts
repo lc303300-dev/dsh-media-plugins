@@ -470,7 +470,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
                 max: ref.max_count ?? undefined,
                 count_rule: ref.count_rule?.type,
               })),
-              prompt: { lang: 'zh', corpus_policy: 'up_to_3_examples' },
+              prompt: { lang: 'zh', corpus_policy: 'up_to_10_examples' },
             }
             validateContract(contractForRegistry)
             const record = registry.ingest({ contract: contractForRegistry, routing: routingRaw, packageRoot: packageDir, provenance: 'curator' }, { force: true })

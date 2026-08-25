@@ -34,7 +34,7 @@ test('classifier: ambiguous creative feedback', () => {
   assert.equal(r.classification, 'ambiguous_creative')
   const req = requestFor('不够震撼，更有电影感')
   assert.equal(req.should_search_corpus, true)
-  assert.equal(req.corpus_search.max_results, 3)
+  assert.equal(req.corpus_search.max_results, 10)
 })
 
 test('classifier: structural rewrite feedback', () => {
@@ -105,9 +105,9 @@ test('validateRevisionResult: valid result passes; stale hash rejected; corpus c
   assert.equal(stale.ok, false)
   assert.ok(stale.errors.some((e) => e.includes('stale contract')))
   // too many corpus matches
-  const tooMany = validateRevisionResult({ ...valid, corpus_usage: { searched: true, matches: [{ id: 'a', portable_pattern: 'x' }, { id: 'b', portable_pattern: 'y' }, { id: 'c', portable_pattern: 'z' }, { id: 'd', portable_pattern: 'w' }] } })
+  const tooMany = validateRevisionResult({ ...valid, corpus_usage: { searched: true, matches: Array.from({ length: 11 }, (_, i) => ({ id: String(i), portable_pattern: 'x' + i })) } })
   assert.equal(tooMany.ok, false)
-  assert.ok(tooMany.errors.some((e) => e.includes('at most 3')))
+  assert.ok(tooMany.errors.some((e) => e.includes('at most 10')))
   // explicit_local with corpus matches rejected
   const localWithCorpus = validateRevisionResult({ ...valid, classification: 'explicit_local', corpus_usage: { searched: false, matches: [{ id: 'a', portable_pattern: 'x' }] } })
   assert.equal(localWithCorpus.ok, false)

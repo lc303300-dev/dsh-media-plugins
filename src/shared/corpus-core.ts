@@ -2,7 +2,7 @@
  * Corpus search (seedance-forge port, all-JS): ranking mirrors the Codex_DT
  * `native_score` (title×4 + category×3 + description×2 + content×1), results
  * keep full provenance, and source model/version is metadata only — it must
- * never select the runtime generation model. Revision usage caps at 3.
+ * never select the runtime generation model. Revision usage caps at 10.
  *
  * @module dsh-media-plugins/shared/corpus-core
  */
@@ -176,8 +176,8 @@ export function toCorpusMatch(row: CorpusRow, previewChars = 500): CorpusMatch {
   }
 }
 
-/** Search the corpus; `top` capped at 3 for revision usage by contract. */
-export function searchCorpus(query: string, top = 3, indexPath?: string): CorpusMatch[] {
+/** Search the corpus; `top` capped at 10 for revision usage by contract. */
+export function searchCorpus(query: string, top = 10, indexPath?: string): CorpusMatch[] {
   const clean = (query ?? '').trim()
   if (!clean) return []
   const rows = loadCorpus(indexPath)
@@ -185,7 +185,7 @@ export function searchCorpus(query: string, top = 3, indexPath?: string): Corpus
     .map((row) => ({ row, score: scoreCorpusRow(row, clean) }))
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score)
-  return scored.slice(0, Math.max(1, Math.min(top, 3))).map((entry) => ({ ...toCorpusMatch(entry.row), score: entry.score }))
+  return scored.slice(0, Math.max(1, Math.min(top, 10))).map((entry) => ({ ...toCorpusMatch(entry.row), score: entry.score }))
 }
 
 /** Count of bundled corpus entries (readiness reporting). */

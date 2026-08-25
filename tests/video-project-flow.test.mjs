@@ -140,7 +140,7 @@ test('synthesizeVideoContractFromFlow: 合成契约通过 validateContract 且�
   assert.equal(slot.count_rule, 'per_second')
   // prompt 与 flow 原样保留
   assert.equal(validated.prompt.lang, 'zh')
-  assert.equal(validated.prompt.corpus_policy, 'up_to_3_examples')
+  assert.equal(validated.prompt.corpus_policy, 'up_to_10_examples')
   assert.deepEqual(validated.flow.capabilities, ['video.generate'])
   assert.equal(validated.flow.primary_output, 'video')
   // 无 identity 时兜底 name/version 仍可通过 validateContract

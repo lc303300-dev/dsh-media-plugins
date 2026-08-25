@@ -113,16 +113,16 @@ test('classifyVideoPromptCompleteness: executable shot + camera + binding is com
   assert.equal(full.reasons.length, 0)
 })
 
-test('completenessRequiresCorpus + authoringCorpusGateError: incomplete must consult corpus', () => {
+test('authoring gate: corpus consultation is mandatory regardless of completeness', () => {
   assert.equal(completenessRequiresCorpus('incomplete'), true)
-  assert.equal(completenessRequiresCorpus('complete'), false)
-  // incomplete without corpus hits -> gate rejects (this is the bug being fixed)
+  assert.equal(completenessRequiresCorpus('complete'), true)
+  // no corpus hits -> gate rejects for BOTH verdicts (complete must also consult corpus)
   assert.ok(authoringCorpusGateError('incomplete', 0))
   assert.ok(authoringCorpusGateError('incomplete', undefined))
-  // incomplete WITH corpus hits -> gate passes
+  assert.ok(authoringCorpusGateError('complete', 0))
+  // with corpus hits -> gate passes
   assert.equal(authoringCorpusGateError('incomplete', 3), null)
-  // complete never requires corpus
-  assert.equal(authoringCorpusGateError('complete', 0), null)
+  assert.equal(authoringCorpusGateError('complete', 10), null)
 })
 
 test('confirmationGateError: duration accepts 5 / 5s / 5秒 forms', () => {

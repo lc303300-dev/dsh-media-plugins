@@ -9,7 +9,7 @@ test('corpus loads from the bundled index (full seedance-forge port)', () => {
 
 test('search finds relevant matches and preserves provenance', () => {
   const matches = searchCorpus('anime character', 3)
-  assert.ok(matches.length > 0 && matches.length <= 3)
+  assert.ok(matches.length > 0 && matches.length <= 10)
   const first = matches[0]
   assert.ok(first.id.length > 0)
   assert.ok(typeof first.portable_pattern === 'string' && first.portable_pattern.length > 0)
@@ -17,9 +17,9 @@ test('search finds relevant matches and preserves provenance', () => {
   assert.ok('model' in first.source_metadata && 'license' in first.source_metadata)
 })
 
-test('search respects the revision cap of 3 even when asked for more', () => {
+test('search respects the revision cap of 10 even when asked for more', () => {
   const matches = searchCorpus('城市 夜景 镜头', 10)
-  assert.ok(matches.length <= 3, 'contract caps corpus usage at 3')
+  assert.ok(matches.length <= 10, 'contract caps corpus usage at 10')
 })
 
 test('empty query returns no matches', () => {
@@ -55,7 +55,7 @@ test('CJK bigram tokenization makes long Chinese queries match', () => {
   const row = { id: 'x', title: '', description: '', content: '夜晚的城市霓虹灯光' }
   assert.ok(scoreCorpusRow(row, '夜晚的未来城市霓虹灯光倒映') > 0, 'long CJK query must score via bigrams')
   const hits = searchCorpus('夜晚的未来城市，霓虹灯光倒映在湿润的街道上，镜头从楼顶缓慢推近到街角人群', 3)
-  assert.ok(hits.length > 0 && hits.length <= 3, 'long CJK query finds bounded matches')
+  assert.ok(hits.length > 0 && hits.length <= 10, 'long CJK query finds bounded matches')
 })
 
 test('resolveIndexPath resolves to the bundled index file', () => {

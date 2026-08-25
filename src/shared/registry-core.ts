@@ -66,7 +66,7 @@ export interface SkillContract {
   slots?: SlotContract[]
   prompt?: {
     lang?: string
-    corpus_policy?: 'no_corpus' | 'up_to_3_examples'
+    corpus_policy?: 'no_corpus' | 'up_to_10_examples'
   }
   /** Codex_Flow format metadata (present for packages with meta.yaml). */
   flow?: FlowContract
