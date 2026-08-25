@@ -17,8 +17,9 @@
  */
 
 import { createHash } from 'node:crypto'
+import { IMAGE_RATIOS } from './ratios.ts'
 
-export const IMAGE_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16']
+export { IMAGE_RATIOS }
 export const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'])
 export const IMAGE_PROJECT_STATES = [
   'awaiting_materials',

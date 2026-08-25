@@ -15,10 +15,12 @@
  */
 
 import { createHash } from 'node:crypto'
+import { VIDEO_RATIOS } from './ratios.ts'
 
 export type RevisionClass = 'explicit_local' | 'ambiguous_creative' | 'structural_rewrite'
 
-export const VALID_REVISION_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] as const
+/** Ratios a revision may lock; same 6 video ratios as the pipeline contract. */
+export const VALID_REVISION_RATIOS = VIDEO_RATIOS
 
 export interface LockedContext {
   contract_rules: string[]

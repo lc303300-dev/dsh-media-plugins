@@ -171,10 +171,9 @@ export function materialGuidance(contractJson: string): Array<Record<string, unk
 }
 
 /** Supported video ratios (project pipeline contract). */
-export const VIDEO_RATIOS = ['1:1', '3:4', '16:9', '4:3', '9:16', '21:9'] as const
+import { VIDEO_RATIOS, IMAGE_RATIOS } from './ratios.ts'
 
-/** Supported image ratios (Codex_IS image Skill output contract). */
-export const IMAGE_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'] as const
+export { VIDEO_RATIOS, IMAGE_RATIOS }
 
 /** Structural validation of a Skill contract; throws on violation. */
 export function validateContract(raw: unknown): SkillContract {

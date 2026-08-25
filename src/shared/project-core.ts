@@ -18,6 +18,9 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { plannedCount } from './curator-core.ts'
 import type { FlowContract, SkillContract } from './registry-core.ts'
+import { VIDEO_RATIOS } from './ratios.ts'
+
+export { VIDEO_RATIOS }
 
 export type ProjectStatus =
   | 'awaiting_skill_confirmation'
@@ -89,8 +92,6 @@ export interface ProjectState {
   createdAt: string
   updatedAt: string
 }
-
-export const VIDEO_RATIOS = ['1:1', '3:4', '16:9', '4:3', '9:16', '21:9'] as const
 
 /** Allowed transitions (only the guide's arcs are legal). */
 const TRANSITIONS: Readonly<Record<ProjectStatus, ReadonlyArray<ProjectStatus>>> = {

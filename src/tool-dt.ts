@@ -10,18 +10,14 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { copyFile, mkdir, readdir, stat, writeFile } from 'node:fs/promises'
-import { join, isAbsolute, basename } from 'node:path'
-import { packageRootOf } from './shared/pkg-root.ts'
-
-const execFileAsync = promisify(execFile)
+import { copyFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { join, isAbsolute } from 'node:path'
 import { makePreview } from './shared/image-ops.ts'
 import { atomicWriteJson, ensureDir, readJsonSafe, resolvePrivateRoot, sha256File, newTaskId } from './shared/private-runtime.ts'
 import { VIDEO_RATIOS } from './shared/project-core.ts'
 import { searchCorpus } from './shared/corpus-core.ts'
 import { buildReviewHtml, buildReviewItems } from './shared/dt-core.ts'
+import { normalizeReferenceLabels, classifyVideoPromptCompleteness } from './shared/video-pipeline.ts'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -36,21 +32,6 @@ function newBatchId(name: string): string {
   return `${stamp}-${safe}`
 }
 
-/** Load/create the subagent job record for a batch. */
-async function loadJobs(dir: string): Promise<Record<string, any>> {
-  return (await readJsonSafe(join(dir, 'jobs.json'))) ?? { tasks: {} }
-}
-
-/** Aggregate task status counts for wait_batch / pipeline_status. */
-function aggregateJobs(tasks: Record<string, any>): Record<string, number> {
-  const counts: Record<string, number> = {}
-  for (const task of Object.values(tasks ?? {})) {
-    const key = task?.status ?? 'unknown'
-    counts[key] = (counts[key] ?? 0) + 1
-  }
-  return counts
-}
-
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-dt'
 export const inject = ['tools']
@@ -58,15 +39,11 @@ export const inject = ['tools']
 export interface Config {
   privateDir?: string
   outputDir?: string
-  dreaminaPath?: string
 }
-
-const PACKAGE_ROOT = packageRootOf(import.meta.url)
 
 export const Config: z<Config> = z.object({
   privateDir: z.string().default(''),
   outputDir: z.string().default('outputs'),
-  dreaminaPath: z.string().default(join(PACKAGE_ROOT, 'bin', 'dreamina.exe')),
 })
 
 type ResolvedConfig = Required<Config>
@@ -76,14 +53,13 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'dt_batch',
       description:
-'DT 批次工作台（Codex_DT 的 DSH 重建）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1024px 预览、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径/photo_type/surface/mode/resolution）、set_visuals 逐素材写入拍摄信息（photo_type/visual/motion_plan）、子代理任务清单（subagent_tasks）与分发/结果记录（record_dispatch/record_result）、逐素材写入可执行中文提示词、生成 review/index.html 供用户逐项确认、确认后生成提交计划（run_batch，含 asset_manifest 标签绑定）、语料匹配写回 manifest（update_forge_matches）。set_prompts 写作前若对应业务 Skill 存在，先读取其 references（含 examples 提示词范例）对照组织方式，范例不改变素材契约、不覆盖用户指令。最终执行只调用统一媒体工具，不直接调用供应商。',
+'DT 批次工作台（Codex_DT 的 DSH 重建）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1024px 预览、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径/photo_type/surface/mode/resolution）、set_visuals 逐素材写入拍摄信息（photo_type/visual/motion_plan/images，images 支持每段多图）、逐素材写入可执行中文提示词（set_prompts 按 material 合并、自动把 @图片N/参考图片N 规范为裸标签 图片N，且**写作前必须先 prompt_revision search_corpus + authoring_gate，缺 图片N 裸标签绑定的提示词会被拒绝写入**）、生成 review/index.html 逐段列出全部参考图供用户逐项确认、确认后生成提交计划（run_batch，含 asset_manifest 标签绑定，每段 tasks[].images 绑定全部参考图）、语料匹配写回 manifest（update_forge_matches）。set_prompts 写作前若对应业务 Skill 存在，先读取其 references（含 examples 提示词范例）对照组织方式，范例不改变素材契约、不覆盖用户指令。最终执行只调用统一媒体工具，不直接调用供应商。',
       parameters: {
         command: {
           type: 'string',
           enum: [
             'init_batch', 'new_batch', 'import_images', 'prepare_previews', 'set_visuals', 'set_prompts',
-            'finalize_review', 'subagent_tasks', 'record_dispatch', 'record_result',
-            'pipeline_status', 'run_batch', 'wait_batch', 'update_forge_matches', 'get_manifest', 'list',
+            'finalize_review', 'pipeline_status', 'run_batch', 'update_forge_matches', 'get_manifest', 'list',
           ],
           required: true,
           description: '操作命令。',
@@ -101,13 +77,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         auto_generate: { type: 'boolean', description: 'new_batch 用：记录全自动生成意图（审阅后跳过人工确认）。' },
         materials: { type: 'array', items: { type: 'string' }, description: 'init/new_batch 用：本地素材路径列表（顺序即素材编号）。' },
         images: { type: 'array', items: { type: 'string' }, description: 'import_images 用：对话附件路径列表（等待稳定后复制）。' },
-        prompts: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_prompts 用：[{material, prompt}] 逐素材中文提示词。' },
-        items: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_visuals 用：[{material, photo_type?, visual?, motion_plan?}] 逐素材写入拍摄信息。' },
-        task_id: { type: 'string', description: 'record_dispatch/record_result 用：子代理任务 id。' },
-        agent_id: { type: 'string', description: 'record_dispatch 用：子代理会话 id。' },
-        prompt: { type: 'string', description: 'record_result 用：该素材生成的中文提示词。' },
-        submit_id: { type: 'string', description: 'record_result 用：该素材视频任务的 submit_id（wait_batch 轮询用）。' },
-        timeout_seconds: { type: 'integer', description: 'wait_batch 用：批次级等待上限（默认 600 秒）。' },
+        prompts: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_prompts 用：[{material, prompt}] 逐素材中文提示词。按 material 合并（非整体替换）：只传部分条目不会覆盖未传条目；非规范引用标签（@图片N/参考图片N/@Image N）会自动规范为裸标签 图片N；**缺少 图片N 裸标签绑定的条目会被整次拒绝**（先 prompt_revision search_corpus + authoring_gate 再写）。' },
+        items: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_visuals 用：[{material, photo_type?, visual?, motion_plan?, images?}] 逐素材写入拍摄信息；images 为该段绑定的额外参考图（每段可多图，顺序即 --image 顺序）。' },
         confirm: { type: 'boolean', description: 'run_batch 用：确认所有提示词后生成提交计划。' },
       },
       output: {
@@ -127,6 +98,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             plan: { type: 'array' },
             submission: { type: 'object', additionalProperties: true },
             summary: { type: 'object', additionalProperties: true },
+            diagnostics: { type: 'array' },
           },
         },
         render(_args: unknown, value: any) {
@@ -187,7 +159,6 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             auto_generate: Boolean(args.auto_generate),
             image_drop_dir: inputDir,
           })
-          await atomicWriteJson(join(dir, 'jobs.json'), { tasks: {} })
           if (command === 'new_batch' && materials.length > 0) {
             const dir2 = join(dtRoot, batchId, 'inputs')
             await ensureDir(dir2)
@@ -235,135 +206,21 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             await atomicWriteJson(join(dir, 'manifest.json'), manifest)
             return { ok: true, message: `${added.length} image(s) imported into ${inputDir}`, batch_id: batchId, materials: added }
           }
-          case 'subagent_tasks': {
-            const taskDir = await ensureDir(join(dir, 'subagent-tasks'))
-            const jobs = await loadJobs(dir)
-            // 子代理创作前必须读取的导演知识/结构参考（Codex video-director-prompt 对齐）
-            const dp = join(PACKAGE_ROOT, 'skills', 'video-director-prompt')
-            const knowledgeRefs = [
-              join(PACKAGE_ROOT, 'refs', 'director-corpus.md'),
-              join(dp, 'references', 'directing-methods.md'),
-              join(dp, 'references', 'prompt-structure.md'),
-              join(dp, 'references', 'community-techniques.md'),
-              join(dp, 'references', 'structure-guide.md'),
-            ].join('\n- ')
-            const knowledgeHint =
-              '先用 read 读取下列导演知识/结构参考再创作：\n- ' + knowledgeRefs +
-              '\n\n创作要求（务必执行）：1) 输出结构：参考素材绑定与逐张唯一语义 → 全局身份/材质/转场/音频默认项（保留"不生成音乐，仅生成音效。"）→ 逐段时间轴（每段分别写摄影机动作与主体动作、物理反馈、段末状态）→ 整体约束 → 负面约束。2) 首帧非空且空间关系明确；把抽象情绪转成可见表演（眼神/呼吸/停顿/手部动作/空间关系）。3) 运镜与主体动作分开写，每个镜头只给一个主导运镜。4) 保留有用英文术语并给中文释义。5) 输出纯中文提示词，不要包含平台/模型/分辨率/参数/标签语法。6) 不写"同上/继续上一镜"等无法独立解析的指代。'
-            const tasks: Array<{ task_id: string; image: string; prompt: string }> = []
-            for (let i = 0; i < manifest.materials.length; i += 1) {
-              const m = manifest.materials[i]
-              const taskId = `task-${String(i + 1).padStart(3, '0')}`
-              const task = {
-                task_id: taskId,
-                image: m.path,
-                material_index: i + 1,
-                duration: manifest.duration,
-                ratio: manifest.ratio,
-                model: manifest.model,
-                user_requirements: manifest.user_requirements,
-                instruction: knowledgeHint,
-              }
-              await atomicWriteJson(join(taskDir, `${taskId}.task.json`), task)
-              jobs.tasks[taskId] = { image: m.path, status: 'pending', agent_id: null, prompt: null }
-              tasks.push(task)
-            }
-            await atomicWriteJson(join(dir, 'jobs.json'), jobs)
-            return { ok: true, message: `${tasks.length} subagent task(s) written to ${taskDir}`, batch_id: batchId, tasks }
-          }
-          case 'record_dispatch': {
-            const taskId = String(args.task_id ?? '')
-            const jobs = await loadJobs(dir)
-            if (!jobs.tasks[taskId]) return { ok: false, message: `unknown task ${taskId}` }
-            jobs.tasks[taskId].status = 'dispatched'
-            jobs.tasks[taskId].agent_id = String(args.agent_id ?? '')
-            jobs.tasks[taskId].dispatched_at = new Date().toISOString()
-            await atomicWriteJson(join(dir, 'jobs.json'), jobs)
-            return { ok: true, message: `dispatched ${taskId}`, batch_id: batchId }
-          }
-          case 'record_result': {
-            const taskId = String(args.task_id ?? '')
-            const jobs = await loadJobs(dir)
-            if (!jobs.tasks[taskId]) return { ok: false, message: `unknown task ${taskId}` }
-            const imagePath = jobs.tasks[taskId].image
-            const prompt = String(args.prompt ?? '').trim()
-            if (!prompt) return { ok: false, message: 'prompt is required' }
-            jobs.tasks[taskId].status = 'recorded'
-            jobs.tasks[taskId].prompt = prompt
-            if (args.submit_id) jobs.tasks[taskId].submit_id = String(args.submit_id)
-            jobs.tasks[taskId].recorded_at = new Date().toISOString()
-            await atomicWriteJson(join(dir, 'jobs.json'), jobs)
-            manifest.prompts = [...(manifest.prompts ?? []).filter((p: any) => p.material !== imagePath), { material: imagePath, prompt }]
-            await atomicWriteJson(join(dir, 'manifest.json'), manifest)
-            return { ok: true, message: `recorded ${taskId}${jobs.tasks[taskId].submit_id ? ` (submit_id=${jobs.tasks[taskId].submit_id})` : ''}`, batch_id: batchId }
-          }
-          case 'wait_batch': {
-            // 批次级 wait/collect（wait_seedance_batch 等价）：轮询所有已记录 submit_id 的任务
-            const jobs = await loadJobs(dir)
-            const pending = Object.entries(jobs.tasks as Record<string, any>).filter(([, t]) => t.submit_id && t.status !== 'success' && t.status !== 'failed')
-            if (pending.length === 0) {
-              const all = Object.values(jobs.tasks as Record<string, any>)
-              return { ok: true, message: `no pending submit_id tasks (${all.length} task(s) total)`, summary: aggregateJobs(jobs.tasks) }
-            }
-            const deadline = Date.now() + (Number(args.timeout_seconds ?? 600) * 1000)
-            const videosDir = join(workspaceRoot, config.outputDir, 'dt', batchId)
-            await mkdir(videosDir, { recursive: true })
-            const parseJson = (stdout: string): any => {
-              const start = stdout.indexOf('{')
-              if (start < 0) return undefined
-              try {
-                return JSON.parse(stdout.slice(start))
-              } catch {
-                return undefined
-              }
-            }
-            const query = async (submitId: string): Promise<any> => {
-              try {
-                const { stdout } = await execFileAsync(config.dreaminaPath, ['query_result', `--submit_id=${submitId}`, `--download_dir=${videosDir}`], { timeout: 90000, windowsHide: true })
-                return parseJson(stdout)
-              } catch {
-                return undefined
-              }
-            }
-            while (Date.now() < deadline) {
-              let allTerminal = true
-              for (const [taskId, task] of pending) {
-                if (task.status === 'success' || task.status === 'failed') continue
-                const result = await query(task.submit_id)
-                if (result?.gen_status === 'fail') {
-                  task.status = 'failed'
-                  task.fail_reason = String(result.fail_reason ?? 'unknown')
-                } else if (result?.gen_status === 'success') {
-                  task.status = 'success'
-                  task.finished_at = new Date().toISOString()
-                  task.output = result.video_url ?? result.output ?? `已下载到 ${videosDir}`
-                } else {
-                  allTerminal = false
-                }
-              }
-              await atomicWriteJson(join(dir, 'jobs.json'), jobs)
-              if (allTerminal) break
-              await sleep(5000)
-            }
-            const summary = aggregateJobs(jobs.tasks)
-            return { ok: summary.failed === 0, message: `batch wait done: ${JSON.stringify(summary)}`, summary }
-          }
           case 'pipeline_status': {
-            const jobs = await loadJobs(dir)
-            const statuses: Record<string, number> = {}
-            for (const task of Object.values(jobs.tasks) as any[]) statuses[task.status] = (statuses[task.status] ?? 0) + 1
             const confirmed = manifest.prompts.filter((p: any) => p.prompt?.trim()).length
+            const ready = (manifest.materials ?? []).filter((m: any) => (manifest.prompts ?? []).some((p: any) => p.material === m.path && p.prompt?.trim())).length
             return {
               ok: true,
-              message: `batch ${batchId}: ${manifest.materials.length} material(s), ${confirmed} prompt(s), tasks ${JSON.stringify(statuses)}`,
-              summary: { materials: manifest.materials.length, prompts: confirmed, tasks: statuses, total: Object.keys(jobs.tasks).length },
+              message: `batch ${batchId}: ${manifest.materials.length} material(s), ${confirmed}/${manifest.materials.length} prompt(s) ready`,
+              summary: { materials: manifest.materials.length, prompts: confirmed, ready, forge_matches: (manifest.forge?.matches ?? []).length },
             }
           }
           case 'run_batch': {
             // submission plan only; actual paid calls go through the unified generate_video tool
             const plan = (manifest.materials ?? []).map((m: any) => {
               const prompt = (manifest.prompts ?? []).find((p: any) => p.material === m.path)?.prompt ?? ''
-              return { material: m.path, hash: m.hash, photo_type: m.photo_type, visual: m.visual, motion_plan: m.motion_plan, prompt, ready: Boolean(prompt.trim()) }
+              const images = [m.path, ...(Array.isArray(m.images) ? m.images : [])].filter(Boolean)
+              return { material: m.path, images, hash: m.hash, photo_type: m.photo_type, visual: m.visual, motion_plan: m.motion_plan, prompt, ready: Boolean(prompt.trim()) }
             })
             const ready = plan.filter((item: any) => item.ready).length
             if (!args.confirm) return { ok: false, message: `run_batch requires confirm=true; ${ready}/${plan.length} ready`, plan }
@@ -385,17 +242,17 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             const submission: Record<string, unknown> = {
               ...shared,
               tasks: plan.map((item: any) => ({
-                images: [item.material],
+                images: item.images,
                 prompt: item.prompt,
                 asset_manifest: {
-                  assets: [{
+                  assets: item.images.map((img: string, i: number) => ({
                     modality: 'image',
-                    index: 1,
-                    tag: '图片1',
-                    source: item.material,
+                    index: i + 1,
+                    tag: `图片${i + 1}`,
+                    source: img,
                     transport_role: 'reference_image',
-                    primary_role: 'first_frame_reference',
-                  }],
+                    primary_role: i === 0 ? 'first_frame_reference' : 'reference_image',
+                  })),
                 },
               })),
             }
@@ -426,9 +283,14 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             const previewsDir = await ensureDir(join(dir, 'previews'))
             const mapping: Array<{ material: string; preview: string; width: number; height: number }> = []
             for (const m of manifest.materials) {
-              const prev = await makePreview(m.path, previewsDir, 1024)
-              mapping.push({ material: m.path, preview: prev.path, width: prev.width, height: prev.height })
-              m.preview = prev.path
+              const all = [m.path, ...(Array.isArray(m.images) ? m.images : [])].filter(Boolean)
+              const previews: string[] = []
+              for (const img of all) {
+                const prev = await makePreview(img, previewsDir, 1024)
+                mapping.push({ material: img, preview: prev.path, width: prev.width, height: prev.height })
+                previews.push(prev.path)
+              }
+              m.preview = previews[0]
             }
             await atomicWriteJson(join(dir, 'previews.json'), mapping)
             await atomicWriteJson(join(dir, 'manifest.json'), manifest)
@@ -440,24 +302,78 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               photo_type: v.photo_type !== undefined ? String(v.photo_type) : undefined,
               visual: v.visual !== undefined ? v.visual : undefined,
               motion_plan: v.motion_plan !== undefined ? v.motion_plan : undefined,
+              images: Array.isArray(v.images) ? v.images.map((p: unknown) => String(p)).filter(Boolean) : undefined,
             }))
-            if (items.length === 0) return { ok: false, message: 'items is required: [{material, photo_type?, visual?, motion_plan?}]' }
+            if (items.length === 0) return { ok: false, message: 'items is required: [{material, photo_type?, visual?, motion_plan?, images?}]' }
             for (const item of items) {
               const m = manifest.materials.find((x: any) => x.path === item.material)
               if (!m) return { ok: false, message: `unknown material ${item.material}` }
               if (item.photo_type !== undefined) m.photo_type = item.photo_type
               if (item.visual !== undefined) m.visual = item.visual
               if (item.motion_plan !== undefined) m.motion_plan = item.motion_plan
+              if (item.images !== undefined) {
+                m.images = item.images.map((p: string) => (isAbsolute(p) ? p : join(workspaceRoot, p)))
+              }
             }
             await atomicWriteJson(join(dir, 'manifest.json'), manifest)
             return { ok: true, message: `visuals updated for ${items.length} material(s)`, batch_id: batchId }
           }
           case 'set_prompts': {
-            const prompts = (args.prompts ?? []).map((p: any) => ({ material: String(p.material), prompt: String(p.prompt ?? '') }))
-            if (prompts.some((p: any) => !p.prompt.trim())) return { ok: false, message: 'every prompt must be non-empty' }
-            manifest.prompts = prompts
+            const incoming = (args.prompts ?? []).map((p: any) => ({ material: String(p.material), prompt: String(p.prompt ?? '') }))
+            if (incoming.some((p: any) => !p.prompt.trim())) return { ok: false, message: 'every prompt must be non-empty' }
+            // Merge by material — NEVER wholesale-replace. A partial write must
+            // not destroy prompts already recorded for other materials (BUG-01).
+            const byMaterial = new Map<string, { material: string; prompt: string }>()
+            for (const p of manifest.prompts ?? []) byMaterial.set(String(p.material), { material: String(p.material), prompt: String(p.prompt ?? '') })
+            let added = 0
+            let updated = 0
+            const diagnostics: Array<Record<string, unknown>> = []
+            const media = { images: 1, videos: 0, audios: 0 } // every material binds at least its primary image
+            const blocked: Array<{ material: string; prompt: string }> = []
+            for (const p of incoming) {
+              // Normalize non-conforming reference labels to bare 图片N form (BUG-03).
+              const norm = normalizeReferenceLabels(p.prompt)
+              const finalPrompt = norm.prompt.trim()
+              const verdict = classifyVideoPromptCompleteness(finalPrompt, media)
+              diagnostics.push({
+                material: p.material,
+                completeness: verdict.verdict,
+                reasons: verdict.reasons,
+                label_normalizations: norm.changed,
+              })
+              // Hard authoring gate (BUG-02): every dt_batch material is an image
+              // reference, so the prompt MUST bind it with a bare 图片N label.
+              // Refuse to write (fail the whole call, no partial write) when missing.
+              if (!/图片\s*\d+/.test(finalPrompt)) {
+                blocked.push({ material: p.material, prompt: finalPrompt })
+                continue
+              }
+              if (byMaterial.has(p.material)) updated += 1
+              else added += 1
+              byMaterial.set(p.material, { material: p.material, prompt: finalPrompt })
+            }
+            if (blocked.length > 0) {
+              const list = blocked.map((b: any) => `${b.material}: ${b.prompt.slice(0, 60)}`).join(' | ')
+              return {
+                ok: false,
+                message: `${blocked.length} prompt(s) rejected — missing bare 图片N reference binding. Run prompt_revision search_corpus + authoring_gate first, then bind every material with 图片N. ${list}`,
+                batch_id: batchId,
+                diagnostics,
+              }
+            }
+            manifest.prompts = [...byMaterial.values()]
             await atomicWriteJson(join(dir, 'manifest.json'), manifest)
-            return { ok: true, message: `${prompts.length} prompt(s) written`, batch_id: batchId }
+            const incomplete = diagnostics.filter((d: any) => d.completeness === 'incomplete')
+            const normalized = diagnostics.filter((d: any) => (d.label_normalizations ?? []).length > 0)
+            const notes: string[] = []
+            if (normalized.length > 0) notes.push(`${normalized.length} prompt(s) reference labels normalized to bare 图片N form`)
+            if (incomplete.length > 0) notes.push(`${incomplete.length} prompt(s) incomplete — run prompt_revision search_corpus + authoring_gate and rewrite before submit`)
+            return {
+              ok: true,
+              message: `${added} added, ${updated} updated (${manifest.prompts.length} total)${notes.length ? ' — ' + notes.join('; ') : ''}`,
+              batch_id: batchId,
+              diagnostics,
+            }
           }
           case 'finalize_review': {
             const previews = (await readJsonSafe(join(dir, 'previews.json'))) ?? []

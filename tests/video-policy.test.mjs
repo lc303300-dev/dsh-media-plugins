@@ -7,7 +7,6 @@ import {
   resolveVideoResolution,
   limitsFor,
   normalizeModel,
-  selectVideoSubcommand,
   selectVideoCommand,
   promptPreferences,
   requiresExplicitSelectionSource,
@@ -48,12 +47,6 @@ test('limits: seedance2.5 supports 50 refs/4-30s/480p-1080p/audio-only; 2.0_vip 
   assert.equal(l20.audioOnlyAllowed, false)
   const other = limitsFor('seedance2.0mini')
   assert.deepEqual(other.resolutions, ['720p'])
-})
-
-test('subcommand selection never emits the disabled legacy multiframe2video', () => {
-  assert.equal(selectVideoSubcommand(0), 'text2video')
-  assert.equal(selectVideoSubcommand(1), 'multimodal2video')
-  assert.equal(selectVideoSubcommand(5), 'multimodal2video')
 })
 
 test('model aliases auto-complete the seedance prefix; unknown passthrough', () => {

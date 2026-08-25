@@ -15,11 +15,13 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSyn
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { readYamlFile, validateCodexFlowPackage } from './flow-format.ts'
 import type { FlowContract } from './registry-core.ts'
+import { IMAGE_RATIOS } from './ratios.ts'
+
+export { IMAGE_RATIOS }
 
 export const IMAGE_VALIDATOR_VERSION = '2.0.0'
 export const IMAGE_HASH_ALGORITHM = 'codex-is-package-sha256-v2'
 export const IMAGE_TEXT_EXTENSIONS = new Set(['.md', '.json', '.yaml', '.yml', '.txt'])
-export const IMAGE_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16']
 export const IMAGE_SKILL_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 export const IMAGE_SHA256_PATTERN = /^[a-f0-9]{64}$/
 export const IMAGE_TEMPLATE_MARKERS = /(\{\{[^}]+\}\}|CURATOR-REQUIRED|\bTODO\b|\bTBD\b|START OF FILE)/i

@@ -13,6 +13,7 @@ import {
   classifyVideoPromptCompleteness,
   completenessRequiresCorpus,
   authoringCorpusGateError,
+  normalizeReferenceLabels,
 } from '../src/shared/video-pipeline.ts'
 
 test('isVideoExtName accepts known video containers and rejects others', () => {
@@ -129,4 +130,33 @@ test('confirmationGateError: duration accepts 5 / 5s / 5秒 forms', () => {
   assert.equal(confirmationGateError('production', resolved, { model: 'seedance2.5', resolution: '480p', duration: '5s' }), null)
   assert.equal(confirmationGateError('production', resolved, { model: 'seedance2.5', resolution: '480p', duration: '5秒' }), null)
   assert.ok(confirmationGateError('production', resolved, { model: 'seedance2.5', resolution: '480p', duration: 'not-a-number' }))
+})
+
+test('normalizeReferenceLabels: @chip / 参考 prefix / English / whitespace → bare 图片N (idempotent)', () => {
+  const out = normalizeReferenceLabels('主角@图片1 看向 参考图片2 与 @Image 3 与 图片 4')
+  assert.equal(out.prompt, '主角图片1 看向 图片2 与 图片3 与 图片4')
+  assert.ok(out.changed.length >= 4)
+  // idempotent: a second pass changes nothing
+  assert.equal(normalizeReferenceLabels(out.prompt).changed.length, 0)
+})
+
+test('normalizeReferenceLabels: maps 视频/音频 kinds and leaves clean prompts untouched', () => {
+  assert.equal(normalizeReferenceLabels('@视频1 和 @音频2').prompt, '视频1 和 音频2')
+  assert.equal(normalizeReferenceLabels('镜头推进，绑定图片1 与视频1').prompt, '镜头推进，绑定图片1 与视频1')
+  assert.equal(normalizeReferenceLabels('镜头推进，绑定图片1 与视频1').changed.length, 0)
+})
+
+test('classifyVideoPromptCompleteness: non-conforming labels (@图片N / 参考图片N) are flagged, not silently accepted', () => {
+  const chip = classifyVideoPromptCompleteness('镜头缓慢推进，展现城市黄昏，绑定@图片1', { images: 2, videos: 0, audios: 0 })
+  assert.equal(chip.verdict, 'incomplete')
+  assert.ok(chip.reasons.some((r) => /裸标签/.test(r)))
+  const prefix = classifyVideoPromptCompleteness('镜头缓慢推进，展现城市黄昏，绑定参考图片1', { images: 2, videos: 0, audios: 0 })
+  assert.equal(prefix.verdict, 'incomplete')
+  assert.ok(prefix.reasons.some((r) => /裸标签/.test(r)))
+})
+
+test('classifyVideoPromptCompleteness: bare 图片N label passes (BUG-09 regression guard)', () => {
+  const full = classifyVideoPromptCompleteness('镜头以低空航拍掠过城市，沿街面平视穿行，0-8秒分三段，绑定图片1 与图片4', { images: 4, videos: 0, audios: 0 })
+  assert.equal(full.verdict, 'complete')
+  assert.equal(full.reasons.length, 0)
 })

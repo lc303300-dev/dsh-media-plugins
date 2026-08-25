@@ -23,6 +23,7 @@ import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import sharp from 'sharp'
 import { MediaError, mediaErrors, FALLBACK_ALLOWED, type AttemptRecord } from './failure.ts'
+import { IMAGE_RATIOS } from './ratios.ts'
 import { openAiImageUrl, downloadImageTo, HttpStatusError } from './media-client.ts'
 import {
   acquireSlot,
@@ -37,7 +38,7 @@ import {
 const execFileAsync = promisify(execFile)
 
 /** The 8 supported image ratios (contract: never infer, never extend). */
-export const SUPPORTED_RATIOS: readonly string[] = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'] as const
+export const SUPPORTED_RATIOS: readonly string[] = IMAGE_RATIOS
 
 /** The 3 supported image resolution classes (contract). */
 export const SUPPORTED_RESOLUTIONS: readonly string[] = ['1K', '2K', '4K'] as const

@@ -92,12 +92,74 @@ export interface CompletenessMedia {
 }
 
 /**
+ * Chinese bare reference labels (图片N/视频N/音频N), per the adapter contract
+ * (refs/first-frame-rules.md, default-video-generation SKILL.md): no `@` chip,
+ * no `参考` prefix, no English form. Optional whitespace between the kind and
+ * the number still counts as a binding (it is normalizable).
+ */
+export const BARE_REF_LABEL = /(?:图片|视频|音频)\s*\d+/
+
+/**
+ * Non-conforming reference forms that must be normalized away before submit:
+ * `@图片1` / `@Image 1` chips, `参考图片1` prefixes, and English kind tokens.
+ */
+export const NONCONFORMING_REF_LABEL = /(?:@\s*(?:图片|视频|音频|[Ii]mage|[Vv]ideo|[Aa]udio|[Ii][Mm][Gg])\s*\d+|参考\s*(?:图片|视频|音频)\s*\d+)/
+
+/** Map an (English or Chinese) reference kind token to its Chinese bare kind. */
+function refKindToChinese(kind: string): '图片' | '视频' | '音频' {
+  const k = String(kind).toLowerCase()
+  if (k === '视频' || k.startsWith('vid') || k === 'video') return '视频'
+  if (k === '音频' || k.startsWith('aud') || k === 'audio') return '音频'
+  return '图片'
+}
+
+export interface ReferenceLabelNormalization {
+  prompt: string
+  changed: string[]
+}
+
+/**
+ * Deterministic, idempotent reference-label normalization to the adapter's
+ * bare-label contract: `@图片1` / `@Image 1` / `参考图片2` / `图片 3` →
+ * `图片N`. Only the label token is rewritten; all other prompt text is left
+ * untouched. Returns the normalized prompt and a human-readable change log.
+ */
+export function normalizeReferenceLabels(prompt: string): ReferenceLabelNormalization {
+  const source = String(prompt ?? '')
+  if (!source) return { prompt: source, changed: [] }
+  const changed: string[] = []
+  let text = source
+  // 1) `@` chip forms (including English): @图片1, @图片 1, @Image 1, @IMG 2
+  text = text.replace(/@\s*(图片|视频|音频|[Ii]mage|[Vv]ideo|[Aa]udio|[Ii][Mm][Gg])\s*(\d+)/g, (whole, kind: string, num: string) => {
+    const label = `${refKindToChinese(kind)}${num}`
+    changed.push(`${whole} → ${label}`)
+    return label
+  })
+  // 2) `参考` prefix forms: 参考图片1, 参考图片 1
+  text = text.replace(/参考\s*(图片|视频|音频)\s*(\d+)/g, (whole, kind: string, num: string) => {
+    const label = `${kind}${num}`
+    changed.push(`${whole} → ${label}`)
+    return label
+  })
+  // 3) whitespace inside an otherwise-bare label: 图片 1 → 图片1 (1-2 digits;
+  //    the lookahead keeps multi-digit numbers like years from being split)
+  text = text.replace(/(图片|视频|音频)\s+(\d{1,2})(?!\d)/g, (whole, kind: string, num: string) => {
+    const label = `${kind}${num}`
+    changed.push(`${whole} → ${label}`)
+    return label
+  })
+  return { prompt: text, changed: [...new Set(changed)] }
+}
+
+/**
  * Deterministic completeness classifier for a video generation prompt
  * (Codex_DT non-destructive gate). A prompt is "complete" only when it
  * carries (a) an executable subject/action, (b) camera/motion or temporal
- * progression, and (c) reference bindings for the supplied media. Anything
- * missing returns "incomplete" with the specific reasons, so the orchestrator
- * knows it must consult the corpus before authoring.
+ * progression, and (c) reference bindings for the supplied media — where the
+ * bindings must use the adapter's bare labels (图片N/视频N/音频N), not
+ * `@图片N` chips or `参考图片N` prefixes. Anything missing returns
+ * "incomplete" with the specific reasons, so the orchestrator knows it must
+ * consult the corpus before authoring.
  */
 export function classifyVideoPromptCompleteness(prompt: string, media: CompletenessMedia): { verdict: PromptCompletenessVerdict; reasons: string[] } {
   const text = (prompt ?? '').trim()
@@ -108,10 +170,15 @@ export function classifyVideoPromptCompleteness(prompt: string, media: Completen
   const hasSubjectOrAction = /(?:镜头|机位|画面|展现|穿过|掠过|飞越|航拍|穿行|推进|拉升|环绕|驶|奔|飞|走|主体|人物|角色|它|他|她)/.test(text)
   const hasCameraOrTemporal = /(?:镜头|机位|运镜|推进|推近|环绕|航拍|低空|平视|俯视|仰拍|横移|跟拍|摇|弧线|俯冲|侧倾|\d+-\d+|\d+\s*秒|第一段|第二段|镜头[一二三四五六七八九十\d])/.test(text)
   const hasRefs = media.images + media.videos + media.audios > 0
-  const hasReferenceBinding = hasRefs ? /(?:图片\d|视频\d|音频\d|@\w+\d|@图片\d|图\d|reference)/i.test(text) : true
+  const hasBareBinding = hasRefs ? BARE_REF_LABEL.test(text) : true
+  const hasNonConformingBinding = hasRefs ? NONCONFORMING_REF_LABEL.test(text) : false
   if (!hasSubjectOrAction) reasons.push('缺少可执行的主体/动作或镜头意图')
   if (!hasCameraOrTemporal) reasons.push('缺少镜头/运镜或时间推进')
-  if (hasRefs && !hasReferenceBinding) reasons.push('缺少素材引用绑定（图片/视频/音频编号）')
+  if (hasRefs && !hasBareBinding) {
+    reasons.push('缺少素材引用绑定（图片/视频/音频编号）')
+  } else if (hasRefs && hasNonConformingBinding) {
+    reasons.push('素材引用必须使用中文裸标签（图片N/视频N/音频N），禁用 @图片N、参考图片N、@Image N 等变体')
+  }
   return { verdict: reasons.length === 0 ? 'complete' : 'incomplete', reasons }
 }
 

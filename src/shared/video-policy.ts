@@ -149,11 +149,6 @@ export function selectVideoCommand(req: CommandRequest): VideoCommand {
   return 'multimodal2video'
 }
 
-/** Back-compat wrapper used for the pre-submit `-h` probe. */
-export function selectVideoSubcommand(totalRefs: number): 'text2video' | 'multimodal2video' {
-  return totalRefs > 0 ? 'multimodal2video' : 'text2video'
-}
-
 /**
  * Extract ratio/duration hints embedded in the prompt (upstream
  * `_prompt_preferences`). Never interprets terminal telemetry as a duration.
