@@ -12,6 +12,17 @@ import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { mediaErrors } from './failure.ts'
 
+/**
+ * The single per-candidate time basis for image work: one candidate is
+ * budgeted 90 s. It is the ONLY image timing number — the default provider
+ * timeout IS this basis, and the batch dispatch deadline is
+ * `ceil(candidates / concurrency)` x this basis, with no extra multiplier.
+ */
+export const IMAGE_SECONDS_PER_CANDIDATE = 90
+
+/** Default provider request timeout: exactly the per-candidate basis (90 s). */
+export const DEFAULT_IMAGE_REQUEST_TIMEOUT_MS = IMAGE_SECONDS_PER_CANDIDATE * 1000
+
 /** HTTP error carrying its status so adapters can classify it. */
 export class HttpStatusError extends Error {
   status: number
@@ -129,7 +140,7 @@ export async function openAiImageResult(options: OpenAiImageOptions): Promise<Op
   const {
     baseURL, apiKey, model, prompt, size, resolution,
     sendResolution = false, sendResponseFormat = false,
-    images = [], proxyUrl, signal, timeoutMs = 120000,
+    images = [], proxyUrl, signal, timeoutMs = DEFAULT_IMAGE_REQUEST_TIMEOUT_MS,
   } = options
   const dispatcher = proxyDispatcher(proxyUrl)
   const auth = { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' }
@@ -222,13 +233,20 @@ export async function stageImageBytes(bytes: Uint8Array, destDir: string, prefix
   return finalPath
 }
 
-/** Download a remote image, validate its signature, stage atomically. */
-export async function downloadImageTo(
-  url: string,
-  destDir: string,
-  options: { proxyUrl?: string; signal?: AbortSignal; timeoutMs?: number } = {},
-): Promise<string> {
-  const { proxyUrl, signal, timeoutMs = 120000 } = options
+/** Download attempts for one remote image: the SAME url is retried, never re-generated. */
+export const DOWNLOAD_MAX_ATTEMPTS = 2
+
+interface DownloadOptions {
+  proxyUrl?: string
+  signal?: AbortSignal
+  timeoutMs?: number
+  /** Total attempts for this url (default {@link DOWNLOAD_MAX_ATTEMPTS}). */
+  maxAttempts?: number
+}
+
+/** One download attempt: fetch, validate the signature, stage atomically. */
+async function downloadOnce(url: string, destDir: string, options: DownloadOptions): Promise<string> {
+  const { proxyUrl, signal, timeoutMs = DEFAULT_IMAGE_REQUEST_TIMEOUT_MS } = options
   const dispatcher = proxyDispatcher(proxyUrl)
   const controller = new AbortController()
   let timedOut = false
@@ -251,11 +269,44 @@ export async function downloadImageTo(
   } catch (error: any) {
     if (signal?.aborted) throw error
     if (timedOut) throw mediaErrors.download(`image download timed out after ${Math.round(timeoutMs / 1000)}s`)
-    throw error
+    // Everything else here is a download-class failure (HTTP status, corrupt
+    // bytes, staging). Classifying it as anything else would make the router
+    // re-generate the image on another route — paying twice for a picture that
+    // already exists upstream.
+    if (error instanceof MediaError) throw error
+    throw mediaErrors.download(`image download failed: ${String(error?.message ?? error).slice(0, 200)}`)
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener('abort', onAbort)
   }
+}
+
+/**
+ * Download a remote image, validate its signature, stage atomically.
+ *
+ * A failed download is retried against the SAME url: the image already exists
+ * upstream and was already paid for, so re-generating it on another route would
+ * buy the same picture twice. Aborts are never retried.
+ */
+export async function downloadImageTo(
+  url: string,
+  destDir: string,
+  options: DownloadOptions = {},
+): Promise<string> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? DOWNLOAD_MAX_ATTEMPTS)
+  let lastError: any
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (options.signal?.aborted) throw mediaErrors.cancelled('image download cancelled')
+    try {
+      return await downloadOnce(url, destDir, options)
+    } catch (error: any) {
+      lastError = error
+      if (options.signal?.aborted) throw error
+      if (!(error instanceof MediaError) || error.cls !== 'download_failure') throw error
+      // download_failure: retry the same url (loop), do not switch providers
+    }
+  }
+  throw lastError
 }
 
 /** True when a path is absolute (Windows or POSIX). */

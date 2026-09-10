@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ratioToSize, ratioFromPixels, normalizeRatio, SUPPORTED_RATIOS, SUPPORTED_RESOLUTIONS, SUPPORTED_IMAGE_PROVIDERS, classifyHttp, runImageRouter, defaultAdapters, geminiSizeFor, gptImage25SizeFor, GPT_IMAGE_2_5_SIZES, GPT_IMAGE_25_MODEL, GPT_IMAGE_25_RESOLUTION, GEMINI_MODELS_BY_RESOLUTION, ADAPTER_ALIASES } from '../src/shared/adapters.ts'
-import { MediaError, FALLBACK_ALLOWED, mediaErrors } from '../src/shared/failure.ts'
+import { ratioToSize, ratioFromPixels, normalizeRatio, SUPPORTED_RATIOS, SUPPORTED_RESOLUTIONS, SUPPORTED_IMAGE_PROVIDERS, classifyHttp, runImageRouter, defaultAdapters, geminiSizeFor, gptImage25SizeFor, GPT_IMAGE_2_5_SIZES, GPT_IMAGE_25_MODEL, GPT_IMAGE_25_RESOLUTION, GEMINI_IMAGE_RESOLUTION, GEMINI_MODELS_BY_RESOLUTION, ADAPTER_ALIASES, IMAGE_CAPACITY_KEY, DEFAULT_IMAGE_CONCURRENCY } from '../src/shared/adapters.ts'
+import { MediaError, FALLBACK_ALLOWED, STOP_CLASSES, ALL_FAILURE_CLASSES, mediaErrors } from '../src/shared/failure.ts'
 import { hasImageSignature, extensionFor, decodeBase64Image, extractImagePayload, stageImageBytes } from '../src/shared/media-client.ts'
 
 test('SUPPORTED_RATIOS is exactly the 8 contract values', () => {
@@ -44,12 +44,18 @@ test('normalizeRatio converts a user pixel size to the nearest standard ratio', 
   assert.throws(() => ratioFromPixels(0, 100), (e) => e instanceof MediaError && e.cls === 'input_error')
 })
 
-test('geminiSizeFor scales the 1K allowlist by the resolution class', () => {
-  assert.equal(geminiSizeFor('16:9', '1K'), '1376x768')
+test('geminiSizeFor is 2K-only: the withdrawn 1K/4K classes are input_error at the helper', () => {
+  assert.equal(GEMINI_IMAGE_RESOLUTION, '2K', 'the Gemini route is 2K-only')
   assert.equal(geminiSizeFor('16:9', '2K'), '2752x1536')
-  assert.equal(geminiSizeFor('1:1', '4K'), '4096x4096')
+  assert.equal(geminiSizeFor('1:1', '2K'), '2048x2048')
+  assert.equal(geminiSizeFor('9:16', '2K'), '1536x2752')
+  assert.equal(geminiSizeFor('1920x1080', '2K'), '2752x1536', 'pixel spelling resolves to 16:9, then the 2K ladder')
+  assert.equal(geminiSizeFor('1920*1080', '2K'), '2752x1536', 'the asterisk spelling resolves the same way')
+  assert.equal(geminiSizeFor('1920×1080', '2K'), '2752x1536', 'the multiplication-sign spelling resolves the same way')
+  assert.throws(() => geminiSizeFor('16:9', '1K'), (e) => e instanceof MediaError && e.cls === 'input_error')
+  assert.throws(() => geminiSizeFor('16:9', '4K'), (e) => e instanceof MediaError && e.cls === 'input_error')
   assert.throws(() => geminiSizeFor('16:9', '8K'), (e) => e instanceof MediaError && e.cls === 'input_error')
-  assert.throws(() => geminiSizeFor('5:7', '1K'), (e) => e instanceof MediaError && e.cls === 'input_error')
+  assert.throws(() => geminiSizeFor('5:7', '2K'), (e) => e instanceof MediaError && e.cls === 'input_error')
 })
 
 test('gptImage25SizeFor resolves the 4K-only GPT 2.5 pixel table (the Comfly sunburst contract)', () => {
@@ -74,10 +80,11 @@ test('gptImage25SizeFor resolves the 4K-only GPT 2.5 pixel table (the Comfly sun
   assert.throws(() => gptImage25SizeFor('5:7', '1K'), (e) => e instanceof MediaError && e.cls === 'input_error')
 })
 
-test('GEMINI_MODELS_BY_RESOLUTION routes 1K/2K/4K to the resolution-specific models', () => {
-  assert.equal(GEMINI_MODELS_BY_RESOLUTION['1K'], 'gemini-3.1-flash-image-preview')
-  assert.equal(GEMINI_MODELS_BY_RESOLUTION['2K'], 'gemini-3.1-flash-image-preview-2k')
-  assert.equal(GEMINI_MODELS_BY_RESOLUTION['4K'], 'gemini-3.1-flash-image-preview-4k')
+test('GEMINI_MODELS_BY_RESOLUTION keeps only the 2K model', () => {
+  assert.equal(GEMINI_MODELS_BY_RESOLUTION[GEMINI_IMAGE_RESOLUTION], 'gemini-3.1-flash-image-preview-2k')
+  assert.deepEqual(Object.keys(GEMINI_MODELS_BY_RESOLUTION), ['2K'], 'the route exposes exactly one resolution class')
+  assert.equal(GEMINI_MODELS_BY_RESOLUTION['1K'], undefined, 'the 2K-only route has no 1K model')
+  assert.equal(GEMINI_MODELS_BY_RESOLUTION['4K'], undefined, 'the 2K-only route has no 4K model')
 })
 
 test('classifyHttp maps status codes to taxonomy classes', () => {
@@ -90,14 +97,29 @@ test('classifyHttp maps status codes to taxonomy classes', () => {
   assert.equal(classifyHttp(503).cls, 'definite_provider_failure')
 })
 
-test('fallback is allowed only for the whitelisted classes', () => {
-  for (const cls of ['auth_unavailable', 'quota_unavailable', 'definite_provider_failure', 'download_failure', 'timeout_before_submit', 'provider_timeout']) {
+test('fallback is allowed only for the three error classes', () => {
+  for (const cls of ['auth_unavailable', 'quota_unavailable', 'definite_provider_failure']) {
     assert.ok(FALLBACK_ALLOWED.has(cls), `${cls} should allow fallback`)
   }
-  for (const cls of ['input_error', 'indeterminate_submission', 'policy_rejection', 'cancelled', 'task_timeout']) {
+  for (const cls of ['input_error', 'indeterminate_submission', 'policy_rejection', 'cancelled', 'task_timeout',
+    'timeout_before_submit', 'provider_timeout', 'download_failure', 'concurrency_busy']) {
     assert.ok(!FALLBACK_ALLOWED.has(cls), `${cls} must not allow fallback`)
   }
   assert.equal(mediaErrors.indeterminate('x').cls, 'indeterminate_submission')
+  assert.equal(mediaErrors.busy('x').cls, 'concurrency_busy')
+})
+
+test('failure taxonomy: the two sets partition every class, and only errors may fall back', () => {
+  assert.equal(FALLBACK_ALLOWED.size, 3, 'only auth/quota/5xx-style failures may switch route')
+  assert.equal(FALLBACK_ALLOWED.size + STOP_CLASSES.size, ALL_FAILURE_CLASSES.length, 'every class must be classified exactly once')
+  for (const cls of ALL_FAILURE_CLASSES) {
+    assert.equal(FALLBACK_ALLOWED.has(cls) || STOP_CLASSES.has(cls), true, `${cls} must be in one of the two sets`)
+    assert.equal(FALLBACK_ALLOWED.has(cls) && STOP_CLASSES.has(cls), false, `${cls} must not be in both sets`)
+  }
+  // the classes that were deliberately moved out of the fallback set
+  for (const cls of ['timeout_before_submit', 'provider_timeout', 'download_failure', 'concurrency_busy']) {
+    assert.ok(STOP_CLASSES.has(cls), `${cls} must stop routing instead of paying twice`)
+  }
 })
 
 test('image signature detection', () => {
@@ -144,7 +166,7 @@ test('stageImageBytes validates the signature and stages atomically', async () =
 test('defaultAdapters puts the GPT 2.5 route first (default image route)', () => {
   const cfg = {
     comflyBaseURL: 'x', comflyApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
-    maxConcurrency: 6, providerTimeoutMs: 120000, taskTimeoutMs: 300000, outputDir: 'o', enabled: [],
+    maxConcurrency: 6, providerTimeoutMs: 90000, taskTimeoutMs: 90000, outputDir: 'o', enabled: [],
   }
   const all = defaultAdapters(cfg)
   assert.deepEqual(all.map((a) => a.id), ['comfly-gpt-image-2.5', 'comfly-gemini-flash-preview', 'dreamina-image'])
@@ -152,26 +174,40 @@ test('defaultAdapters puts the GPT 2.5 route first (default image route)', () =>
   const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gemini-flash-preview'] })
   assert.equal(filtered.length, 1)
   assert.equal(filtered[0].id, 'comfly-gemini-flash-preview')
+  assert.equal(filtered[0].model, 'gemini-3.1-flash-image-preview-2k', 'the Gemini route ships the 2K model')
 })
 
-test('legacy adapter id alias: comfly-gemini-lite still selects the renamed adapter', () => {
+test('retired alias: comfly-gemini-lite is neither an adapter id nor an alias any more', () => {
   const cfg = {
     comflyBaseURL: 'x', comflyApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
-    maxConcurrency: 6, providerTimeoutMs: 120000, taskTimeoutMs: 300000, outputDir: 'o', enabled: [],
+    maxConcurrency: 6, providerTimeoutMs: 90000, taskTimeoutMs: 90000, outputDir: 'o', enabled: [],
   }
-  const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gemini-lite'] })
-  assert.equal(filtered.length, 1)
-  assert.equal(filtered[0].id, 'comfly-gemini-flash-preview')
+  assert.equal(ADAPTER_ALIASES['comfly-gemini-lite'], undefined)
+  assert.deepEqual(Object.keys(ADAPTER_ALIASES), ['comfly-gpt-image-2'], 'only the GPT 2 alias remains')
+  assert.deepEqual(defaultAdapters({ ...cfg, enabled: ['comfly-gemini-lite'] }), [], 'the retired id selects no adapter')
 })
 
 test('legacy adapter id alias: comfly-gpt-image-2 still selects the GPT 2.5 route', () => {
   const cfg = {
     comflyBaseURL: 'x', comflyApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
-    maxConcurrency: 6, providerTimeoutMs: 120000, taskTimeoutMs: 300000, outputDir: 'o', enabled: [],
+    maxConcurrency: 6, providerTimeoutMs: 90000, taskTimeoutMs: 90000, outputDir: 'o', enabled: [],
   }
   assert.equal(ADAPTER_ALIASES['comfly-gpt-image-2'], 'comfly-gpt-image-2.5')
   const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gpt-image-2'] })
   assert.equal(filtered.length, 1)
   assert.equal(filtered[0].id, 'comfly-gpt-image-2.5')
   assert.equal(filtered[0].model, 'gpt-image-2.5-sunburst')
+})
+
+test('every image route leases ONE shared image pool; video capacity is never image-visible', () => {
+  const cfg = {
+    comflyBaseURL: 'x', comflyApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
+    maxConcurrency: DEFAULT_IMAGE_CONCURRENCY, providerTimeoutMs: 90000, taskTimeoutMs: 90000, outputDir: 'o', enabled: [],
+  }
+  const chain = defaultAdapters(cfg)
+  assert.equal(chain.length, 3, 'GPT 2.5 -> Gemini 2K -> Dreamina')
+  assert.deepEqual([...new Set(chain.map((a) => a.capacityKey))], [IMAGE_CAPACITY_KEY], 'all image routes share the single pool')
+  assert.equal(IMAGE_CAPACITY_KEY, 'image')
+  assert.equal(DEFAULT_IMAGE_CONCURRENCY, 10, 'the shared image pool is 10 concurrent images')
+  assert.ok(!chain.some((a) => a.capacityKey === 'seedance-cli'), 'the video pool must not be reachable from an image route')
 })

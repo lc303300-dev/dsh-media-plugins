@@ -7,7 +7,9 @@
  * - manifest UTF-8 JSON; image_ratio required; group ids unique;
  *   each group prompt non-empty, candidates >= 1;
  * - concurrency 1..10 (default 10), real submissions >= 1 s apart;
- * - default deadline = ceil(planned candidates / concurrency) * 60 s * 1.5,
+ * - default deadline = ceil(planned candidates / concurrency) * 90 s, where
+ *   90 s is the per-candidate basis (`IMAGE_SECONDS_PER_CANDIDATE`, identical
+ *   to the default provider timeout) and there is no extra multiplier;
  *   overridable via explicit deadline_seconds;
  * - after deadline, unfinished tasks are permanently abandoned (no query,
  *   no retry); only landed successes are collected;
@@ -17,6 +19,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import { IMAGE_SECONDS_PER_CANDIDATE } from './media-client.ts'
 import {
   SUPPORTED_RATIOS,
   RATIO_SIZES,
@@ -43,7 +46,7 @@ export interface BatchManifest {
   groups: BatchGroup[]
   /** Optional global ratio when all groups share one. */
   image_ratio?: string
-  /** Optional batch-wide explicit resolution class (1K/2K/4K). */
+  /** Optional batch-wide explicit resolution class (1K/2K/4K); single-class routes clamp it (GPT 4K, Gemini 2K). */
   image_resolution?: string
   /** Optional batch-wide user-explicit image route (single-route, no fallback). */
   image_provider?: string
@@ -143,13 +146,18 @@ export function jobKeyFor(manifest: BatchManifest): string {
   return createHash('sha256').update(JSON.stringify(normalized)).digest('hex').slice(0, 24)
 }
 
-/** Deadline math: dispatch cutoff = ceil(total/concurrency)*60s*1.5 (or explicit
- *  override); completion grace follows it (default 120 s, max 120 s). */
+/**
+ * Deadline math: one candidate is budgeted the 90 s per-candidate basis
+ * (`IMAGE_SECONDS_PER_CANDIDATE`, the same basis as the default provider
+ * timeout), so the dispatch cutoff is `ceil(candidates / concurrency)` times
+ * that basis — no extra multiplier. Completion grace follows the cutoff
+ * (default/max 120 s).
+ */
 export function computeDeadline(manifest: BatchManifest, now = Date.now()): BatchPlan {
   const total = manifest.groups.reduce((acc, g) => acc + g.candidates, 0)
   const concurrency = manifest.concurrency ?? 10
-  const estimateSeconds = Math.ceil(total / concurrency) * 60
-  const deadlineSeconds = manifest.deadline_seconds ?? Math.ceil(estimateSeconds * 1.5)
+  const estimateSeconds = Math.ceil(total / concurrency) * IMAGE_SECONDS_PER_CANDIDATE
+  const deadlineSeconds = manifest.deadline_seconds ?? estimateSeconds
   const completionGraceSeconds = manifest.completion_grace_seconds ?? DEFAULT_COMPLETION_GRACE_SECONDS
   return {
     jobKey: jobKeyFor(manifest),

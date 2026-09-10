@@ -27,7 +27,8 @@ import {
   validateManifest,
   type BatchManifest,
 } from './shared/batch-core.ts'
-import { runImageRouter, type RouterConfig } from './shared/adapters.ts'
+import { DEFAULT_IMAGE_CONCURRENCY, runImageRouter, type RouterConfig } from './shared/adapters.ts'
+import { DEFAULT_IMAGE_REQUEST_TIMEOUT_MS } from './shared/media-client.ts'
 import { appendSafeLog, ensureDir, resolvePrivateRoot, sha256Text } from './shared/private-runtime.ts'
 
 /** Bundle root: the built tool file lives in dist/, so resolve from the package root. */
@@ -57,9 +58,9 @@ export const Config: z<Config> = z.object({
   comflyApiKeyEnv: z.string().default('COMFLY_API_KEY'),
   dreaminaPath: z.string().default(join(PACKAGE_ROOT, 'bin', 'dreamina.exe')),
   proxyUrl: z.string().default(''),
-  maxConcurrency: z.number().default(6),
-  providerTimeoutMs: z.number().default(120000),
-  taskTimeoutMs: z.number().default(300000),
+  maxConcurrency: z.number().default(DEFAULT_IMAGE_CONCURRENCY),
+  providerTimeoutMs: z.number().default(DEFAULT_IMAGE_REQUEST_TIMEOUT_MS),
+  taskTimeoutMs: z.number().default(DEFAULT_IMAGE_REQUEST_TIMEOUT_MS),
   enabled: z.array(z.string()).default([]),
 })
 
@@ -141,7 +142,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'batch_image',
       description:
-        '确定性批量图片调度器（Codex_Batch_Image 的 DSH 重建）：manifest（组 id 唯一、每组 prompt 非空、candidates ≥ 1、image_ratio 必填（8 个标准比例之一，或 1920x1080 这类像素尺寸，工具会换算成最接近的标准比例）；可选批次级 image_resolution 1K/2K/4K（默认线路 GPT 2.5 固定 4K）、image_provider 单线路、completion_grace_seconds 完成宽限期）→ 稳定 job key → SQLite 状态 → 最多 10 路并发、真实提交间隔 ≥ 1 秒 → 分派截止（默认 ceil(总数÷并发)×60 秒×1.5，可用 deadline_seconds 覆盖）：截止后不再启动新任务，未启动任务永久 abandoned（batch_deadline_not_submitted，不查询、不重试）；已在运行的任务最多再等 completion_grace_seconds（默认 120 秒、上限 120 秒、可缩短不可延长），宽限期内落地成功照常收集，超时仍未完成的运行中任务终止并标记 failed（batch_completion_grace_timeout）→ 生成固定槽位编号联系表供人工选图。付费执行全部走统一媒体路由器；同一候选绝不重复提交（job key + 任务 id 幂等）。',
+        '确定性批量图片调度器（Codex_Batch_Image 的 DSH 重建）：manifest（组 id 唯一、每组 prompt 非空、candidates ≥ 1、image_ratio 必填（8 个标准比例之一，或 1920x1080 这类像素尺寸，工具会换算成最接近的标准比例）；可选批次级 image_resolution 1K/2K/4K（单档位线路只钳制不报错：默认线路 GPT 2.5 固定 4K、Gemini 固定 2K）、image_provider 单线路、completion_grace_seconds 完成宽限期）→ 稳定 job key → SQLite 状态 → 最多 10 路并发、真实提交间隔 ≥ 1 秒 → 分派截止（默认 ceil(总数÷并发)×90 秒，可用 deadline_seconds 覆盖）：截止后不再启动新任务，未启动任务永久 abandoned（batch_deadline_not_submitted，不查询、不重试）；已在运行的任务最多再等 completion_grace_seconds（默认 120 秒、上限 120 秒、可缩短不可延长），宽限期内落地成功照常收集，超时仍未完成的运行中任务终止并标记 failed（batch_completion_grace_timeout）→ 生成固定槽位编号联系表供人工选图。付费执行全部走统一媒体路由器；同一候选绝不重复提交（job key + 任务 id 幂等）。调度器只对数量与速度负责：不做生成后质量检查、不逐张读图验收、不自动淘汰或重提；选图由用户看联系表决定。',
       parameters: {
         command: {
           type: 'string',

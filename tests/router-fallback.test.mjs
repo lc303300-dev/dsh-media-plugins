@@ -8,7 +8,7 @@ import { MediaError, mediaErrors } from '../src/shared/failure.ts'
 
 const cfg = {
   comflyBaseURL: 'http://x', comflyApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
-  maxConcurrency: 6, providerTimeoutMs: 120000, taskTimeoutMs: 300000, outputDir: 'o', enabled: [],
+  maxConcurrency: 6, providerTimeoutMs: 90000, taskTimeoutMs: 90000, outputDir: 'o', enabled: [],
 }
 
 /** Fake adapter with a call counter and an injectable outcome. */
@@ -106,10 +106,46 @@ test('router: all allowed-failures exhausted -> task fails with full attempt rec
   const dir = mkdtempSync(join(tmpdir(), 'dsh-rt-'))
   try {
     const a = fake('a', { cls: 'provider' })
-    const b = fake('b', { cls: 'download' })
+    const b = fake('b', { cls: 'quota' })
     await assert.rejects(() => runImageRouter({ ...base(dir), adapters: [a, b] }), /all image providers failed/)
     assert.equal(a.calls, 1)
     assert.equal(b.calls, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('router: timeout classes and download failures never fall back (already sent, possibly billed)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-rt-'))
+  try {
+    for (const cls of ['providerTimeout', 'timeoutBeforeSubmit', 'download']) {
+      const a = fake('a', { cls })
+      const b = fake('b')
+      await assert.rejects(() => runImageRouter({ ...base(dir), adapters: [a, b] }))
+      assert.equal(a.calls, 1, `${cls}: the route is attempted exactly once`)
+      assert.equal(b.calls, 0, `${cls}: must never reach another paid provider`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('router: a busy image capacity pool stops the run instead of falling through', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-rt-'))
+  try {
+    const a = fake('a')
+    const b = fake('b')
+    // maxConcurrency 0 => no slot can ever be acquired; a short budget keeps the test fast
+    await assert.rejects(
+      () => runImageRouter({
+        ...base(dir),
+        adapters: [a, b],
+        config: { ...cfg, maxConcurrency: 0, providerTimeoutMs: 150, taskTimeoutMs: 150 },
+      }),
+      (e) => e instanceof MediaError && e.cls === 'concurrency_busy',
+    )
+    assert.equal(a.calls, 0, 'no provider call may happen without a slot')
+    assert.equal(b.calls, 0, 'every route leases the same pool, so falling through is pointless')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -145,6 +181,11 @@ test('router: explicit unknown/disabled image_provider is input_error before any
     )
     await assert.rejects(
       () => runImageRouter({ ...base(dir), adapters: [a], imageProvider: 'comfly-gpt-image-2-all' }),
+      (e) => e instanceof MediaError && e.cls === 'input_error' && /Unsupported image_provider/.test(e.message),
+    )
+    // the retired comfly-gemini-lite alias must not resolve either
+    await assert.rejects(
+      () => runImageRouter({ ...base(dir), adapters: [a], imageProvider: 'comfly-gemini-lite' }),
       (e) => e instanceof MediaError && e.cls === 'input_error' && /Unsupported image_provider/.test(e.message),
     )
     // disabled route: rejected through the real contract chain without any provider call

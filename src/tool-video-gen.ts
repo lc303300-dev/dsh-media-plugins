@@ -89,6 +89,16 @@ import { confirmationGateError, isVideoExtName, pickDownloadedVideo as pickDownl
 export { VIDEO_EXECUTION_MODES }
 export type { VideoExecutionMode }
 
+/**
+ * Upstream `seedance-cli` hard limit (`max_concurrency = 6`). This is the
+ * VIDEO-only pool: image generation uses its own, entirely separate
+ * `IMAGE_CAPACITY_KEY` pool (default 10) and never shares this capacity.
+ */
+const SEEDANCE_CLI_CAPACITY = 6
+
+/** Capacity key for the video-only `seedance-cli` pool. */
+const SEEDANCE_CLI_CAPACITY_KEY = 'seedance-cli'
+
 /** Plugin config (all optional — `Config` supplies the defaults). */
 export interface Config {
   dreaminaPath?: string
@@ -550,8 +560,10 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           return ['multimodal2video', ...refs, ...head, '--ratio', ratio]
         }
         const submitOne = async (t: { taskId: string; submitSpec: TaskSpec; command: VideoCommand }): Promise<string> => {
-          // concurrency gate (upstream seedance-cli max_concurrency = 6)
-          const release = await acquireSlot(privateRoot, 'seedance-cli', 6, { taskId: t.taskId, timeoutMs: 180_000 })
+          // video-only concurrency gate: the upstream seedance-cli hard limit is
+          // max_concurrency = 6. Images lease from their own pool instead
+          // (`IMAGE_CAPACITY_KEY`) under the same locks/ root.
+          const release = await acquireSlot(join(privateRoot, 'locks'), SEEDANCE_CLI_CAPACITY_KEY, SEEDANCE_CLI_CAPACITY, { taskId: t.taskId, timeoutMs: 180_000 })
           try {
             const submitOut = await runDreamina(config.dreaminaPath, buildArgsFor(t.command, t.submitSpec), 240_000)
             const parsed = parseJson(submitOut)

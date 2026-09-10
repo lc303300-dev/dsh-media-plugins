@@ -28,7 +28,7 @@ async function withMockProvider(respond, fn) {
     req.on('data', (chunk) => chunks.push(chunk))
     req.on('end', () => {
       captured.push({ url: req.url, headers: req.headers, body: Buffer.concat(chunks) })
-      respond(res)
+      respond(res, req.url)
     })
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -116,7 +116,7 @@ test('GPT 2.5 image edit body: multipart image repeated per reference, no resolu
   }
 })
 
-test('Gemini route body still carries resolution + response_format and reads a url', async () => {
+test('Gemini 2K route body still carries resolution + response_format and reads a url', async () => {
   await withMockProvider((res) => {
     res.setHeader('content-type', 'application/json')
     res.end(JSON.stringify({ data: [{ url: 'https://cdn.example/img.png' }] }))
@@ -124,16 +124,17 @@ test('Gemini route body still carries resolution + response_format and reads a u
     const payload = await openAiImageResult({
       baseURL,
       apiKey: 'k',
-      model: 'gemini-3.1-flash-image-preview-4k',
+      model: 'gemini-3.1-flash-image-preview-2k',
       prompt: 'p',
-      size: '4096x4096',
+      size: '2048x2048',
       sendResolution: true,
       sendResponseFormat: true,
-      resolution: '4K',
+      resolution: '2K',
       timeoutMs: 5000,
     })
     const body = JSON.parse(captured[0].body.toString('utf8'))
-    assert.equal(body.resolution, '4k')
+    assert.equal(body.model, 'gemini-3.1-flash-image-preview-2k')
+    assert.equal(body.resolution, '2k')
     assert.equal(body.response_format, 'url')
     assert.equal(payload.url, 'https://cdn.example/img.png')
     assert.equal(payload.bytes, undefined)
@@ -176,6 +177,65 @@ test('router: GPT 2.5 is the default route, a pixel ratio is converted, and 2K i
       assert.equal(body.model, 'gpt-image-2.5-sunburst')
       assert.equal('resolution' in body, false)
       assert.equal('response_format' in body, false)
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('router: the Gemini route is 2K-only — a requested 4K/1K is clamped to 2K in the wire body', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-gemini-2k-'))
+  let origin = ''
+  try {
+    const respond = (res, url) => {
+      if (url === '/img.png') {
+        res.setHeader('content-type', 'image/png')
+        res.end(PNG)
+        return
+      }
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ data: [{ url: `${origin}/img.png` }] }))
+    }
+    await withMockProvider(respond, async ({ captured, baseURL }) => {
+      origin = baseURL.slice(0, -'/v1'.length)
+      const base = {
+        prompt: '一只坐在窗边的橘猫',
+        images: [],
+        imageProvider: 'comfly-gemini-flash-preview',
+        config: {
+          comflyBaseURL: baseURL,
+          comflyApiKeyEnv: 'COMFLY_API_KEY',
+          dreaminaPath: join(dir, 'missing-dreamina.exe'),
+          proxyUrl: '',
+          maxConcurrency: 2,
+          providerTimeoutMs: 15000,
+          taskTimeoutMs: 60000,
+          outputDir: 'outputs',
+          enabled: [],
+          credentials: { COMFLY_API_KEY: 'test-key' },
+        },
+        workspaceRoot: dir,
+        privateRoot: join(dir, 'private'),
+      }
+      // 1K and 4K are withdrawn on the Gemini route: both clamp to 2K instead of failing
+      for (const requested of ['4K', '1K']) {
+        const outcome = await runImageRouter({ ...base, ratio: '1920x1080', resolution: requested })
+        assert.equal(outcome.provider, 'comfly-gemini-flash-preview')
+        assert.equal(outcome.model, 'gemini-3.1-flash-image-preview-2k')
+        assert.equal(outcome.resolution, '2K', `a requested ${requested} is clamped to 2K`)
+        assert.equal(outcome.size, '2752x1536', '1920x1080 → 16:9 → 2K pixels')
+        assert.ok(existsSync(outcome.outputPath), 'the downloaded url payload is staged on disk')
+      }
+      const bodies = captured
+        .filter((c) => c.url === '/v1/images/generations')
+        .map((c) => JSON.parse(c.body.toString('utf8')))
+      assert.equal(bodies.length, 2, 'one generation call per request')
+      for (const body of bodies) {
+        assert.equal(body.model, 'gemini-3.1-flash-image-preview-2k')
+        assert.equal(body.size, '2752x1536')
+        assert.equal(body.resolution, '2k')
+        assert.equal(body.response_format, 'url')
+      }
     })
   } finally {
     rmSync(dir, { recursive: true, force: true })

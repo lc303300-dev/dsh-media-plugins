@@ -13,6 +13,7 @@ whenToUse: 用户想用受治理图片业务 Skill（九宫格分镜、场景一
 5. **提示词 V1（必须完整加载业务 Skill 知识）**：由所选业务 Skill 产出提示词 V1——**创作前必须完整读取该 Skill 的 `contract.json`（严格按素材槽顺序绑定）、`SKILL.md`、以及 `references/` 下全部文件：`creative-guidance.md`（事实账本/创作指导）、`failure-cases.md`（定稿前规避）、`examples.md`（纯文字提示词范例，绝不定义契约、绝不覆盖用户指令）**。用 `image_skill_pipeline` 的 `set_prompt` 写入（`author=business_skill`），然后 `confirm_prompt` 锁定素材哈希与提示词哈希。
 6. **确认后分流**：总任务量 = 场景数 × 每场景候选数。等于 1 → `start_generation`（dry-run 清单 `entry=generate_image`），交统一 `generate_image` 执行；大于 1 → `confirm_prompt` 后进入 `awaiting_paid_batch_confirmation`，**先取得用户明确付费批次确认**（`confirm_paid_batch`）再 `start_generation`（`entry=batch-image-generation`），交 `batch_image` 执行。
 7. **记录与停止**：记录成功、失败或放弃项；不自动重试、不做审美排名、不把部分成功伪装为完整成功。生成结果放入项目 `results/`；提示词正文只存项目 `prompts/`，操作日志只记版本、作者、长度与 sha256。
+8. **生成后不替用户验收（只对数量与速度负责）**：生成结果不做逐张 `read_image`/`describe_image` 检查，不做审美、一致性或合格判定，不淘汰、不自动重生成，也不因自查结论重复提交付费任务。业务 Skill 的质量规则（白色细线、九宫格等分、身份一致等）只约束**提示词编写与素材选择**，不作为生成后逐张读图验收的依据。成品交用户人工判断；只有失败或 `needs_review` 才如实上报。
 
 ## 决策边界
 
@@ -20,3 +21,4 @@ whenToUse: 用户想用受治理图片业务 Skill（九宫格分镜、场景一
 - 只在用户明确指定且统一工具支持时传 `image_provider`；否则用统一路由默认顺序。
 - 提示词正文不得包含供应商名、实际模型、分辨率、费用、下载路径或内部工作流说明。
 - 批量调度由 `batch_image` 的确定性调度器负责，不能用生成子 Agent 替代。
+- 生成后的质量判断属于用户：业务 Skill 的质量规则在**创作阶段**生效，不触发生成后视觉验收、不触发重生成。

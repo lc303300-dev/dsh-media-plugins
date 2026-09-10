@@ -5,7 +5,7 @@ DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 15 �
 
 | 功能 | 说明 | 底层 | 凭证 |
 |---|---|---|---|
-| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 个标准比例（也接受 `1920x1080` 这类像素尺寸并自动换算成最接近的比例）、`image_resolution`（1K/2K/4K，Gemini 2K / Dreamina 1K）、`image_provider` 显式线路直达不回退；默认线路 `comfly-gpt-image-2.5`（Comfly `gpt-image-2.5-sunburst`，**4K-only**：只传 4K 具体像素 `size`、1K/2K 请求钳制为 4K、不传 `resolution`/`response_format`、图片读 `data[0].b64_json` 解码），3 级适配器严格串行回退（comfly-gpt-image-2.5 → comfly-gemini-flash-preview → dreamina-image），单适配器 120s / 整任务 300s，失败分类 + needs_review 禁重试 + 每适配器连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px，跨进程容量锁（默认 6，dreamina 图/视频共享 `seedance-cli`） | Comfly / Dreamina CLI | `COMFLY_API_KEY` + VPN 代理 |
+| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 个标准比例（也接受 `1920x1080` 这类像素尺寸并自动换算成最接近的比例）、`image_resolution`（1K/2K/4K；单档位线路只钳制不报错：Gemini **2K-only**（1K/4K→2K）、GPT 2.5 **4K-only**（1K/2K→4K）、Dreamina 1K）、`image_provider` 显式线路直达不回退；默认线路 `comfly-gpt-image-2.5`（Comfly `gpt-image-2.5-sunburst`，**4K-only**：只传 4K 具体像素 `size`、1K/2K 请求钳制为 4K、不传 `resolution`/`response_format`、图片读 `data[0].b64_json` 解码），次选线路 `comfly-gemini-flash-preview`（Comfly `gemini-3.1-flash-image-preview-2k`，**2K-only**：只出 2K、1K/4K 请求钳制为 2K，提交 `resolution=2k` + `response_format=url` 并读 `data[0].url`），3 级适配器严格串行回退（comfly-gpt-image-2.5 → comfly-gemini-flash-preview → dreamina-image），单张总预算 90s（单次尝试、整任务、每股基准是同一个数字），失败分类 + 只有错误类才换线路 + needs_review 禁重试 + 每适配器连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px，跨进程容量锁（默认 **10**，全部图片任务共享单一池 `image`；视频侧独立 `seedance-cli` 上限 6） | Comfly / Dreamina CLI | `COMFLY_API_KEY` + VPN 代理 |
 | `generate_video` | 生视频：默认 seedance2.5 / 480p；text2video / multimodal2video；`video_execution_mode`：production（提交+轮询+下载）、production_submit_only（仅提交）、test_submit_only（强制非 VIP 2.0/720p，仅返回 submit_id，到即梦后台查看） | 即梦 Dreamina 本地 CLI（`dreamina.exe`） | OAuth 登录态 |
 | `describe_image` | 兜底看图：仅当当前主模型无法读图时用 Doubao 返回中文描述；主模型可读图时请直接用核心 `read_image`（本工具会拒绝并提示） | 火山方舟 Doubao（`doubao-seed-2-0-mini`） | `VOLCANO_ENGINE_API_KEY` |
 | `skill_registry` | 业务 Skill 治理（Codex_CS）：ingest/search/get/publish/deprecate/list，contract 校验、name@version 去重、内容哈希防漂移、FTS5 trigram 中文检索 | node:sqlite + FTS5（零原生依赖） | 无 |
@@ -13,7 +13,7 @@ DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 15 �
 | `project_pipeline` | 项目状态机（Codex_CS，**Skill 线专属**）：`create` 有 `skill_mode` 硬门（用户未显式要求启用 Skill 模式即拒绝创建）、显式状态流转、素材槽 min/max 校验、素材/提示词 sha256 锁定、`build_payload` 提交前哈希复核防未确认版本 | 原子 JSON 状态（私有运行目录） | 无 |
 | `prompt_batch` | 批次创作工作台（导演线的多素材批次能力，原 `dt_batch`）：init_batch / prepare_previews（≤1024px）/ set_visuals / set_prompts（裸标签绑定门 + **每段一次性检索凭证门**）/ finalize_review（审阅 HTML）/ run_batch（提交计划） | sharp | 无 |
 | `prompt_revision` | 提示词修订系统（Codex_DT）：classify 确定性分类（explicit_local/ambiguous_creative/structural_rewrite）+ 规范哈希修订契约；search_corpus 内置 seedance-forge 全量语料（2477 条，≤10 上限、保留 provenance、语料模型版本绝不用于选模型）；validate_result 校验（locked_context_sha256 回显、explicit_local 禁语料）；**search_corpus 每次发放一张一次性检索凭证 `search_id`**（账本 `<private>/corpus-ledger.json`），`authoring_gate` 校验并消费它——因此 N 段创作必须 N 次检索，自报命中数不再被接受 | 内置语料 `refs/forge-index.jsonl` | 无 |
-| `batch_image` | 确定性批量生图调度器：manifest 校验（支持组级 `reference_images`/`original_image` 槽 0）、稳定 job key、SQLite 状态、≤10 并发、≥1s 间隔、分派截止（默认 ceil(总数÷并发)×60s×1.5，可配 `deadline_seconds`）、完成宽限期（`completion_grace_seconds` 默认/上限 120s，可缩短不可延长）：截止后未启动任务永久 abandoned（`batch_deadline_not_submitted`）、运行中任务宽限期内落地照常收集、超时标记 failed（`batch_completion_grace_timeout`）；编号联系表（HTML，槽 0 原图）；重复提交被 job key 幂等拒绝 | node:sqlite + 统一路由器 | 同 generate_image |
+| `batch_image` | 确定性批量生图调度器：manifest 校验（支持组级 `reference_images`/`original_image` 槽 0）、稳定 job key、SQLite 状态、≤10 并发、≥1s 间隔、分派截止（默认 ceil(总数÷并发)×90s，可配 `deadline_seconds`）、完成宽限期（`completion_grace_seconds` 默认/上限 120s，可缩短不可延长）：截止后未启动任务永久 abandoned（`batch_deadline_not_submitted`）、运行中任务宽限期内落地照常收集、超时标记 failed（`batch_completion_grace_timeout`）；编号联系表（HTML，槽 0 原图）；重复提交被 job key 幂等拒绝 | node:sqlite + 统一路由器 | 同 generate_image |
 | `video_to_gif` | 视频转 GIF：FFmpeg 双遍 palettegen/paletteuse，宽度/FPS/颜色/抖动分档降级，默认 ≤10MB；可选 strict/quality 模式、denoise、anti-moire、palette stats/diff 模式、bayer_scale、gifsicle lossy 优化、max_duration_sec 截断、input_dir 批量 + CSV 转换报告 | FFmpeg（`FFMPEG_PATH` / PATH / 常见安装路径）+ 可选 gifsicle | 无 |
 | `image_preview` | EXIF 归一化 ≤1024px 预览 + 尺寸报告（视觉检查/审阅页用，不读原始大图） | sharp | 无 |
 | `split_grid_sheet` | 3×3 九宫格拼图拆格：方案1 形态学线检测 → 失败自动方案2 等比分割；可选 normalize_ratio 规范比例；输出 r1c1..r3c3 面板 + 自包含审阅页 | sharp | 无 |
@@ -103,6 +103,28 @@ video_to_gif(video="D:\\out\\clip.mp4")
 - **Skill 线（仅显式启用，`video-skill-router`）**：仅当用户明确要求"启用 Skill 模式"时才走；进入时必须告知用户已进入 Skill 模式；`project_pipeline create` 的 `skill_mode` 硬门会拒绝未经显式要求的创建。
 - **DT 批次线已取消**：原 `dt_batch` 工具改名为 `prompt_batch`，作为导演线的批次能力；原 `dt-prompt-authoring` 技能已删除，其流程并入 `video-prompt-orchestrator`。遗留 `<private>/dt/` 批次目录会在首次调用时自动迁移到 `<private>/batches/`。
 
+## 图片生成线路
+
+**职责边界**：图片线路只对**数量与速度**负责——生成后不做质量检查：不逐张 `read_image`/`describe_image` 验收、不做审美/一致性/尺寸判断、不自动淘汰或重生成。成功即以返回路径（或联系表）交付，取舍由用户人工判断；只有工具返回失败或 `needs_review` 时才如实上报。
+
+- **单张（`generate_image`，技能 `default-image-generation`）**：`image_ratio` 必填（8 个标准比例，或 `1920x1080` 这类像素写法，自动换算）；默认线路 `comfly-gpt-image-2.5`（4K-only）→ 允许回退的失败才转 `comfly-gemini-flash-preview`（2K-only）→ `dreamina-image`（1K）；`image_provider` 点名则单线路、失败不回退。预算：单张总预算 90s（`IMAGE_SECONDS_PER_CANDIDATE`，单次尝试、整任务与批量的每股基准是同一个数字）；`needs_review` 禁重试。**只有错误类失败（401/403、402/429、5xx）才换下一条线路**——超时类（`timeout_before_submit` / `provider_timeout`）与 `download_failure` 直接判失败，因为请求已经发出、可能已计费，换线路等于对同一张图付两次钱；下载失败改为重试同一个 URL。
+- **批量（`batch_image`，技能 `batch-image-generation`）**：manifest（组 × 候选）→ 稳定 job key（同一 manifest 重复提交被拒）→ SQLite 状态 → 分派并发默认 10（`concurrency` 1..10）、真实提交间隔 ≥1s → 分派截止 `ceil(总数÷并发)×90s`（可 `deadline_seconds` 覆盖）：截止后**未启动**任务永久 `abandoned`（`batch_deadline_not_submitted`，不查询不重试）→ 已在跑的再等 `completion_grace_seconds`（默认/上限 120s），超时记 `failed`（`batch_completion_grace_timeout`）→ `contact_sheet` 出固定槽位编号联系表供人工选图。
+- **并发容量（单一图片池）**：图片侧只有一个跨进程共享的容量池（`IMAGE_CAPACITY_KEY = 'image'`，默认 **10**）：`generate_image` 单张、`batch_image` 批量、所有线路、同一 workspace 下的所有 dsh 进程都从这 10 个槽位取用——**任何时刻最多只有 10 张图在同时生成**。批量分派并发默认也是 10（`concurrency` 1..10），与池子对齐；调小 `concurrency` 只是让分派更保守，池子仍可能被其他会话的单张任务占用。**视频侧容量完全独立**（`seedance-cli` 上限 6，来自上游 CLI 自己的 `max_concurrency`），图片与视频互不占额度。
+- **受治理业务 Skill 线（`image-skill-router` + `image_skill_pipeline`）**：仅在用户使用受治理图片 Skill 时走；总任务量 = 场景数 × 候选数，=1 交 `generate_image`，>1 需 `confirm_paid_batch` 后交 `batch_image`。
+
+**40 张怎么走**（例：5 组 × 8 候选，`image_ratio` 16:9，`image_resolution` 4K）：
+
+```text
+batch_image(command="start", manifest={groups:[…5 组…], image_resolution:"4K"})
+→ total 40 · concurrency 10（默认）· estimate ceil(40/10)×90 = 360s · dispatch deadline 360s · grace 120s · max runtime 480s
+→ 提交节流 ≥1s：前 10 张在约 9s 内按 1s 间隔起跑，之后每完成一张补一张；全程同时在跑的图片不超过 10
+→ 360s 起不再发起新任务：未启动的永久 abandoned，在跑的再等 ≤120s，超时 failed
+batch_image(command="status", job_key=…)        # 轮询 landed/abandoned
+batch_image(command="contact_sheet", job_key=…) # 生成编号联系表 → 用户人工选图
+```
+
+`deadline` 只由一个数字决定：**每股 90 秒**（`IMAGE_SECONDS_PER_CANDIDATE`，与单张的超时预算同一个值），`deadline = ceil(候选数 ÷ 并发) × 90s`，**没有额外的余量系数**——40 张即 `ceil(40/10)×90 = 360s`。要放宽就显式给 `deadline_seconds`；`concurrency` 只管分派节奏，真正的并发上限始终是那个共享的 10。
+
 ## Codex_IS：受治理图片业务 Skill 层
 
 内置正式图片业务 Skill 库（`refs/image-skill-library/`），首包 `scene-storyboard-grid`（场景一致性九宫格分镜，双槽 scene-base + identity-design、3×3 单张输出、事实账本选镜）。用 `image_skill_curator` 的 `seed_library` 同步进私有库并注册，之后走 `image-skill-router` 技能流程：
@@ -131,7 +153,7 @@ image_skill_pipeline(command="start_generation", project_id=..., dry_run=true)
 - 付费安全：默认人工确认；`needs_review` 绝不自动重试；`test_submit_only` 不轮询；批量需明确付费确认。
 - 输入安全：大图 EXIF 归一化与等比缩放（≤1920px）、不覆盖原图、素材顺序稳定、音频时长与文件存在性校验。
 - 状态可靠性：任务 id 幂等、状态原子写、跨进程锁、取消标记、提交前后持久化。
-- 并发控制：按 capacity key 限流；`seedance-cli` 图/视频共享容量。
+- 并发控制：图片侧单一共享容量池（默认 10，跨进程，`generate_image` / `batch_image` / 所有会话共用）；视频侧独立 `seedance-cli` 池（上限 6）。
 
 ## 开发与测试
 

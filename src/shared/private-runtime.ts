@@ -277,41 +277,6 @@ export async function acquireSlot(
   }
 }
 
-/** Remove lock files whose owning PID is gone (best-effort). */
-export async function cleanupStaleLocks(lockRoot: string, capacityKey: string): Promise<number> {
-  const dir = join(lockRoot, 'providers', capacityKey)
-  let removed = 0
-  try {
-    const files = await readdir(dir)
-    for (const file of files) {
-      if (!file.endsWith('.lock')) continue
-      const path = join(dir, file)
-      try {
-        const meta = JSON.parse(await readFile(path, 'utf8'))
-        if (typeof meta.pid === 'number' && !isPidAlive(meta.pid)) {
-          await unlink(path)
-          removed += 1
-        }
-      } catch {
-        /* unreadable -> leave */
-      }
-    }
-  } catch {
-    /* no lock dir */
-  }
-  return removed
-}
-
-/** Best-effort PID liveness check (works cross-process on Windows too). */
-export function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error: any) {
-    return error?.code === 'EPERM'
-  }
-}
-
 /** Append one safe JSON log line to `<private>/logs/<name>.log`. */
 export async function appendSafeLog(privateRoot: string, name: string, entry: Record<string, unknown>): Promise<void> {
   const dir = await ensureDir(join(privateRoot, 'logs'))

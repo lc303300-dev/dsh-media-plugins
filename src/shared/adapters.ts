@@ -3,16 +3,24 @@
  *
  * Contract (UNIFIED_MEDIA_TOOL_REFACTOR_BLUEPRINT §1.2/§9, media-router.defaults.json):
  * - strictly serial per-adapter attempts, never parallel/hedged;
- * - per-adapter budget default 120 s, whole-task default 300 s;
- * - fallback only for FALLBACK_ALLOWED classes; indeterminate stops with needs_review;
- * - default concurrency 6 per adapter; `seedance-cli` capacity shared by
- *   dreamina image + video;
+ * - one 90 s time box per candidate: the per-attempt budget, the whole-task
+ *   budget and the batch per-candidate basis are the same number
+ *   (`IMAGE_SECONDS_PER_CANDIDATE`), so a candidate never outlives its slot
+ *   by more than that box; the batch dispatch deadline is
+ *   `ceil(candidates / concurrency)` x that same basis;
+ * - fallback ONLY for error classes (request rejected, zero cost, ms-fast).
+ *   Timeouts and download failures never fall back: the request was already
+ *   sent (possibly billed) and re-routing would pay twice. See STOP_CLASSES;
+ * - one cross-process image capacity pool shared by every image route and
+ *   every image tool (default 10); the video pipeline's `seedance-cli`
+ *   capacity is entirely separate and never shares with images;
  * - `image_ratio` is required and never inferred; the 8 standard ratios are
  *   accepted as-is and a concrete pixel size (1920x1080) is converted to the
  *   nearest standard ratio;
- * - `image_resolution` (1K/2K/4K) is optional with provider-specific defaults
- *   (Gemini routes default 2K, Dreamina defaults 1K); the GPT 2.5 route is
- *   4K-only and clamps any other requested class up to 4K;
+ * - `image_resolution` (1K/2K/4K) is optional; both Comfly routes are
+ *   single-class and clamp rather than reject: GPT 2.5 is 4K-only (1K/2K
+ *   clamp up to 4K) and Gemini is 2K-only (1K/4K clamp to 2K, 1K/4K are
+ *   withdrawn). Dreamina keeps its 1K default;
  * - `image_provider` is a user-explicit restricted route: only that adapter
  *   runs, there is no cross-route fallback, and unknown/disabled routes are
  *   rejected as input_error before any paid call.
@@ -25,9 +33,9 @@ import { promisify } from 'node:util'
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import sharp from 'sharp'
-import { MediaError, mediaErrors, FALLBACK_ALLOWED, type AttemptRecord } from './failure.ts'
+import { MediaError, mediaErrors, FALLBACK_ALLOWED, STOP_CLASSES, type AttemptRecord, type FailureClass } from './failure.ts'
 import { IMAGE_RATIOS } from './ratios.ts'
-import { openAiImageResult, downloadImageTo, stageImageBytes, HttpStatusError } from './media-client.ts'
+import { openAiImageResult, downloadImageTo, stageImageBytes, HttpStatusError, DEFAULT_IMAGE_REQUEST_TIMEOUT_MS } from './media-client.ts'
 import {
   acquireSlot,
   appendSafeLog,
@@ -65,11 +73,16 @@ export const RATIO_SIZES: Readonly<Record<string, string>> = {
   '9:16': '768x1376',
 }
 
-/** Comfly Gemini models per resolution class (contract: models_by_resolution). */
+/**
+ * The Gemini route is **2K-only**: 1K and 4K are withdrawn. A request for
+ * either withdrawn class is clamped to 2K (never rejected), mirroring the
+ * GPT 2.5 route's 4K-only clamping behaviour.
+ */
+export const GEMINI_IMAGE_RESOLUTION = '2K'
+
+/** Comfly Gemini models per resolution class (contract: models_by_resolution — 2K only). */
 export const GEMINI_MODELS_BY_RESOLUTION: Readonly<Record<string, string>> = {
-  '1K': 'gemini-3.1-flash-image-preview',
   '2K': 'gemini-3.1-flash-image-preview-2k',
-  '4K': 'gemini-3.1-flash-image-preview-4k',
 }
 
 /** Comfly GPT Image 2.5 model id (default image route). */
@@ -163,18 +176,23 @@ export function assertSupportedResolution(resolution: string | undefined): void 
   }
 }
 
-/** Gemini pixel size: scale the 1K ratio allowlist by the resolution class. */
+/**
+ * Gemini pixel size: the route is 2K-only, so the 1K ratio allowlist is
+ * always scaled by 2. The adapter clamps 1K/4K to 2K before this lookup, so a
+ * withdrawn class only reaches here through a direct call (then input_error).
+ */
 export function geminiSizeFor(ratio: string, resolution: string): string {
-  const scale = { '1K': 1, '2K': 2, '4K': 4 }[resolution]
-  if (scale === undefined) {
-    throw mediaErrors.input(`Unsupported image_resolution "${resolution}"; supported values: ${SUPPORTED_RESOLUTIONS.join(', ')}`)
+  if (resolution !== GEMINI_IMAGE_RESOLUTION) {
+    throw mediaErrors.input(
+      `Unsupported image_resolution "${resolution}" for the Gemini route; it is 2K-only (1K/4K requests are clamped to 2K by the adapter)`,
+    )
   }
   const base = RATIO_SIZES[normalizeRatio(ratio)]
   if (base === undefined) {
     throw mediaErrors.input(`Unsupported image_ratio "${ratio}"; supported values: ${SUPPORTED_RATIOS.join(', ')}`)
   }
   const [width, height] = base.split('x').map(Number)
-  return `${width * scale}x${height * scale}`
+  return `${width * 2}x${height * 2}`
 }
 
 /** GPT Image 2.5 pixel size: table lookup per ratio x resolution. */
@@ -192,6 +210,18 @@ export function gptImage25SizeFor(ratio: string, resolution: string): string {
 
 /** @deprecated Legacy alias of {@link gptImage25SizeFor}. */
 export const gptImage2SizeFor = gptImage25SizeFor
+
+/**
+ * Single cross-process capacity pool shared by EVERY image task: both image
+ * tools (`generate_image`, `batch_image`), every image route, and every dsh
+ * process in the same workspace. One lease = one in-flight image request, so
+ * the pool size is also the hard ceiling on how many images may be generated
+ * concurrently.
+ */
+export const IMAGE_CAPACITY_KEY = 'image'
+
+/** Default size of the shared image pool (contract: 10 concurrent images). */
+export const DEFAULT_IMAGE_CONCURRENCY = 10
 
 export interface RouterConfig {
   comflyBaseURL: string
@@ -265,9 +295,10 @@ function credentials(cfg: RouterConfig, env: string): string | undefined {
 /**
  * Comfly OpenAI-compatible adapter (one fixed model, one request).
  *
- * The `profile` switches contracts. `gemini` selects the model per
- * resolution class (1K/2K/4K) and sends the provider-specific `resolution`
- * field plus `response_format: 'url'`. `gpt` is the Comfly GPT Image 2.5
+ * The `profile` switches contracts. `gemini` is the 2K-only route: it sends
+ * the provider-specific `resolution` field (always `2k`) plus
+ * `response_format: 'url'`, and any requested 1K/4K class is clamped to 2K.
+ * `gpt` is the Comfly GPT Image 2.5
  * ("sunburst") contract: one fixed model, a concrete pixel `size`, and
  * neither `resolution` nor `response_format`; the image comes back as
  * `data[0].b64_json`.
@@ -278,19 +309,20 @@ function comflyAdapter(
   cfg: RouterConfig,
   profile: 'gemini' | 'gpt' = 'gpt',
 ): ImageAdapter {
-  const defaultResolution = profile === 'gemini' ? '2K' : GPT_IMAGE_25_RESOLUTION
   return {
     id,
     model,
-    capacityKey: id,
+    capacityKey: IMAGE_CAPACITY_KEY,
     async checkReady() {
       return { ready: Boolean(credentials(cfg, cfg.comflyApiKeyEnv)), reason: cfg.comflyApiKeyEnv }
     },
     async execute(input) {
       const apiKey = credentials(cfg, cfg.comflyApiKeyEnv)
       if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.comflyApiKeyEnv}`)
-      // GPT 2.5 is 4K-only: never downgrade to 1K/2K even when one is requested.
-      const resolution = profile === 'gemini' ? (input.resolution ?? defaultResolution) : GPT_IMAGE_25_RESOLUTION
+      // Both Comfly routes are single-class: GPT 2.5 is 4K-only and Gemini is
+      // 2K-only. A user-requested class is clamped to the route's own class —
+      // never downgraded to a smaller class and never rejected.
+      const resolution = profile === 'gemini' ? GEMINI_IMAGE_RESOLUTION : GPT_IMAGE_25_RESOLUTION
       const effectiveModel = profile === 'gemini' ? (GEMINI_MODELS_BY_RESOLUTION[resolution] ?? model) : model
       const size = profile === 'gemini' ? geminiSizeFor(input.ratio, resolution) : gptImage25SizeFor(input.ratio, resolution)
       const payload = await openAiImageResult({
@@ -313,21 +345,25 @@ function comflyAdapter(
         : await downloadImageTo(String(payload.url), dest, {
             proxyUrl: cfg.proxyUrl,
             signal: input.signal,
-            timeoutMs: Math.min(input.budgetMs, 120000),
+            timeoutMs: Math.min(input.budgetMs, DEFAULT_IMAGE_REQUEST_TIMEOUT_MS),
           })
       return { outputPath: path, model: effectiveModel, resolution, size }
     },
   }
 }
 
-/** Dreamina image adapter (best effort; last fallback, shared seedance-cli capacity). */
+/**
+ * Dreamina image adapter (best effort; last fallback). It leases a slot from
+ * the same shared image pool as the HTTP routes — the video pipeline's
+ * `seedance-cli` capacity is separate and is never shared with images.
+ */
 function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
   const id = 'dreamina-image'
   const model = '4.0'
   return {
     id,
     model,
-    capacityKey: 'seedance-cli',
+    capacityKey: IMAGE_CAPACITY_KEY,
     async checkReady() {
       try {
         await execFileAsync(cfg.dreaminaPath, ['--help'], { timeout: 10000, windowsHide: true })
@@ -363,7 +399,6 @@ function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
 
 /** Legacy adapter ids -> current ids (configs written against old names keep working). */
 export const ADAPTER_ALIASES: Readonly<Record<string, string>> = {
-  'comfly-gemini-lite': 'comfly-gemini-flash-preview',
   'comfly-gpt-image-2': 'comfly-gpt-image-2.5',
 }
 
@@ -371,7 +406,7 @@ export const ADAPTER_ALIASES: Readonly<Record<string, string>> = {
 export function defaultAdapters(cfg: RouterConfig): ImageAdapter[] {
   const chain: ImageAdapter[] = [
     comflyAdapter('comfly-gpt-image-2.5', GPT_IMAGE_25_MODEL, cfg, 'gpt'),
-    comflyAdapter('comfly-gemini-flash-preview', GEMINI_MODELS_BY_RESOLUTION['1K'], cfg, 'gemini'),
+    comflyAdapter('comfly-gemini-flash-preview', GEMINI_MODELS_BY_RESOLUTION[GEMINI_IMAGE_RESOLUTION], cfg, 'gemini'),
     dreaminaImageAdapter(cfg),
   ]
   if (!cfg.enabled || cfg.enabled.length === 0) return chain
@@ -414,7 +449,7 @@ export interface RouterOptions {
   /** Raw local reference paths; the router normalizes them first. */
   images: string[]
   ratio: string
-  /** Optional user-selected resolution class (1K/2K/4K); adapters apply their route default otherwise. */
+  /** Optional user-selected resolution class (1K/2K/4K); single-class routes clamp it (GPT 4K, Gemini 2K), Dreamina applies 1K otherwise. */
   resolution?: string
   /** Optional user-explicit route id; only that adapter runs without fallback. */
   imageProvider?: string
@@ -456,10 +491,10 @@ async function normalizeInputs(images: string[], privateRoot: string, taskId: st
 
 /**
  * Run the serial image router: validate ratio/resolution/provider, normalize
- * inputs, then attempt adapters in priority order with per-adapter budget
- * = min(120s, remaining) and a 300 s whole-task deadline, honoring
- * per-capacity slot leases. An explicit `imageProvider` restricts the run to
- * that single adapter with no cross-route fallback.
+ * inputs, then attempt adapters in priority order with a per-attempt budget of
+ * min(90 s, remaining) inside a whole-task box of that same 90 s, honoring
+ * the shared image capacity lease (`IMAGE_CAPACITY_KEY`). An explicit
+ * `imageProvider` restricts the run to that single adapter with no fallback.
  */
 export async function runImageRouter(options: RouterOptions): Promise<RouterOutcome> {
   const { prompt, images, ratio, config, privateRoot, signal, taskId = newTaskId() } = options
@@ -513,12 +548,12 @@ export async function runImageRouter(options: RouterOptions): Promise<RouterOutc
         timeoutMs: adapterBudget,
       })
     } catch (error: any) {
+      // Our own capacity limit, not a provider problem: every route leases from
+      // the SAME shared pool, so falling through would only queue again.
       const reason = error?.message ?? 'slot busy'
-      if (explicit) {
-        throw mediaErrors.providerTimeout(`requested image_provider ${adapter.id} slot busy: ${reason}`)
-      }
-      attempts.push({ adapter: adapter.id, model: adapter.model, status: 'timeout', failureClass: 'provider_timeout', durationMs: Date.now() - attemptStart, reason })
-      continue
+      attempts.push({ adapter: adapter.id, model: adapter.model, status: 'timeout', failureClass: 'concurrency_busy', durationMs: Date.now() - attemptStart, reason })
+      await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_capacity_busy', adapter: adapter.id, reason })
+      throw mediaErrors.busy(`no free image capacity slot for ${adapter.id}: ${reason}`)
     }
 
     try {
@@ -550,7 +585,10 @@ export async function runImageRouter(options: RouterOptions): Promise<RouterOutc
       attempts.push({ adapter: adapter.id, model: adapter.model, status: cls === 'provider_timeout' ? 'timeout' : 'failed', failureClass: cls, durationMs, reason: String(error?.message ?? error).slice(0, 300) })
       await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_failed', adapter: adapter.id, failureClass: cls, durationMs })
       if (explicit) throw error // explicit routes never fall back
-      if (!FALLBACK_ALLOWED.has(cls as any)) throw error
+      // Error classes only. Timeouts / download failures / capacity / policy /
+      // indeterminate / the task budget all stop here instead of paying twice.
+      if (STOP_CLASSES.has(cls as FailureClass)) throw error
+      if (!FALLBACK_ALLOWED.has(cls as FailureClass)) throw error
       // allowed: continue to the next adapter
     } finally {
       await release?.()
