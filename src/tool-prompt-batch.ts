@@ -1,29 +1,33 @@
 /**
- * DT batch tool (Codex_DT rebuild): creation manifests, 1024 px previews
+ * Prompt-batch tool (Codex_DT rebuild): creation manifests, 1024 px previews
  * and a review page for per-material prompt confirmation. Prompt authoring
  * itself stays with the agent (LLM); this tool owns the artifacts and the
  * human review surface.
  *
- * @module @deepseek-ai/dsh-tool-dt
+ * This is the batch capability of the director line (`video-prompt-orchestrator`), not a
+ * line of its own.
+ *
+ * @module @deepseek-ai/dsh-tool-prompt-batch
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { copyFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { copyFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
 import { join, isAbsolute } from 'node:path'
 import { makePreview } from './shared/image-ops.ts'
 import { atomicWriteJson, ensureDir, readJsonSafe, resolvePrivateRoot, sha256File, newTaskId } from './shared/private-runtime.ts'
 import { VIDEO_RATIOS } from './shared/project-core.ts'
 import { searchCorpus } from './shared/corpus-core.ts'
-import { buildReviewHtml, buildReviewItems } from './shared/dt-core.ts'
+import { buildReviewHtml, buildReviewItems } from './shared/prompt-batch-core.ts'
 import { normalizeReferenceLabels, classifyVideoPromptCompleteness } from './shared/video-pipeline.ts'
+import { parseLedger, segmentEvidence } from './shared/corpus-ledger.ts'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Stable batch id: YYYYMMDD-HHMM-<name> (Codex_DT new_batch convention). */
+/** Stable batch id: YYYYMMDD-HHMM-<name>. */
 function newBatchId(name: string): string {
   const now = new Date()
   const pad = (n: number): string => String(n).padStart(2, '0')
@@ -32,8 +36,18 @@ function newBatchId(name: string): string {
   return `${stamp}-${safe}`
 }
 
+/** One-time migration: fold the legacy `dt/` batch directory into `batches/`.
+ *  Conservative — when the new directory already exists, nothing is moved. */
+async function migrateLegacyBatchRoot(privateRoot: string): Promise<void> {
+  const legacy = join(privateRoot, 'dt')
+  const target = join(privateRoot, 'batches')
+  const isDir = async (p: string): Promise<boolean> => stat(p).then((s) => s.isDirectory()).catch(() => false)
+  if (!(await isDir(legacy)) || (await isDir(target))) return
+  await rename(legacy, target).catch(() => {})
+}
+
 /** Cordis plugin name used by loader diagnostics. */
-export const name = 'Ws_tool-dt'
+export const name = 'Ws_tool-prompt-batch'
 export const inject = ['tools']
 
 export interface Config {
@@ -51,9 +65,9 @@ type ResolvedConfig = Required<Config>
 function apply(ctx: Context, config: ResolvedConfig): void {
   ctx.tools.register(
     defineTool({
-      name: 'dt_batch',
+      name: 'prompt_batch',
       description:
-'DT 批次工作台（Codex_DT 的 DSH 重建）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1024px 预览、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径/photo_type/surface/mode/resolution）、set_visuals 逐素材写入拍摄信息（photo_type/visual/motion_plan/images，images 支持每段多图）、逐素材写入可执行中文提示词（set_prompts 按 material 合并、自动把 @图片N/参考图片N 规范为裸标签 图片N，且**写作前必须先 prompt_revision search_corpus + authoring_gate，缺 图片N 裸标签绑定的提示词会被拒绝写入**）、生成 review/index.html 逐段列出全部参考图供用户逐项确认、确认后生成提交计划（run_batch，含 asset_manifest 标签绑定，每段 tasks[].images 绑定全部参考图）、语料匹配写回 manifest（update_forge_matches）。set_prompts 写作前若对应业务 Skill 存在，先读取其 references（含 examples 提示词范例）对照组织方式，范例不改变素材契约、不覆盖用户指令。最终执行只调用统一媒体工具，不直接调用供应商。',
+'批次创作工作台（Codex_DT 的 DSH 重建，导演线的多素材批次能力，不是独立线路）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1024px 预览、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径/photo_type/surface/mode/resolution）、set_visuals 逐素材写入拍摄信息（photo_type/visual/motion_plan/images，images 支持每段多图）、逐素材写入可执行中文提示词（set_prompts 按 material 合并、自动把 @图片N/参考图片N 规范为裸标签 图片N；**每段必须先用 prompt_revision search_corpus 取得一次性检索凭证并经 authoring_gate（segment=该段 material）消费，缺凭证的段与缺 图片N 裸标签绑定的段都会被整次拒绝写入**）、生成 review/index.html 逐段列出全部参考图供用户逐项确认、确认后生成提交计划（run_batch，含 asset_manifest 标签绑定，每段 tasks[].images 绑定全部参考图）、语料匹配写回 manifest（update_forge_matches）。set_prompts 默认不读取任何业务 Skill（只有用户显式启用 Skill 模式时才读其 references 对照组织方式，范例不改变素材契约、不覆盖用户指令）。最终执行只调用统一媒体工具，不直接调用供应商。',
       parameters: {
         command: {
           type: 'string',
@@ -77,7 +91,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         auto_generate: { type: 'boolean', description: 'new_batch 用：记录全自动生成意图（审阅后跳过人工确认）。' },
         materials: { type: 'array', items: { type: 'string' }, description: 'init/new_batch 用：本地素材路径列表（顺序即素材编号）。' },
         images: { type: 'array', items: { type: 'string' }, description: 'import_images 用：对话附件路径列表（等待稳定后复制）。' },
-        prompts: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_prompts 用：[{material, prompt}] 逐素材中文提示词。按 material 合并（非整体替换）：只传部分条目不会覆盖未传条目；非规范引用标签（@图片N/参考图片N/@Image N）会自动规范为裸标签 图片N；**缺少 图片N 裸标签绑定的条目会被整次拒绝**（先 prompt_revision search_corpus + authoring_gate 再写）。' },
+        prompts: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_prompts 用：[{material, prompt}] 逐素材中文提示词。按 material 合并（非整体替换）：只传部分条目不会覆盖未传条目；非规范引用标签（@图片N/参考图片N/@Image N）会自动规范为裸标签 图片N。**每段必须先 prompt_revision search_corpus（返回一次性 search_id）再用 authoring_gate（segment=该段 material）消费；缺已消费凭证的段、以及缺少 图片N 裸标签绑定的段都会被整次拒绝**（一段一张凭证，不可复用）。' },
         items: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_visuals 用：[{material, photo_type?, visual?, motion_plan?, images?}] 逐素材写入拍摄信息；images 为该段绑定的额外参考图（每段可多图，顺序即 --image 顺序）。' },
         confirm: { type: 'boolean', description: 'run_batch 用：确认所有提示词后生成提交计划。' },
       },
@@ -109,18 +123,19 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const command = args.command as string
         const workspaceRoot: string = exec.agent?.session?.header?.cwd ?? process.cwd()
         const privateRoot = resolvePrivateRoot(workspaceRoot, config.privateDir)
-        const dtRoot = join(privateRoot, 'dt')
+        const batchRoot = join(privateRoot, 'batches')
+        await migrateLegacyBatchRoot(privateRoot)
 
         if (command === 'list') {
           const { readdir } = await import('node:fs/promises')
-          const ids = await readdir(dtRoot).catch(() => [] as string[])
+          const ids = await readdir(batchRoot).catch(() => [] as string[])
           return { ok: true, message: `${ids.length} batch(es)`, batches: ids }
         }
 
         let batchId = (args.batch_id ?? '').toString().trim()
         if (command === 'init_batch' || command === 'new_batch') {
-          batchId = batchId || (command === 'new_batch' ? newBatchId(args.name ?? 'batch') : `dt-${newTaskId().slice(0, 10)}`)
-          const dir = await ensureDir(join(dtRoot, batchId))
+          batchId = batchId || (command === 'new_batch' ? newBatchId(args.name ?? 'batch') : `batch-${newTaskId().slice(0, 10)}`)
+          const dir = await ensureDir(join(batchRoot, batchId))
           const ratio = args.ratio ?? '16:9'
           if (!VIDEO_RATIOS.includes(ratio as any)) return { ok: false, message: `unsupported ratio ${ratio}` }
           const materials: Array<{ path: string; hash: string; photo_type?: string; visual?: unknown; motion_plan?: unknown; preview?: string }> = []
@@ -160,7 +175,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             image_drop_dir: inputDir,
           })
           if (command === 'new_batch' && materials.length > 0) {
-            const dir2 = join(dtRoot, batchId, 'inputs')
+            const dir2 = join(batchRoot, batchId, 'inputs')
             await ensureDir(dir2)
             for (let i = 0; i < materials.length; i += 1) {
               const ext = materials[i].path.slice(materials[i].path.lastIndexOf('.')) || '.png'
@@ -171,7 +186,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
 
         if (!batchId) return { ok: false, message: 'batch_id is required' }
-        const dir = join(dtRoot, batchId)
+        const dir = join(batchRoot, batchId)
         const manifest = await readJsonSafe(join(dir, 'manifest.json'))
         if (!manifest) return { ok: false, message: `batch not found: ${batchId}` }
 
@@ -321,6 +336,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           case 'set_prompts': {
             const incoming = (args.prompts ?? []).map((p: any) => ({ material: String(p.material), prompt: String(p.prompt ?? '') }))
             if (incoming.some((p: any) => !p.prompt.trim())) return { ok: false, message: 'every prompt must be non-empty' }
+            // 每段必须有一条自己的、已由 authoring_gate 消费的检索凭证（一次性，不可复用）
+            const ledger = parseLedger(await readJsonSafe(join(privateRoot, 'corpus-ledger.json')))
             // Merge by material — NEVER wholesale-replace. A partial write must
             // not destroy prompts already recorded for other materials (BUG-01).
             const byMaterial = new Map<string, { material: string; prompt: string }>()
@@ -330,20 +347,30 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             const diagnostics: Array<Record<string, unknown>> = []
             const media = { images: 1, videos: 0, audios: 0 } // every material binds at least its primary image
             const blocked: Array<{ material: string; prompt: string }> = []
+            const unsearched: Array<{ material: string }> = []
             for (const p of incoming) {
               // Normalize non-conforming reference labels to bare 图片N form (BUG-03).
               const norm = normalizeReferenceLabels(p.prompt)
               const finalPrompt = norm.prompt.trim()
               const verdict = classifyVideoPromptCompleteness(finalPrompt, media)
+              const evidence = segmentEvidence(ledger, p.material)
               diagnostics.push({
                 material: p.material,
                 completeness: verdict.verdict,
                 reasons: verdict.reasons,
                 label_normalizations: norm.changed,
+                corpus_search_id: evidence?.id ?? null,
+                corpus_hits: evidence?.hits ?? null,
+                corpus_query: evidence?.query ?? null,
               })
-              // Hard authoring gate (BUG-02): every dt_batch material is an image
+              // Hard gate: one consumed corpus credential per segment. Without it
+              // the segment cannot be written at all (no partial write).
+              if (!evidence) {
+                unsearched.push({ material: p.material })
+                continue
+              }
+              // Hard authoring gate (BUG-02): every prompt_batch material is an image
               // reference, so the prompt MUST bind it with a bare 图片N label.
-              // Refuse to write (fail the whole call, no partial write) when missing.
               if (!/图片\s*\d+/.test(finalPrompt)) {
                 blocked.push({ material: p.material, prompt: finalPrompt })
                 continue
@@ -351,6 +378,15 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               if (byMaterial.has(p.material)) updated += 1
               else added += 1
               byMaterial.set(p.material, { material: p.material, prompt: finalPrompt })
+            }
+            if (unsearched.length > 0) {
+              const list = unsearched.map((b) => b.material).join(' | ')
+              return {
+                ok: false,
+                message: `${unsearched.length} segment(s) rejected — no consumed corpus credential. Every segment must run its own prompt_revision search_corpus (returns a single-use search_id) followed by authoring_gate(search_id, segment=<this material>); one credential cannot cover several segments. ${list}`,
+                batch_id: batchId,
+                diagnostics,
+              }
             }
             if (blocked.length > 0) {
               const list = blocked.map((b: any) => `${b.material}: ${b.prompt.slice(0, 60)}`).join(' | ')

@@ -7,9 +7,12 @@
  * - fallback only for FALLBACK_ALLOWED classes; indeterminate stops with needs_review;
  * - default concurrency 6 per adapter; `seedance-cli` capacity shared by
  *   dreamina image + video;
- * - `image_ratio` is required and never inferred; `image_resolution`
- *   (1K/2K/4K) is optional with provider-specific defaults (Gemini routes
- *   default 2K, GPT routes default 4K, Dreamina defaults 1K);
+ * - `image_ratio` is required and never inferred; the 8 standard ratios are
+ *   accepted as-is and a concrete pixel size (1920x1080) is converted to the
+ *   nearest standard ratio;
+ * - `image_resolution` (1K/2K/4K) is optional with provider-specific defaults
+ *   (Gemini routes default 2K, Dreamina defaults 1K); the GPT 2.5 route is
+ *   4K-only and clamps any other requested class up to 4K;
  * - `image_provider` is a user-explicit restricted route: only that adapter
  *   runs, there is no cross-route fallback, and unknown/disabled routes are
  *   rejected as input_error before any paid call.
@@ -24,7 +27,7 @@ import { join } from 'node:path'
 import sharp from 'sharp'
 import { MediaError, mediaErrors, FALLBACK_ALLOWED, type AttemptRecord } from './failure.ts'
 import { IMAGE_RATIOS } from './ratios.ts'
-import { openAiImageUrl, downloadImageTo, HttpStatusError } from './media-client.ts'
+import { openAiImageResult, downloadImageTo, stageImageBytes, HttpStatusError } from './media-client.ts'
 import {
   acquireSlot,
   appendSafeLog,
@@ -43,10 +46,10 @@ export const SUPPORTED_RATIOS: readonly string[] = IMAGE_RATIOS
 /** The 3 supported image resolution classes (contract). */
 export const SUPPORTED_RESOLUTIONS: readonly string[] = ['1K', '2K', '4K'] as const
 
-/** Public image route ids accepted by `image_provider` (DSH canonical ids). */
+/** Public image route ids accepted by `image_provider` (DSH canonical ids, default route first). */
 export const SUPPORTED_IMAGE_PROVIDERS: readonly string[] = [
+  'comfly-gpt-image-2.5',
   'comfly-gemini-flash-preview',
-  'comfly-gpt-image-2',
   'dreamina-image',
 ] as const
 
@@ -69,28 +72,23 @@ export const GEMINI_MODELS_BY_RESOLUTION: Readonly<Record<string, string>> = {
   '4K': 'gemini-3.1-flash-image-preview-4k',
 }
 
-/** GPT Image 2 concrete pixel sizes per ratio x resolution (contract: GPT_IMAGE_2_SIZES). */
-export const GPT_IMAGE_2_SIZES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  '1K': {
-    '21:9': '1280x544',
-    '16:9': '1280x720',
-    '3:2': '1200x800',
-    '4:3': '1152x864',
-    '1:1': '1024x1024',
-    '3:4': '864x1152',
-    '2:3': '800x1200',
-    '9:16': '720x1280',
-  },
-  '2K': {
-    '21:9': '2048x880',
-    '16:9': '2048x1152',
-    '3:2': '1920x1280',
-    '4:3': '1920x1440',
-    '1:1': '2048x2048',
-    '3:4': '1440x1920',
-    '2:3': '1280x1920',
-    '9:16': '1152x2048',
-  },
+/** Comfly GPT Image 2.5 model id (default image route). */
+export const GPT_IMAGE_25_MODEL = 'gpt-image-2.5-sunburst'
+
+/**
+ * The GPT 2.5 route is 4K-only: every request is submitted with the 4K pixel
+ * table, and a user-supplied 1K/2K `image_resolution` is clamped to 4K
+ * instead of downgrading the output.
+ */
+export const GPT_IMAGE_25_RESOLUTION = '4K'
+
+/**
+ * GPT Image 2.5 concrete pixel sizes (contract: GPT_IMAGE_2_5_SIZES). The
+ * route is 4K-only, so the table holds exactly the Comfly
+ * `gpt-image-2.5-sunburst` 4K contract row; a requested 1K/2K class is
+ * clamped up to 4K by the adapter before this table is consulted.
+ */
+export const GPT_IMAGE_2_5_SIZES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   '4K': {
     '21:9': '3840x1648',
     '16:9': '3840x2160',
@@ -103,9 +101,52 @@ export const GPT_IMAGE_2_SIZES: Readonly<Record<string, Readonly<Record<string, 
   },
 }
 
-/** Resolve an explicit ratio to a pixel size; throws input_error otherwise. */
+/** @deprecated Legacy name of {@link GPT_IMAGE_2_5_SIZES} (same table object). */
+export const GPT_IMAGE_2_SIZES = GPT_IMAGE_2_5_SIZES
+
+/** Pixel-size spelling accepted in `image_ratio` (e.g. 1920x1080 / 1920×1080 / 1920*1080). */
+const PIXEL_SIZE_PATTERN = /^(\d{2,5})\s*[x×*]\s*(\d{2,5})$/i
+
+/**
+ * Nearest standard ratio for a concrete pixel size (user-reported output
+ * dimensions), compared in log space so a ratio and its inverse stay distinct.
+ */
+export function ratioFromPixels(width: number, height: number): string {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw mediaErrors.input(`invalid pixel size "${width}x${height}"`)
+  }
+  const target = Math.log(width / height)
+  let best: string = SUPPORTED_RATIOS[0]
+  let bestDelta = Number.POSITIVE_INFINITY
+  for (const candidate of SUPPORTED_RATIOS) {
+    const [w, h] = candidate.split(':').map(Number)
+    const delta = Math.abs(Math.log(w / h) - target)
+    if (delta < bestDelta) {
+      bestDelta = delta
+      best = candidate
+    }
+  }
+  return best
+}
+
+/**
+ * Normalize an `image_ratio` value. The 8 standard ratios pass through
+ * unchanged; a concrete pixel size (`1920x1080`) is converted to the nearest
+ * standard ratio — the GPT 2.5 route then renders that ratio at 4K.
+ */
+export function normalizeRatio(value: string): string {
+  const raw = (value ?? '').trim()
+  if (SUPPORTED_RATIOS.includes(raw)) return raw
+  const match = PIXEL_SIZE_PATTERN.exec(raw)
+  if (match) return ratioFromPixels(Number(match[1]), Number(match[2]))
+  throw mediaErrors.input(
+    `unsupported image_ratio "${raw}"; use one of ${SUPPORTED_RATIOS.join(', ')} or a pixel size such as 1920x1080`,
+  )
+}
+
+/** Resolve an explicit ratio (or a pixel size) to a pixel size; throws input_error otherwise. */
 export function ratioToSize(ratio: string): string {
-  const value = (ratio ?? '').trim()
+  const value = normalizeRatio(ratio)
   const mapped = RATIO_SIZES[value]
   if (mapped !== undefined) return mapped
   throw mediaErrors.input(
@@ -128,7 +169,7 @@ export function geminiSizeFor(ratio: string, resolution: string): string {
   if (scale === undefined) {
     throw mediaErrors.input(`Unsupported image_resolution "${resolution}"; supported values: ${SUPPORTED_RESOLUTIONS.join(', ')}`)
   }
-  const base = RATIO_SIZES[ratio]
+  const base = RATIO_SIZES[normalizeRatio(ratio)]
   if (base === undefined) {
     throw mediaErrors.input(`Unsupported image_ratio "${ratio}"; supported values: ${SUPPORTED_RATIOS.join(', ')}`)
   }
@@ -136,18 +177,21 @@ export function geminiSizeFor(ratio: string, resolution: string): string {
   return `${width * scale}x${height * scale}`
 }
 
-/** GPT Image 2 pixel size: table lookup per ratio x resolution. */
-export function gptImage2SizeFor(ratio: string, resolution: string): string {
-  const sizes = GPT_IMAGE_2_SIZES[resolution]
+/** GPT Image 2.5 pixel size: table lookup per ratio x resolution. */
+export function gptImage25SizeFor(ratio: string, resolution: string): string {
+  const sizes = GPT_IMAGE_2_5_SIZES[resolution]
   if (sizes === undefined) {
     throw mediaErrors.input(`Unsupported image_resolution "${resolution}"; supported values: ${SUPPORTED_RESOLUTIONS.join(', ')}`)
   }
-  const px = sizes[ratio]
+  const px = sizes[normalizeRatio(ratio)]
   if (px === undefined) {
     throw mediaErrors.input(`Unsupported image_ratio "${ratio}" for ${resolution} output; supported values: ${SUPPORTED_RATIOS.join(', ')}`)
   }
   return px
 }
+
+/** @deprecated Legacy alias of {@link gptImage25SizeFor}. */
+export const gptImage2SizeFor = gptImage25SizeFor
 
 export interface RouterConfig {
   comflyBaseURL: string
@@ -185,8 +229,8 @@ export interface ImageAdapter {
   model: string
   capacityKey: string
   checkReady(): Promise<{ ready: boolean; reason?: string }>
-  /** Returns the staged output path plus the model actually used (resolution routing). */
-  execute(input: AdapterInput): Promise<{ outputPath: string; model?: string }>
+  /** Returns the staged output path plus the model/resolution/size actually used. */
+  execute(input: AdapterInput): Promise<{ outputPath: string; model?: string; resolution?: string; size?: string }>
 }
 
 /** Classify an HTTP status into the failure taxonomy. */
@@ -221,18 +265,20 @@ function credentials(cfg: RouterConfig, env: string): string | undefined {
 /**
  * Comfly OpenAI-compatible adapter (one fixed model, one request).
  *
- * `options.geminiProfile` switches to the Gemini contract: the model is
- * selected per resolution class (1K/2K/4K) and the body carries the
- * provider-specific `resolution` field. GPT Image 2 receives a concrete
- * pixel `size` and never sends `resolution`.
+ * The `profile` switches contracts. `gemini` selects the model per
+ * resolution class (1K/2K/4K) and sends the provider-specific `resolution`
+ * field plus `response_format: 'url'`. `gpt` is the Comfly GPT Image 2.5
+ * ("sunburst") contract: one fixed model, a concrete pixel `size`, and
+ * neither `resolution` nor `response_format`; the image comes back as
+ * `data[0].b64_json`.
  */
 function comflyAdapter(
   id: string,
   model: string,
   cfg: RouterConfig,
-  options: { geminiProfile?: boolean } = {},
+  profile: 'gemini' | 'gpt' = 'gpt',
 ): ImageAdapter {
-  const defaultResolution = options.geminiProfile ? '2K' : '4K'
+  const defaultResolution = profile === 'gemini' ? '2K' : GPT_IMAGE_25_RESOLUTION
   return {
     id,
     model,
@@ -243,15 +289,18 @@ function comflyAdapter(
     async execute(input) {
       const apiKey = credentials(cfg, cfg.comflyApiKeyEnv)
       if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.comflyApiKeyEnv}`)
-      const resolution = input.resolution ?? defaultResolution
-      const effectiveModel = options.geminiProfile ? (GEMINI_MODELS_BY_RESOLUTION[resolution] ?? model) : model
-      const size = options.geminiProfile ? geminiSizeFor(input.ratio, resolution) : gptImage2SizeFor(input.ratio, resolution)
-      const url = await openAiImageUrl({
+      // GPT 2.5 is 4K-only: never downgrade to 1K/2K even when one is requested.
+      const resolution = profile === 'gemini' ? (input.resolution ?? defaultResolution) : GPT_IMAGE_25_RESOLUTION
+      const effectiveModel = profile === 'gemini' ? (GEMINI_MODELS_BY_RESOLUTION[resolution] ?? model) : model
+      const size = profile === 'gemini' ? geminiSizeFor(input.ratio, resolution) : gptImage25SizeFor(input.ratio, resolution)
+      const payload = await openAiImageResult({
         baseURL: cfg.comflyBaseURL,
         apiKey,
         model: effectiveModel,
         prompt: input.prompt,
         size,
+        sendResolution: profile === 'gemini',
+        sendResponseFormat: profile === 'gemini',
         resolution,
         images: input.images,
         proxyUrl: cfg.proxyUrl,
@@ -259,12 +308,14 @@ function comflyAdapter(
         timeoutMs: input.budgetMs,
       })
       const dest = join(input.privateRoot, 'jobs', '_router', 'outputs')
-      const path = await downloadImageTo(url, dest, {
-        proxyUrl: cfg.proxyUrl,
-        signal: input.signal,
-        timeoutMs: Math.min(input.budgetMs, 120000),
-      })
-      return { outputPath: path, model: effectiveModel }
+      const path = payload.bytes !== undefined
+        ? await stageImageBytes(payload.bytes, dest)
+        : await downloadImageTo(String(payload.url), dest, {
+            proxyUrl: cfg.proxyUrl,
+            signal: input.signal,
+            timeoutMs: Math.min(input.budgetMs, 120000),
+          })
+      return { outputPath: path, model: effectiveModel, resolution, size }
     },
   }
 }
@@ -313,13 +364,14 @@ function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
 /** Legacy adapter ids -> current ids (configs written against old names keep working). */
 export const ADAPTER_ALIASES: Readonly<Record<string, string>> = {
   'comfly-gemini-lite': 'comfly-gemini-flash-preview',
+  'comfly-gpt-image-2': 'comfly-gpt-image-2.5',
 }
 
-/** Build the default adapter chain in contract priority order. */
+/** Build the default adapter chain in contract priority order (GPT 2.5 first). */
 export function defaultAdapters(cfg: RouterConfig): ImageAdapter[] {
   const chain: ImageAdapter[] = [
-    comflyAdapter('comfly-gemini-flash-preview', GEMINI_MODELS_BY_RESOLUTION['1K'], cfg, { geminiProfile: true }),
-    comflyAdapter('comfly-gpt-image-2', 'gpt-image-2', cfg),
+    comflyAdapter('comfly-gpt-image-2.5', GPT_IMAGE_25_MODEL, cfg, 'gpt'),
+    comflyAdapter('comfly-gemini-flash-preview', GEMINI_MODELS_BY_RESOLUTION['1K'], cfg, 'gemini'),
     dreaminaImageAdapter(cfg),
   ]
   if (!cfg.enabled || cfg.enabled.length === 0) return chain
@@ -350,6 +402,10 @@ export interface RouterOutcome {
   outputPath: string
   provider: string
   model: string
+  /** Resolution class actually used (the GPT 2.5 route always reports 4K). */
+  resolution?: string
+  /** Concrete pixel size actually submitted when the route uses pixels. */
+  size?: string
   attempts: AttemptRecord[]
 }
 
@@ -481,7 +537,7 @@ export async function runImageRouter(options: RouterOptions): Promise<RouterOutc
       await recordProviderOutcome(privateRoot, adapter.id, true)
       attempts.push({ adapter: adapter.id, model, status: 'success', durationMs: Date.now() - attemptStart })
       await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_success', adapter: adapter.id, model, durationMs: Date.now() - attemptStart })
-      return { outputPath: result.outputPath, provider: adapter.id, model, attempts }
+      return { outputPath: result.outputPath, provider: adapter.id, model, attempts, resolution: result.resolution, size: result.size }
     } catch (error: any) {
       let cls = 'definite_provider_failure'
       if (error instanceof MediaError) cls = error.cls

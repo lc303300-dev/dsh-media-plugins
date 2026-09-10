@@ -1,4 +1,4 @@
-# dsh-media-plugins 一键部署（对应 Codex new-machine-deploy/bootstrap-new-machine）
+﻿# dsh-media-plugins 一键部署（对应 Codex new-machine-deploy/bootstrap-new-machine）
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy.ps1 [-SkipBuild] [-SkipSetup] [-SkipVerify] [-SkipShell]
 [CmdletBinding()]
 param(

@@ -1,18 +1,18 @@
 # dsh-media-plugins
 
-DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 15 个工具、9 个技能与一个完成通知，
-覆盖 Codex_Wsstudio 指南（P0–P4 + DT 修订系统 + Codex_IS 受治理图片业务 Skill 层）在 DSH 平台上的重建：
+DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 15 个工具、10 个技能与一个完成通知，
+覆盖 Codex_Wsstudio 指南（P0–P4 + 受约束修订系统 + Codex_IS 受治理图片业务 Skill 层）在 DSH 平台上的重建：
 
 | 功能 | 说明 | 底层 | 凭证 |
 |---|---|---|---|
-| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 值、`image_resolution`（1K/2K/4K，Gemini 默认 2K / GPT 4K / Dreamina 1K）、`image_provider` 显式线路直达不回退；3 级适配器严格串行回退（comfly-gemini-flash-preview → comfly-gpt-image-2 → dreamina-image），单适配器 120s / 整任务 300s，失败分类 + needs_review 禁重试 + 每适配器连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px，跨进程容量锁（默认 6，dreamina 图/视频共享 `seedance-cli`） | Comfly / Dreamina CLI | `COMFLY_API_KEY` + VPN 代理 |
+| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 个标准比例（也接受 `1920x1080` 这类像素尺寸并自动换算成最接近的比例）、`image_resolution`（1K/2K/4K，Gemini 2K / Dreamina 1K）、`image_provider` 显式线路直达不回退；默认线路 `comfly-gpt-image-2.5`（Comfly `gpt-image-2.5-sunburst`，**4K-only**：只传 4K 具体像素 `size`、1K/2K 请求钳制为 4K、不传 `resolution`/`response_format`、图片读 `data[0].b64_json` 解码），3 级适配器严格串行回退（comfly-gpt-image-2.5 → comfly-gemini-flash-preview → dreamina-image），单适配器 120s / 整任务 300s，失败分类 + needs_review 禁重试 + 每适配器连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px，跨进程容量锁（默认 6，dreamina 图/视频共享 `seedance-cli`） | Comfly / Dreamina CLI | `COMFLY_API_KEY` + VPN 代理 |
 | `generate_video` | 生视频：默认 seedance2.5 / 480p；text2video / multimodal2video；`video_execution_mode`：production（提交+轮询+下载）、production_submit_only（仅提交）、test_submit_only（强制非 VIP 2.0/720p，仅返回 submit_id，到即梦后台查看） | 即梦 Dreamina 本地 CLI（`dreamina.exe`） | OAuth 登录态 |
 | `describe_image` | 兜底看图：仅当当前主模型无法读图时用 Doubao 返回中文描述；主模型可读图时请直接用核心 `read_image`（本工具会拒绝并提示） | 火山方舟 Doubao（`doubao-seed-2-0-mini`） | `VOLCANO_ENGINE_API_KEY` |
 | `skill_registry` | 业务 Skill 治理（Codex_CS）：ingest/search/get/publish/deprecate/list，contract 校验、name@version 去重、内容哈希防漂移、FTS5 trigram 中文检索 | node:sqlite + FTS5（零原生依赖） | 无 |
 | `skill_curator` | 业务 Skill 录入治理（Codex_CS codex-cs-skill-curator）：scaffold / validate（validator 1.2.0）/ add_count_rules / planned_counts / migrate / publish（intake-receipt） | 内置模板 `refs/skill-template/` | 无 |
-| `project_pipeline` | 项目状态机（Codex_CS）：显式状态流转、素材槽 min/max 校验、素材/提示词 sha256 锁定、`build_payload` 提交前哈希复核防未确认版本 | 原子 JSON 状态（私有运行目录） | 无 |
-| `dt_batch` | DT 批次工作台：init_batch / prepare_previews（≤1024px）/ set_prompts / finalize_review（审阅 HTML） | sharp | 无 |
-| `prompt_revision` | 提示词修订系统（Codex_DT）：classify 确定性分类（explicit_local/ambiguous_creative/structural_rewrite）+ 规范哈希修订契约；search_corpus 内置 seedance-forge 全量语料（2477 条，≤10 上限、保留 provenance、语料模型版本绝不用于选模型）；validate_result 校验（locked_context_sha256 回显、explicit_local 禁语料） | 内置语料 `refs/forge-index.jsonl` | 无 |
+| `project_pipeline` | 项目状态机（Codex_CS，**Skill 线专属**）：`create` 有 `skill_mode` 硬门（用户未显式要求启用 Skill 模式即拒绝创建）、显式状态流转、素材槽 min/max 校验、素材/提示词 sha256 锁定、`build_payload` 提交前哈希复核防未确认版本 | 原子 JSON 状态（私有运行目录） | 无 |
+| `prompt_batch` | 批次创作工作台（导演线的多素材批次能力，原 `dt_batch`）：init_batch / prepare_previews（≤1024px）/ set_visuals / set_prompts（裸标签绑定门 + **每段一次性检索凭证门**）/ finalize_review（审阅 HTML）/ run_batch（提交计划） | sharp | 无 |
+| `prompt_revision` | 提示词修订系统（Codex_DT）：classify 确定性分类（explicit_local/ambiguous_creative/structural_rewrite）+ 规范哈希修订契约；search_corpus 内置 seedance-forge 全量语料（2477 条，≤10 上限、保留 provenance、语料模型版本绝不用于选模型）；validate_result 校验（locked_context_sha256 回显、explicit_local 禁语料）；**search_corpus 每次发放一张一次性检索凭证 `search_id`**（账本 `<private>/corpus-ledger.json`），`authoring_gate` 校验并消费它——因此 N 段创作必须 N 次检索，自报命中数不再被接受 | 内置语料 `refs/forge-index.jsonl` | 无 |
 | `batch_image` | 确定性批量生图调度器：manifest 校验（支持组级 `reference_images`/`original_image` 槽 0）、稳定 job key、SQLite 状态、≤10 并发、≥1s 间隔、分派截止（默认 ceil(总数÷并发)×60s×1.5，可配 `deadline_seconds`）、完成宽限期（`completion_grace_seconds` 默认/上限 120s，可缩短不可延长）：截止后未启动任务永久 abandoned（`batch_deadline_not_submitted`）、运行中任务宽限期内落地照常收集、超时标记 failed（`batch_completion_grace_timeout`）；编号联系表（HTML，槽 0 原图）；重复提交被 job key 幂等拒绝 | node:sqlite + 统一路由器 | 同 generate_image |
 | `video_to_gif` | 视频转 GIF：FFmpeg 双遍 palettegen/paletteuse，宽度/FPS/颜色/抖动分档降级，默认 ≤10MB；可选 strict/quality 模式、denoise、anti-moire、palette stats/diff 模式、bayer_scale、gifsicle lossy 优化、max_duration_sec 截断、input_dir 批量 + CSV 转换报告 | FFmpeg（`FFMPEG_PATH` / PATH / 常见安装路径）+ 可选 gifsicle | 无 |
 | `image_preview` | EXIF 归一化 ≤1024px 预览 + 尺寸报告（视觉检查/审阅页用，不读原始大图） | sharp | 无 |
@@ -90,10 +90,18 @@ generate_video(prompt="根据参考视频运镜，配合音乐节奏将静态图
                audios=["D:\\素材\\音乐.mp3"], duration=8, model_version="2.5")
 skill_registry(command="ingest", package_dir="D:\\skills\\城市夜景短片")
 project_pipeline(command="create", skill_name="城市夜景短片", ratio="16:9", duration=8)
-dt_batch(command="init_batch", materials=["D:\\素材\\a.png", "D:\\素材\\b.png"], duration=8)
+prompt_batch(command="init_batch", materials=["D:\\素材\\a.png", "D:\\素材\\b.png"], duration=8)
 batch_image(command="start", manifest={groups:[{id:"g1",prompt:"橘猫",candidates:4,image_ratio:"1:1"}]})
 video_to_gif(video="D:\\out\\clip.mp4")
 ```
+
+## 视频创作线路
+
+**默认只有一条创作线**；业务 Skill 线必须由用户显式启用：
+
+- **导演线（默认，`video-prompt-orchestrator`，原 `dt-video-prompt`）**：单条走"非破坏性提示词门"——用户明确说不改提示词时只做语义保真规范化，否则一律用导演知识 + 语料补全；多素材走批次模式：`prompt_batch` 建隔离批次 → 1024px 预览 → 逐段 `prompt_revision search_corpus` + `authoring_gate`（**一次性检索凭证，N 段必须 N 次检索**）→ `set_prompts`（裸标签 `图片N` 绑定 + 每段凭证核对，缺任一即整次拒写）→ `finalize_review` 审阅页 → 用户逐项确认 → 统一 `generate_video` 提交。**默认不检索业务 Skill、不调用 `skill_registry` / `project_pipeline`。**
+- **Skill 线（仅显式启用，`video-skill-router`）**：仅当用户明确要求"启用 Skill 模式"时才走；进入时必须告知用户已进入 Skill 模式；`project_pipeline create` 的 `skill_mode` 硬门会拒绝未经显式要求的创建。
+- **DT 批次线已取消**：原 `dt_batch` 工具改名为 `prompt_batch`，作为导演线的批次能力；原 `dt-prompt-authoring` 技能已删除，其流程并入 `video-prompt-orchestrator`。遗留 `<private>/dt/` 批次目录会在首次调用时自动迁移到 `<private>/batches/`。
 
 ## Codex_IS：受治理图片业务 Skill 层
 
@@ -129,7 +137,7 @@ image_skill_pipeline(command="start_generation", project_id=..., dry_run=true)
 
 ```sh
 pnpm build   # tsdown：src/*.ts → dist/*.js（profile 用 link: 安装，改完重启 dsh 生效）
-pnpm test    # node --test（103 个离线单测，覆盖路由/失败分类/熔断/状态机/注册库/批量/锁/GIF/修订/图片 Skill 治理与项目管线）
+pnpm test    # node --test（182 个离线单测，覆盖路由/失败分类/熔断/状态机/注册库/批量/锁/GIF/修订/Skill 模式硬门/检索凭证账本/状态迁移/图片 Skill 治理与项目管线）
 ```
 
 ## 部署与运维脚本（`scripts/`）

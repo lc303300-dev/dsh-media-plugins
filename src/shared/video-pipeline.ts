@@ -80,7 +80,7 @@ export function confirmationGateError(
 }
 
 /* ------------------------------------------------------------------ */
-/* 创作完整性门（dt-video-prompt 编排器：完整/不完整 → 是否必须查语料） */
+/* 创作完整性门（video-prompt-orchestrator 编排器：完整/不完整 → 是否必须查语料） */
 /* ------------------------------------------------------------------ */
 
 export type PromptCompletenessVerdict = 'complete' | 'incomplete'
@@ -188,13 +188,9 @@ export function completenessRequiresCorpus(_verdict: PromptCompletenessVerdict):
 }
 
 /**
- * Authoring gate: regardless of completeness, the director+corpus authoring
- * path MUST consult the corpus before authoring; if no retrieval was performed
- * (corpus_hits < 1), authoring is rejected so the corpus step cannot be skipped.
+ * Authoring gate (delegated): the director+corpus path must present a
+ * single-use retrieval credential issued by `search_corpus`. Validation lives
+ * in `corpus-ledger.ts` (`gateCredentialError`) because it needs ledger state —
+ * self-reported hit counts are deliberately no longer accepted here, since they
+ * could not prove that a retrieval actually happened.
  */
-export function authoringCorpusGateError(_verdict: PromptCompletenessVerdict, corpusHits: number): string | null {
-  if (!Number.isFinite(corpusHits) || corpusHits < 1) {
-    return 'director/corpus authoring requires corpus retrieval (run prompt_revision search_corpus and pass corpus_hits) before authoring'
-  }
-  return null
-}

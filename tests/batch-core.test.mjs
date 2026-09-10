@@ -12,7 +12,8 @@ const baseManifest = {
 
 test('manifest validation accepts a valid manifest', () => {
   assert.doesNotThrow(() => validateManifest(baseManifest))
-  assert.doesNotThrow(() => validateManifest({ ...baseManifest, image_resolution: '2K', image_provider: 'comfly-gpt-image-2' }))
+  assert.doesNotThrow(() => validateManifest({ ...baseManifest, image_resolution: '2K', image_provider: 'comfly-gpt-image-2.5' }))
+  assert.doesNotThrow(() => validateManifest({ ...baseManifest, image_provider: 'comfly-gpt-image-2' }), 'legacy GPT route id resolves to the GPT 2.5 route')
   assert.doesNotThrow(() => validateManifest({ ...baseManifest, image_provider: 'comfly-gemini-lite' }), 'legacy alias is accepted')
   assert.doesNotThrow(() => validateManifest({ ...baseManifest, completion_grace_seconds: 60 }))
   assert.doesNotThrow(() => validateManifest({ ...baseManifest, completion_grace_seconds: 120 }))
@@ -76,8 +77,17 @@ test('flattenTasks yields one task per candidate in slot order and carries batch
   assert.equal(tasks.length, 40)
   assert.deepEqual(tasks[0], { groupId: 'a', slot: 1, prompt: '一只橘猫', ratio: '1:1', resolution: undefined, imageProvider: undefined, references: undefined })
   assert.deepEqual(tasks[20], { groupId: 'b', slot: 1, prompt: '未来城市', ratio: '16:9', resolution: undefined, imageProvider: undefined, references: undefined })
-  const withOpts = flattenTasks({ ...baseManifest, image_resolution: '2K', image_provider: 'comfly-gpt-image-2' })
-  assert.deepEqual(withOpts[0], { groupId: 'a', slot: 1, prompt: '一只橘猫', ratio: '1:1', resolution: '2K', imageProvider: 'comfly-gpt-image-2', references: undefined })
+  const withOpts = flattenTasks({ ...baseManifest, image_resolution: '2K', image_provider: 'comfly-gpt-image-2.5' })
+  assert.deepEqual(withOpts[0], { groupId: 'a', slot: 1, prompt: '一只橘猫', ratio: '1:1', resolution: '2K', imageProvider: 'comfly-gpt-image-2.5', references: undefined })
+})
+
+test('pixel-size image_ratio is accepted and normalized to the standard ratio (shared job key)', () => {
+  const pixels = { groups: [{ id: 'a', prompt: 'p', candidates: 1, image_ratio: '1920x1080' }] }
+  const standard = { groups: [{ id: 'a', prompt: 'p', candidates: 1, image_ratio: '16:9' }] }
+  assert.doesNotThrow(() => validateManifest(pixels))
+  assert.equal(flattenTasks(pixels)[0].ratio, '16:9', 'tasks carry the normalized ratio')
+  assert.equal(jobKeyFor(pixels), jobKeyFor(standard), 'pixel spelling and standard ratio share one job key')
+  assert.throws(() => validateManifest({ groups: [{ id: 'a', prompt: 'p', candidates: 1, image_ratio: 'wide' }] }), /image_ratio/)
 })
 
 test('group reference images are validated and carried into tasks and job key', () => {

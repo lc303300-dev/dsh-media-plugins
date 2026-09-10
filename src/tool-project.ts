@@ -21,6 +21,7 @@ import {
   createProject,
   isFlowVideoSkill,
   lockFinalMaterials,
+  migrateProjectState,
   mediaExtensions,
   planSlots,
   synthesizeVideoContractFromFlow,
@@ -171,7 +172,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'project_pipeline',
       description:
-        '项目管线状态机（Codex_CS project-pipeline 的 DSH 重建）：从确认业务 Skill 到生成最终 submission_payload 的显式生命周期。状态：awaiting_skill_confirmation → awaiting_video_settings → project_initialized → awaiting_image_stage_choice → collecting_user_materials|generating_images → final_images_ready → authoring_prompt → awaiting_prompt_confirmation → revision_requested → dt_revision（可循环）→ prompt_confirmed → generating_video → completed。create/confirm_skill 边界识别 Codex_Flow 视频包（registry get 的 contract.flow 存在且 capabilities 含 video.generate 或 primary_output===\'video\'，项目标注 skillFormat=flow）：flow 包无 contract.json，槽计划用合成的通用契约（单一 reference-material 素材槽，图片，min 1、无上限、recommended 节奏），知识加载改读 SKILL.md + meta.yaml（references 的 load-at 阶段）+ workflow.yaml；旧格式则读 contract.json + SKILL.md + references/ 全部 4 个文件（creative-guidance / community-experience / failure-cases / examples 提示词范例）。authoring_prompt（V1）创作前必须完整加载上述业务 Skill 知识，按范例组织方式写作、逐张声明场景唯一语义、按 count_rule（旧格式）或 Skill 知识（flow 包）推导时间轴并追加"不生成音乐，仅生成音效。"；未完整加载知识不得 set_prompt。确认提示词时锁定最终素材清单（sha256）与提示词哈希；build_payload 提交前重新校验素材哈希未变，防止未确认版本被生成。状态持久化在私有运行目录，跨会话可恢复。',
+        '项目管线状态机（Codex_CS project-pipeline 的 DSH 重建，**Skill 线专属**）：从确认业务 Skill 到生成最终 submission_payload 的显式生命周期。**create 必须显式传 skill_mode=true**（用户本轮明确要求启用 Skill 模式），否则拒绝创建——默认视频创作走导演线 video-prompt-orchestrator，不得主动触发本线。状态：awaiting_skill_confirmation → awaiting_video_settings → project_initialized → awaiting_image_stage_choice → collecting_user_materials|generating_images → final_images_ready → authoring_prompt → awaiting_prompt_confirmation → revision_requested → governed_revision（可循环）→ prompt_confirmed → generating_video → completed。create/confirm_skill 边界识别 Codex_Flow 视频包（registry get 的 contract.flow 存在且 capabilities 含 video.generate 或 primary_output===\'video\'，项目标注 skillFormat=flow）：flow 包无 contract.json，槽计划用合成的通用契约（单一 reference-material 素材槽，图片，min 1、无上限、recommended 节奏），知识加载改读 SKILL.md + meta.yaml（references 的 load-at 阶段）+ workflow.yaml；旧格式则读 contract.json + SKILL.md + references/ 全部 4 个文件（creative-guidance / community-experience / failure-cases / examples 提示词范例）。authoring_prompt（V1）创作前必须完整加载上述业务 Skill 知识，按范例组织方式写作、逐张声明场景唯一语义、按 count_rule（旧格式）或 Skill 知识（flow 包）推导时间轴并追加"不生成音乐，仅生成音效。"；未完整加载知识不得 set_prompt。确认提示词时锁定最终素材清单（sha256）与提示词哈希；build_payload 提交前重新校验素材哈希未变，防止未确认版本被生成。状态持久化在私有运行目录，跨会话可恢复。',
       parameters: {
         command: {
           type: 'string',
@@ -186,6 +187,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           description: '操作命令（见工具描述的状态机）。',
         },
         project_id: { type: 'string', description: '项目 id（create 缺省自动生成）。' },
+        skill_mode: { type: 'boolean', description: 'create 用：用户是否在本轮显式要求启用 Skill 模式。缺省或非 true 时拒绝创建——默认视频创作走导演线 video-prompt-orchestrator，Skill 线不得被主动触发。' },
         skill_name: { type: 'string', description: 'confirm_skill 用：已确认的业务 Skill 名。' },
         ratio: { type: 'string', description: 'set_settings 用：视频比例（1:1/3:4/16:9/4:3/9:16/21:9）。' },
         duration: { type: 'integer', description: 'set_settings 用：视频时长 4-30 秒。' },
@@ -193,7 +195,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         slot: { type: 'string', description: 'add_material 用：素材槽 id（对应 Skill contract 的 slot）。' },
         path: { type: 'string', description: 'add_material 用：素材文件路径。' },
         text: { type: 'string', description: 'set_prompt 用：提示词文本。' },
-        source: { type: 'string', enum: ['skill_v1', 'dt_revision', 'user'], description: 'set_prompt 用：提示词来源。' },
+        source: { type: 'string', enum: ['skill_v1', 'governed_revision', 'user'], description: 'set_prompt 用：提示词来源。' },
         revision_type: { type: 'string', enum: ['explicit_local', 'ambiguous_creative', 'structural_rewrite'], description: 'request_revision 用：修订类型（与 feedback 二选一）。' },
         feedback: { type: 'string', description: 'request_revision 用：用户修改意见原文；提供后自动分类并生成受约束修订请求。' },
         use_source: { type: 'boolean', description: 'lock_final 用：true 表示把 source 目录素材复制到 final 并锁定（用户供图）；false 用 final 目录已有生成结果。' },
@@ -223,7 +225,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const privateRoot = resolvePrivateRoot(workspaceRoot, config.privateDir)
         const projectsRoot = join(privateRoot, 'projects')
 
-        const load = async (id: string): Promise<ProjectState | undefined> => readJsonSafe(join(projectsRoot, id, 'state.json'))
+        const load = async (id: string): Promise<ProjectState | undefined> => {
+          const state = await readJsonSafe(join(projectsRoot, id, 'state.json'))
+          // 旧 state.json 里的 dt_revision（已取消的 DT 线遗产）透明迁移为 governed_revision
+          return state ? migrateProjectState(state as ProjectState) : undefined
+        }
         const save = async (state: ProjectState): Promise<ProjectState> => {
           await atomicWriteJson(join(projectsRoot, state.projectId, 'state.json'), state)
           return state
@@ -241,6 +247,14 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
 
         if (command === 'create') {
+          // Skill 模式硬门：默认视频创作走导演线（video-prompt-orchestrator）；只有用户在本轮
+          // 显式要求启用 Skill 模式时，才允许创建业务 Skill 项目。
+          if (args.skill_mode !== true) {
+            return {
+              ok: false,
+              message: 'skill mode not enabled: project_pipeline is the business-Skill line and must not be started on its own. Use the director line (video-prompt-orchestrator) by default; pass skill_mode=true only after the user explicitly asks to enable Skill mode.',
+            }
+          }
           const id = projectId || `proj-${Date.now().toString(36)}`
           let state = createProject(id, args.skill_name)
           // 创建边界识别 Codex_Flow 视频包：flow 包无 contract.json，走合成契约路径
@@ -376,8 +390,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             return { ok: true, message: `status -> revision_requested (${type})`, project: await save(next) }
           }
           case 'begin_revision': {
-            const next = transition(state, 'dt_revision', 'dt revision begins')
-            return { ok: true, message: `status -> dt_revision`, project: await save(next) }
+            const next = transition(state, 'governed_revision', 'governed revision begins')
+            return { ok: true, message: `status -> governed_revision`, project: await save(next) }
           }
           case 'confirm_prompt': {
             const next = confirmPrompt(state)

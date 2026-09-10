@@ -30,7 +30,7 @@ whenToUse: 用户提供 Skill 资料（Markdown / 旧包 / 社区经验 / 提示
 3. **提取知识并分类**（按分类指南）：确定性事实（输出、能力、引用、排除意图、阶段门禁）→ `meta.yaml` + `workflow.yaml`；简短流程与停止点 → `SKILL.md`；创作意图/别名/标签/排除词 → `meta.yaml` 的 aliases/tags/exclude-intents（不得用素材反向定义意图）；专业创意 → `references/creative-guidance.md`；社区经验 → `community-experience.md`（标记证据等级）；失败/规避 → `failure-cases.md`；正反例 → `examples.md`（示例不参与契约推导）。`migrate` 返回的 `compile_checklist` 给出各类命中计数供你分类。
 4. **生成确定性工作流**：确定 primary-output 与 capabilities（视频用 `video.generate`）；staged 包必须给出 workflow.yaml（brief → 生产阶段，付费阶段 gate 为 `paid-execution` 或 `batch-approval`）；references 全部在 meta 中声明并分配 `load-at`；不在包中选 provider/模型/分辨率。
 5. **创建标准包**：`skill_curator` 的 `migrate`（旧资料）或 `scaffold`（新包）生成骨架；删除所有 `CURATOR-REQUIRED` 标记；`SKILL.md` 保持简洁，详细经验放 references。旧 contract.json 存量包走旧格式校验与发布路径（validate/publish 自动识别）。
-6. **创意补全检查**：若 references 缺少可执行创作方法/范例，按用户意愿请求 Codex_DT 受限补充（只补范例/指导草稿，不推断契约、不选模型）；草稿未获用户确认前不得写入正式 references。
+6. **创意补全检查**：若 references 缺少可执行创作方法/范例，按用户意愿走创意补充（`prepare_creative_supplement` → `receive_creative_supplement` → `approve_creative_supplement`；只补范例/指导草稿，不推断契约、不选模型）；草稿未获用户确认前不得写入正式 references。
 7. **确定性验证**：`skill_curator` 的 `validate`（新格式用 flow-1.0：必需元字段/污染扫描/reference 路由/workflow 依赖完整性/收据哈希绑定；旧格式用 validator 1.2.0）；验证失败只修当前包。
 8. **展示审核清单**：向用户展示 Skill 名与 id、primary-output/capabilities/paid_points、package_hash、来源文件及哈希、references 保留数量、被隔离的旧规则、重复/冲突、待决歧义、验证结果。任何 blocking 项未清零时状态必须保持待审。
 9. **用户确认后发布**：只有用户明确确认审核清单后才 `publish --approved true`（无 approved 会拒绝）。发布会重新验证、生成来源与包哈希、写入 `intake-receipt.json`（schema `codex-flow-receipt/v1`，包内容变化即 STALE_RECEIPT），再入注册库（`skill_registry ingest` 后 `publish`）。更新已存在 Skill 走升级流程，不绕过审核直接覆盖。
@@ -42,5 +42,5 @@ whenToUse: 用户提供 Skill 资料（Markdown / 旧包 / 社区经验 / 提示
 - 不把示例人物/城市/项目/品牌/镜头数量写成通用硬规则。
 - 不因原文提到某模型版本就改变实际生成模型。
 - 不删除或改写原始来源文件；不在用户确认前发布。
-- 不把 Codex_DT 草稿当作已确认事实或契约来源。
+- 不把创意补充草稿当作已确认事实或契约来源。
 - 不在新包中写入 provider/模型/分辨率/轮询/付费执行策略（属平台层）。

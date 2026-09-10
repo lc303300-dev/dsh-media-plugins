@@ -1,27 +1,27 @@
 /**
- * DT review-page generation (pure domain — no DSH imports). Shared by the
- * `dt_batch` tool and the offline acceptance script so the HTML contract is
- * tested in both places.
+ * Prompt-batch review-page generation (pure domain — no DSH imports). Shared by
+ * the `prompt_batch` tool and the offline acceptance script so the HTML contract
+ * is tested in both places.
  *
- * @module dsh-media-plugins/shared/dt-core
+ * @module dsh-media-plugins/shared/prompt-batch-core
  */
 
-export interface DtReviewImage {
+export interface ReviewImage {
   path: string
   preview: string
 }
 
-export interface DtReviewItem {
+export interface ReviewItem {
   index: number
   material: string
   /** Primary preview path (kept for backward compatibility with older callers). */
   preview: string
   prompt: string
   /** All segment images in order (primary first) — one segment may bind several references. */
-  images: DtReviewImage[]
+  images: ReviewImage[]
 }
 
-export interface DtManifestLike {
+export interface ManifestLike {
   batch_id: string
   duration: number
   ratio: string
@@ -38,8 +38,8 @@ export function escapeHtml(text: string): string {
  * Compute the `src` for a preview from its absolute path. The review page
  * lives in `<batch>/review/index.html` while previews live in
  * `<batch>/previews/`, so the correct relative reference is
- * `../previews/<basename>` — NOT a repo-root `dt/<batch>/previews/...` path
- * that would resolve to `<batch>/review/dt/...` and break every thumbnail.
+ * `../previews/<basename>` — never a repo-root-relative path, which would
+ * resolve to `<batch>/review/…` and break every thumbnail.
  */
 export function previewSrc(previewPath: string): string {
   const name = String(previewPath ?? '').replace(/\\/g, '/').split('/').pop() ?? ''
@@ -51,7 +51,7 @@ export function previewSrc(previewPath: string): string {
  * (primary + extras, in `--image` order) labelled 图片1..图片N, followed by
  * the Chinese prompt. Relative preview paths point at `../previews/`.
  */
-export function buildReviewHtml(manifest: DtManifestLike, items: DtReviewItem[]): string {
+export function buildReviewHtml(manifest: ManifestLike, items: ReviewItem[]): string {
   const rows = items
     .map((it) => {
       const imgs = it.images && it.images.length > 0 ? it.images : [{ path: it.material, preview: it.preview }]
@@ -65,7 +65,7 @@ export function buildReviewHtml(manifest: DtManifestLike, items: DtReviewItem[])
       return `<tr><td>#${it.index}</td><td>${cells}</td><td style="max-width:480px">${escapeHtml(it.prompt)}</td></tr>`
     })
     .join('\n')
-  return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>DT 审阅 ${manifest.batch_id}</title><style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse}td{border:1px solid #ccc;padding:10px;vertical-align:top}</style></head><body><h1>审阅批次 ${manifest.batch_id}</h1><p>时长 ${manifest.duration}s · 比例 ${manifest.ratio} · 模型 ${manifest.model}</p><table><thead><tr><th>#</th><th>素材预览</th><th>中文提示词</th></tr></thead><tbody>${rows}</tbody></table></body></html>`
+  return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>批次审阅 ${manifest.batch_id}</title><style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse}td{border:1px solid #ccc;padding:10px;vertical-align:top}</style></head><body><h1>审阅批次 ${manifest.batch_id}</h1><p>时长 ${manifest.duration}s · 比例 ${manifest.ratio} · 模型 ${manifest.model}</p><table><thead><tr><th>#</th><th>素材预览</th><th>中文提示词</th></tr></thead><tbody>${rows}</tbody></table></body></html>`
 }
 
 /**
@@ -73,14 +73,14 @@ export function buildReviewHtml(manifest: DtManifestLike, items: DtReviewItem[])
  * A material may carry an `images` array of additional reference images; the
  * primary `path` is always first so the numbering matches `--image` order.
  */
-export function buildReviewItems(manifest: DtManifestLike, previews: Array<{ material: string; preview: string }>): DtReviewItem[] {
+export function buildReviewItems(manifest: ManifestLike, previews: Array<{ material: string; preview: string }>): ReviewItem[] {
   const previewByPath = new Map<string, string>()
   for (const p of previews ?? []) previewByPath.set(p.material, p.preview)
-  const items: DtReviewItem[] = []
+  const items: ReviewItem[] = []
   for (let i = 0; i < manifest.materials.length; i += 1) {
     const m = manifest.materials[i]
     const paths = [m.path, ...(Array.isArray(m.images) ? m.images : [])].filter((p): p is string => typeof p === 'string' && p.length > 0)
-    const images: DtReviewImage[] = paths.map((p) => ({ path: p, preview: previewByPath.get(p) ?? '' }))
+    const images: ReviewImage[] = paths.map((p) => ({ path: p, preview: previewByPath.get(p) ?? '' }))
     const prompt = manifest.prompts.find((p) => String(p.material) === m.path)?.prompt ?? ''
     items.push({ index: i + 1, material: m.path, preview: images[0]?.preview ?? '', prompt, images })
   }

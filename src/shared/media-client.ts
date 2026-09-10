@@ -65,13 +65,39 @@ export function extensionFor(bytes: Uint8Array): string {
   return '.png'
 }
 
-/** Parse `payload.data[0].url` with validation. */
-export function extractImageUrl(payload: any): string {
+/** Decode a provider `b64_json` value, tolerating a `data:` URI prefix. */
+export function decodeBase64Image(value: string): Uint8Array {
+  const comma = value.startsWith('data:') ? value.indexOf(',') : -1
+  const raw = (comma >= 0 ? value.slice(comma + 1) : value).trim()
+  const bytes = new Uint8Array(Buffer.from(raw, 'base64'))
+  if (bytes.length === 0) throw new Error('response b64_json decoded to zero bytes')
+  return bytes
+}
+
+/** Parsed provider payload: a remote URL or inline bytes (`b64_json`). */
+export interface OpenAiImagePayload {
+  url?: string
+  bytes?: Uint8Array
+}
+
+/**
+ * Parse `payload.data[0]`, preferring inline `b64_json` (Comfly GPT 2.5
+ * "sunburst" returns Base64 without `response_format`) and falling back to
+ * `url` (Gemini / legacy GPT routes).
+ */
+export function extractImagePayload(payload: any): OpenAiImagePayload {
   const data = payload?.data
   if (!Array.isArray(data) || data.length === 0) throw new Error('response contains no image data')
-  const url = data[0]?.url
-  if (typeof url !== 'string' || url.trim().length === 0) throw new Error('response contains no image URL')
-  return url.trim()
+  const first = data[0]
+  const b64 = typeof first?.b64_json === 'string' ? first.b64_json.trim() : ''
+  if (b64.length > 0) {
+    const bytes = decodeBase64Image(b64)
+    if (!hasImageSignature(bytes)) throw new Error('response b64_json is not a valid image')
+    return { bytes }
+  }
+  const url = typeof first?.url === 'string' ? first.url.trim() : ''
+  if (url.length > 0) return { url }
+  throw new Error('response contains neither b64_json nor image URL')
 }
 
 export interface OpenAiImageOptions {
@@ -80,9 +106,14 @@ export interface OpenAiImageOptions {
   model: string
   prompt: string
   size: string
-  /** Resolution class (1K/2K/4K); sent as the provider-specific `resolution`
-   *  field for Gemini models only — GPT Image 2 never receives it. */
+  /** Send the provider-specific `resolution` field; Gemini routes only —
+   *  Comfly GPT 2.5 requires concrete pixel `size` and never accepts it. */
+  sendResolution?: boolean
+  /** Resolution class (1K/2K/4K) used when `sendResolution` is set. */
   resolution?: string
+  /** Send `response_format: 'url'`; Gemini routes only — Comfly GPT 2.5
+   *  returns `data[0].b64_json` and must not receive the field. */
+  sendResponseFormat?: boolean
   images?: string[]
   proxyUrl?: string
   signal?: AbortSignal
@@ -91,10 +122,15 @@ export interface OpenAiImageOptions {
 
 /**
  * POST /images/generations (text) or /images/edits (with references,
- * multipart) and return the remote image URL.
+ * multipart) and return the parsed provider payload: inline Base64 bytes
+ * (`data[0].b64_json`) or a remote URL (`data[0].url`).
  */
-export async function openAiImageUrl(options: OpenAiImageOptions): Promise<string> {
-  const { baseURL, apiKey, model, prompt, size, resolution, images = [], proxyUrl, signal, timeoutMs = 120000 } = options
+export async function openAiImageResult(options: OpenAiImageOptions): Promise<OpenAiImagePayload> {
+  const {
+    baseURL, apiKey, model, prompt, size, resolution,
+    sendResolution = false, sendResponseFormat = false,
+    images = [], proxyUrl, signal, timeoutMs = 120000,
+  } = options
   const dispatcher = proxyDispatcher(proxyUrl)
   const auth = { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' }
   const controller = new AbortController()
@@ -122,10 +158,10 @@ export async function openAiImageUrl(options: OpenAiImageOptions): Promise<strin
         ['n', '1'],
         ['size', size],
       ]
-      if (model !== 'gpt-image-2' && resolution !== undefined) {
+      if (sendResolution && resolution !== undefined) {
         fields.push(['resolution', resolution.toLowerCase()])
       }
-      fields.push(['response_format', 'url'])
+      if (sendResponseFormat) fields.push(['response_format', 'url'])
       for (const [fieldName, fieldValue] of fields) {
         chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"\r\n\r\n${fieldValue}\r\n`, 'utf8'))
       }
@@ -147,10 +183,11 @@ export async function openAiImageUrl(options: OpenAiImageOptions): Promise<strin
         ...common,
       })
     } else {
-      const payload: Record<string, unknown> = { model, prompt, n: 1, size, response_format: 'url' }
-      if (model !== 'gpt-image-2' && resolution !== undefined) {
+      const payload: Record<string, unknown> = { model, prompt, n: 1, size }
+      if (sendResolution && resolution !== undefined) {
         payload.resolution = resolution.toLowerCase()
       }
+      if (sendResponseFormat) payload.response_format = 'url'
       response = await fetch(`${baseURL.replace(/\/+$/, '')}/images/generations`, {
         method: 'POST',
         headers: { ...auth, 'Content-Type': 'application/json; charset=utf-8' },
@@ -159,7 +196,7 @@ export async function openAiImageUrl(options: OpenAiImageOptions): Promise<strin
       })
     }
     if (!response.ok) throw new HttpStatusError(response.status, `image request failed with HTTP ${response.status}`)
-    return extractImageUrl(await response.json())
+    return extractImagePayload(await response.json())
   } catch (error: any) {
     if (signal?.aborted) throw error
     if (timedOut) {
@@ -172,6 +209,17 @@ export async function openAiImageUrl(options: OpenAiImageOptions): Promise<strin
     clearTimeout(timer)
     signal?.removeEventListener('abort', onAbort)
   }
+}
+
+/** Validate an in-memory image (signature check) and stage it atomically. */
+export async function stageImageBytes(bytes: Uint8Array, destDir: string, prefix = 'img'): Promise<string> {
+  if (!hasImageSignature(bytes)) throw new Error('provider payload is not a valid image')
+  await mkdir(destDir, { recursive: true })
+  const finalPath = join(destDir, `${prefix}-${Date.now()}${extensionFor(bytes)}`)
+  const tmpPath = `${finalPath}.tmp`
+  await writeFile(tmpPath, bytes)
+  await rename(tmpPath, finalPath)
+  return finalPath
 }
 
 /** Download a remote image, validate its signature, stage atomically. */
@@ -199,13 +247,7 @@ export async function downloadImageTo(
     })
     if (!download.ok) throw new Error(`image download failed with HTTP ${download.status}`)
     const bytes = new Uint8Array(await download.arrayBuffer())
-    if (!hasImageSignature(bytes)) throw new Error('downloaded content is not a valid image')
-    await mkdir(destDir, { recursive: true })
-    const finalPath = join(destDir, `img-${Date.now()}${extensionFor(bytes)}`)
-    const tmpPath = `${finalPath}.tmp`
-    await writeFile(tmpPath, bytes)
-    await rename(tmpPath, finalPath)
-    return finalPath
+    return await stageImageBytes(bytes, destDir)
   } catch (error: any) {
     if (signal?.aborted) throw error
     if (timedOut) throw mediaErrors.download(`image download timed out after ${Math.round(timeoutMs / 1000)}s`)

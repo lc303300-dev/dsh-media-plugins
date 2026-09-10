@@ -1,26 +1,26 @@
 /**
- * DT review-page pure-helper tests. Guards the two regressions this domain
- * owned: (BUG-04) review page preview `src` must be `../previews/<basename>`
- * (not a repo-root `dt/<batch>/previews/` path), and (BUG-05) a segment with
- * multiple reference images must render every image, not just one primary.
+ * Prompt-batch review-page pure-helper tests. Guards the two regressions this
+ * domain owned: (BUG-04) review page preview `src` must be `../previews/<basename>`
+ * (not a repo-root path), and (BUG-05) a segment with multiple reference images
+ * must render every image, not just one primary.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { previewSrc, buildReviewItems, buildReviewHtml } from '../src/shared/dt-core.ts'
+import { previewSrc, buildReviewItems, buildReviewHtml } from '../src/shared/prompt-batch-core.ts'
 
 test('previewSrc maps an absolute preview path to ../previews/<basename>', () => {
-  assert.equal(previewSrc('D:\\priv\\dt\\20260826-1000-batch\\previews\\input-01-preview.png'), '../previews/input-01-preview.png')
-  assert.equal(previewSrc('/mnt/dt/batch/previews/a.png'), '../previews/a.png')
+  assert.equal(previewSrc('D:\\priv\\batches\\20260826-1000-batch\\previews\\input-01-preview.png'), '../previews/input-01-preview.png')
+  assert.equal(previewSrc('/mnt/batches/batch/previews/a.png'), '../previews/a.png')
   assert.equal(previewSrc(''), '')
   assert.equal(previewSrc(undefined), '')
 })
 
-test('buildReviewHtml emits ../previews/ (never dt/<batch>/previews/) and escapes prompt text', () => {
+test('buildReviewHtml emits ../previews/ (never a repo-root batch path) and escapes prompt text', () => {
   const manifest = { batch_id: 'b1', duration: 8, ratio: '16:9', model: 'seedance2.5', materials: [{ path: 'D:/m/a.png', hash: 'h' }], prompts: [{ material: 'D:/m/a.png', prompt: '镜头推进<测试>&' }] }
-  const items = buildReviewItems(manifest, [{ material: 'D:/m/a.png', preview: 'D:/priv/dt/b1/previews/a-preview.png' }])
+  const items = buildReviewItems(manifest, [{ material: 'D:/m/a.png', preview: 'D:/priv/batches/b1/previews/a-preview.png' }])
   const html = buildReviewHtml(manifest, items)
   assert.ok(html.includes('../previews/a-preview.png'), 'uses relative ../previews path')
-  assert.ok(!html.includes('dt/b1/previews/'), 'never emits repo-root dt/<batch>/previews/ path')
+  assert.ok(!html.includes('batches/b1/previews/'), 'never emits a repo-root batch preview path')
   assert.ok(html.includes('镜头推进&lt;测试&gt;&amp;'), 'escapes HTML in the prompt cell')
 })
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 离线端到端验收（零费用）：走通所有不触发付费的领域链路并输出报告。
- * 覆盖：Skill Registry、Project Pipeline、DT 审阅、批量调度数学、图片归一化/预览、GIF。
+ * 覆盖：Skill Registry、Project Pipeline、批次审阅、批量调度数学、图片归一化/预览、GIF。
  * 用法：node scripts/acceptance-local.mjs
  * 产物：<workspace>/outputs/acceptance/ 下（预览、审阅页、GIF、联系表、报告 JSON）。
  */
@@ -15,7 +15,7 @@ import {
 } from '../src/shared/project-core.ts'
 import { validateManifest, computeDeadline, flattenTasks, buildContactSheetHtml } from '../src/shared/batch-core.ts'
 import { normalizeProviderImage, makePreview } from '../src/shared/image-ops.ts'
-import { buildReviewHtml, buildReviewItems } from '../src/shared/dt-core.ts'
+import { buildReviewHtml, buildReviewItems } from '../src/shared/prompt-batch-core.ts'
 import { videoToGif, resolveFfmpeg } from '../src/shared/gif-core.ts'
 import { sha256File } from '../src/shared/private-runtime.ts'
 
@@ -93,9 +93,9 @@ function record(name, ok, detail) {
   record('ProjectPipeline.状态越级被拒绝', typeof skip === 'string' && skip.includes('invalid project transition'), skip ?? '未拒绝')
 }
 
-/* ---------- 3. DT 审阅页 + 图片归一化/预览 ---------- */
+/* ---------- 3. 批次审阅页 + 图片归一化/预览 ---------- */
 {
-  const work = join(OUT, 'work', 'dt')
+  const work = join(OUT, 'work', 'batches')
   mkdirSync(work, { recursive: true })
   const src = join(work, 'material.png')
   await sharp({ create: { width: 3000, height: 1600, channels: 3, background: { r: 90, g: 40, b: 120 } } }).png().toFile(src)
@@ -114,8 +114,8 @@ function record(name, ok, detail) {
   }
   const items = buildReviewItems(manifest, [{ material: src, preview: prev.path }])
   const html = buildReviewHtml(manifest, items)
-  writeFileSync(join(OUT, 'dt-review.html'), html, 'utf8')
-  record('DT 审阅页生成（含预览+中文提示词）', items.length === 1 && html.includes('夜晚未来城市'), `review items=${items.length}`)
+  writeFileSync(join(OUT, 'batch-review.html'), html, 'utf8')
+  record('批次审阅页生成（含预览+中文提示词）', items.length === 1 && html.includes('夜晚未来城市'), `review items=${items.length}`)
 }
 
 /* ---------- 4. 批量调度数学（40 张 / 10 并发） ---------- */

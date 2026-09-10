@@ -124,7 +124,7 @@ export function validateRevisionInput(payload: unknown): asserts payload is Revi
   }
 }
 
-/** Build a constrained DT revision request (classify only; no rewrite/corpus/media). */
+/** Build a constrained governed-revision request (classify only; no rewrite/corpus/media). */
 export function buildRevisionRequest(payload: RevisionInput): Record<string, unknown> {
   validateRevisionInput(payload)
   const { classification, reasons } = classifyFeedback(payload.user_feedback)

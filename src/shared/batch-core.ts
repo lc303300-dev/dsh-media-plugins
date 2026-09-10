@@ -23,6 +23,7 @@ import {
   SUPPORTED_RESOLUTIONS,
   SUPPORTED_IMAGE_PROVIDERS,
   ADAPTER_ALIASES,
+  normalizeRatio,
 } from './adapters.ts'
 
 export interface BatchGroup {
@@ -82,8 +83,13 @@ export function validateManifest(raw: unknown): BatchManifest {
     if (typeof g.prompt !== 'string' || g.prompt.trim().length === 0) throw new Error(`group ${g.id}: prompt must be non-empty`)
     if (!Number.isInteger(g.candidates) || g.candidates < 1) throw new Error(`group ${g.id}: candidates must be an integer >= 1`)
     const ratio = g.image_ratio ?? m.image_ratio
-    if (!ratio || !SUPPORTED_RATIOS.includes(ratio)) {
+    if (typeof ratio !== 'string' || ratio.trim().length === 0) {
       throw new Error(`group ${g.id}: image_ratio is required and must be one of ${SUPPORTED_RATIOS.join(', ')}`)
+    }
+    try {
+      normalizeRatio(ratio)
+    } catch {
+      throw new Error(`group ${g.id}: image_ratio must be one of ${SUPPORTED_RATIOS.join(', ')} or a pixel size such as 1920x1080, got ${ratio}`)
     }
     if (g.reference_images !== undefined) {
       if (!Array.isArray(g.reference_images) || g.reference_images.some((p) => typeof p !== 'string' || p.trim().length === 0)) {
@@ -125,7 +131,7 @@ export function jobKeyFor(manifest: BatchManifest): string {
         id: g.id,
         prompt: g.prompt.trim(),
         candidates: g.candidates,
-        image_ratio: g.image_ratio ?? manifest.image_ratio,
+        image_ratio: normalizeRatio(g.image_ratio ?? manifest.image_ratio),
         reference_images: g.reference_images ?? null,
         original_image: g.original_image ?? null,
       }))
@@ -208,7 +214,7 @@ export function flattenTasks(
 ): Array<{ groupId: string; slot: number; prompt: string; ratio: string; resolution?: string; imageProvider?: string; references?: string[] }> {
   const tasks: Array<{ groupId: string; slot: number; prompt: string; ratio: string; resolution?: string; imageProvider?: string; references?: string[] }> = []
   for (const g of manifest.groups) {
-    const ratio = g.image_ratio ?? manifest.image_ratio!
+    const ratio = normalizeRatio(g.image_ratio ?? manifest.image_ratio!)
     for (let i = 1; i <= g.candidates; i += 1) {
       tasks.push({
         groupId: g.id,
@@ -226,7 +232,7 @@ export function flattenTasks(
 
 /** Resolve a ratio to the pixel size the scheduler submits with. */
 export function ratioToSizeForBatch(ratio: string): string {
-  const size = RATIO_SIZES[ratio]
+  const size = RATIO_SIZES[normalizeRatio(ratio)]
   if (!size) throw new Error(`unsupported ratio ${ratio}`)
   return size
 }

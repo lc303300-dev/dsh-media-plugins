@@ -12,9 +12,9 @@ import {
   promptCompletenessBoundaryIssue,
   classifyVideoPromptCompleteness,
   completenessRequiresCorpus,
-  authoringCorpusGateError,
   normalizeReferenceLabels,
 } from '../src/shared/video-pipeline.ts'
+import { gateCredentialError } from '../src/shared/corpus-ledger.ts'
 
 test('isVideoExtName accepts known video containers and rejects others', () => {
   for (const name of ['a.mp4', 'b.MP4', 'clip.mov', 'x.webm', 'y.mkv', 'z.avi', 'm.m4v']) {
@@ -116,13 +116,21 @@ test('classifyVideoPromptCompleteness: executable shot + camera + binding is com
 test('authoring gate: corpus consultation is mandatory regardless of completeness', () => {
   assert.equal(completenessRequiresCorpus('incomplete'), true)
   assert.equal(completenessRequiresCorpus('complete'), true)
-  // no corpus hits -> gate rejects for BOTH verdicts (complete must also consult corpus)
-  assert.ok(authoringCorpusGateError('incomplete', 0))
-  assert.ok(authoringCorpusGateError('incomplete', undefined))
-  assert.ok(authoringCorpusGateError('complete', 0))
-  // with corpus hits -> gate passes
-  assert.equal(authoringCorpusGateError('incomplete', 3), null)
-  assert.equal(authoringCorpusGateError('complete', 10), null)
+})
+
+test('authoring gate credential: a fresh single-use credential passes, missing/unknown/used ones fail', () => {
+  const fresh = { id: 'sq-aaaa1111', query: '航拍 推进', hits: 3, top_ids: [], at: 'now', consumed_by: null, consumed_at: null }
+  const used = { ...fresh, id: 'sq-bbbb2222', consumed_by: 'D:/m/a.png', consumed_at: 'now' }
+  // no credential presented at all
+  assert.ok(gateCredentialError(undefined, undefined))
+  assert.ok(gateCredentialError(undefined, ''))
+  // credential id that was never issued
+  assert.ok(gateCredentialError(undefined, 'sq-zzzz9999'))
+  // credential already consumed by another segment
+  assert.ok(gateCredentialError(used, 'sq-bbbb2222'))
+  // fresh credential passes, even with zero corpus hits (searching is the requirement)
+  assert.equal(gateCredentialError(fresh, 'sq-aaaa1111'), null)
+  assert.equal(gateCredentialError({ ...fresh, id: 'sq-cccc3333', hits: 0 }, 'sq-cccc3333'), null)
 })
 
 test('confirmationGateError: duration accepts 5 / 5s / 5秒 forms', () => {

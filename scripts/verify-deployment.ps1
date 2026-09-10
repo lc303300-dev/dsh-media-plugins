@@ -1,4 +1,4 @@
-# dsh-media-plugins 部署验证（对应 Codex verify-deployment.ps1；运行时详情另见 media_status verify）
+﻿# dsh-media-plugins 部署验证（对应 Codex verify-deployment.ps1；运行时详情另见 media_status verify）
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-deployment.ps1 [-RepositoryRoot <path>]
 [CmdletBinding()]
 param(
@@ -21,7 +21,7 @@ Require-Path (Join-Path $RepositoryRoot "dist\index.js") "bundle entry"
 if ($isSourceCheckout) {
     Require-Path (Join-Path $RepositoryRoot "tsdown.config.ts") "build config"
 }
-foreach ($tool in @("tool-image-gen", "tool-video-gen", "tool-batch-image", "tool-dt", "tool-status", "tool-video-to-gif", "tool-skill-registry", "tool-project", "tool-curator", "tool-revision", "tool-image-skill-curator", "tool-image-skill-pipeline")) {
+foreach ($tool in @("tool-image-gen", "tool-video-gen", "tool-batch-image", "tool-prompt-batch", "tool-status", "tool-video-to-gif", "tool-skill-registry", "tool-project", "tool-curator", "tool-revision", "tool-image-skill-curator", "tool-image-skill-pipeline")) {
     Require-Path (Join-Path $RepositoryRoot "dist\$tool.js") "built tool bundle $tool"
 }
 # 共享域 bundle（tsdown 从 dist/ 抽出的共享 chunk；单消费者内联的模块以源码存在性校验）
@@ -29,14 +29,14 @@ foreach ($core in @("adapters", "corpus-core", "curator-core", "failure", "gif-c
     Require-Path (Join-Path $RepositoryRoot "dist\$core.js") "built shared bundle $core"
 }
 if ($isSourceCheckout) {
-    foreach ($coreSource in @("adapters", "batch-core", "corpus-core", "curator-core", "dt-core", "failure", "gif-core", "image-ops", "image-skill-core", "media-client", "private-runtime", "project-core", "registry-core", "revision-core", "video-policy")) {
+    foreach ($coreSource in @("adapters", "batch-core", "corpus-core", "corpus-ledger", "curator-core", "prompt-batch-core", "failure", "gif-core", "image-ops", "image-skill-core", "media-client", "private-runtime", "project-core", "registry-core", "revision-core", "video-policy")) {
         Require-Path (Join-Path $RepositoryRoot "src\shared\$coreSource.ts") "shared core source $coreSource"
     }
 } else {
     Write-Host "  [info] 非源码检出（无 src/），跳过 src/*.ts 与 tsdown.config.ts 校验" -ForegroundColor DarkGray
 }
 # 技能
-foreach ($skill in @("default-image-generation", "default-video-generation", "batch-image-generation", "dt-prompt-authoring", "video-skill-router", "codex-cs-skill-curator", "video-to-gif", "image-skill-router", "image-skill-curator")) {
+foreach ($skill in @("default-image-generation", "default-video-generation", "batch-image-generation", "video-prompt-orchestrator", "video-director-prompt", "video-skill-router", "codex-cs-skill-curator", "video-to-gif", "image-skill-router", "image-skill-curator")) {
     Require-Path (Join-Path $RepositoryRoot "skills\$skill\SKILL.md") "skill $skill"
 }
 Require-Path (Join-Path $RepositoryRoot "refs\forge-index.jsonl") "seedance-forge corpus"

@@ -73,7 +73,7 @@ $map = @(
     @{ Pkg = 'packages/Codex_image/comfly-api/';       Dsh = 'adapters.ts / media-client.ts（Comfly 线路）' },
     @{ Pkg = 'packages/Codex_image/seedance-cli/';     Dsh = 'video-policy.ts / tool-video-gen.ts（Seedance 策略）' },
     @{ Pkg = 'packages/Codex_Batch_Image/';            Dsh = 'batch-core.ts / tool-batch-image.ts' },
-    @{ Pkg = 'packages/Codex_DT/';                     Dsh = 'dt-core.ts / revision-core.ts / corpus-core.ts / tool-dt.ts / tool-revision.ts' },
+    @{ Pkg = 'packages/Codex_DT/';                     Dsh = 'prompt-batch-core.ts / revision-core.ts / corpus-core.ts / tool-prompt-batch.ts / tool-revision.ts' },
     @{ Pkg = 'packages/Codex_IS/';                     Dsh = 'image-skill-core.ts / image-project-core.ts / tool-image-skill-*.ts' },
     @{ Pkg = 'packages/Codex_CS/';                     Dsh = '（已迁移 Codex_Flow，一般无需对齐；参考 video-skill-package-standard.md）' },
     @{ Pkg = 'packages/Codex_Gif/';                    Dsh = 'gif-core.ts / tool-video-to-gif.ts' }

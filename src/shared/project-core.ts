@@ -8,7 +8,7 @@
  *   project_initialized → awaiting_image_stage_choice →
  *   collecting_user_materials | generating_images → final_images_ready →
  *   authoring_prompt → awaiting_prompt_confirmation →
- *   revision_requested → dt_revision → authoring_prompt (loop) →
+ *   revision_requested → governed_revision → authoring_prompt (loop) →
  *   prompt_confirmed → generating_video → completed
  *
  * @module dsh-media-plugins/shared/project-core
@@ -33,7 +33,7 @@ export type ProjectStatus =
   | 'authoring_prompt'
   | 'awaiting_prompt_confirmation'
   | 'revision_requested'
-  | 'dt_revision'
+  | 'governed_revision'
   | 'prompt_confirmed'
   | 'generating_video'
   | 'completed'
@@ -50,7 +50,7 @@ export interface PromptVersion {
   version: number
   text: string
   hash: string
-  source: 'skill_v1' | 'dt_revision' | 'user'
+  source: 'skill_v1' | 'governed_revision' | 'user'
   createdAt: string
   confirmed: boolean
 }
@@ -85,7 +85,7 @@ export interface ProjectState {
   prompts: PromptVersion[]
   lockedPromptHash?: string
   submissionPayload?: Record<string, unknown>
-  /** Constrained revision request emitted by the DT classifier (feedback → request). */
+  /** Constrained revision request emitted by the governed-revision classifier (feedback → request). */
   revisionRequest?: Record<string, unknown>
   generationResult?: { status: string; external_result?: string; completed_at: string }
   history: Array<{ at: string; from: ProjectStatus; to: ProjectStatus; note?: string }>
@@ -104,12 +104,39 @@ const TRANSITIONS: Readonly<Record<ProjectStatus, ReadonlyArray<ProjectStatus>>>
   final_images_ready: ['authoring_prompt', 'cancelled'],
   authoring_prompt: ['awaiting_prompt_confirmation', 'revision_requested', 'cancelled'],
   awaiting_prompt_confirmation: ['prompt_confirmed', 'revision_requested', 'cancelled'],
-  revision_requested: ['dt_revision', 'cancelled'],
-  dt_revision: ['authoring_prompt', 'cancelled'],
+  revision_requested: ['governed_revision', 'cancelled'],
+  governed_revision: ['authoring_prompt', 'cancelled'],
   prompt_confirmed: ['generating_video', 'revision_requested', 'cancelled'],
   generating_video: ['completed', 'cancelled'],
   completed: [],
   cancelled: [],
+}
+
+/**
+ * 兼容迁移：早期版本的修订状态/来源名为 `dt_revision`（已取消的 "DT 线" 遗产），
+ * 现统一为 `governed_revision`（受约束修订）。读取旧 state.json 时透明改写，
+ * 下一次保存即落盘为新名；合法跃迁表只认新名，旧名不会回流。
+ */
+const LEGACY_STATUS_ALIASES: Readonly<Record<string, ProjectStatus>> = {
+  dt_revision: 'governed_revision',
+}
+
+export function migrateProjectState(state: ProjectState): ProjectState {
+  const alias = (value: unknown): ProjectStatus => LEGACY_STATUS_ALIASES[String(value)] ?? (value as ProjectStatus)
+  let migrated: ProjectState = state
+  if (LEGACY_STATUS_ALIASES[String(state.status)]) {
+    migrated = { ...migrated, status: alias(state.status) }
+  }
+  if (Array.isArray(state.history) && state.history.some((h) => LEGACY_STATUS_ALIASES[String(h.from)] || LEGACY_STATUS_ALIASES[String(h.to)])) {
+    migrated = { ...migrated, history: migrated.history.map((h) => ({ ...h, from: alias(h.from), to: alias(h.to) })) }
+  }
+  if (Array.isArray(state.prompts) && state.prompts.some((p) => String(p.source) === 'dt_revision')) {
+    migrated = {
+      ...migrated,
+      prompts: migrated.prompts.map((p) => (String(p.source) === 'dt_revision' ? { ...p, source: 'governed_revision' as const } : p)),
+    }
+  }
+  return migrated
 }
 
 export function sha256(text: string): string {
@@ -310,20 +337,20 @@ export function validatePromptContent(state: ProjectState, content: string): voi
   }
 }
 
-/** Add a prompt version (skill V1 or DT revision). */
+/** Add a prompt version (skill V1 or governed revision). */
 export function addPrompt(state: ProjectState, text: string, source: PromptVersion['source']): ProjectState {
   const clean = (text ?? '').trim()
   if (clean.length === 0) throw new Error('prompt must not be empty')
   validatePromptContent(state, clean)
-  // CS 独享首版：V1 只能由业务 Skill（source=skill_v1）生成；后续版本走 DT 修订
+  // CS 独享首版：V1 只能由业务 Skill（source=skill_v1）生成；后续版本走受约束修订
   if (state.prompts.length === 0 && source !== 'skill_v1') {
-    throw new Error('首版提示词必须由 CS Skill 生成（source=skill_v1）；Codex_DT 只负责用户提出修改后的受约束修订')
+    throw new Error('首版提示词必须由 CS Skill 生成（source=skill_v1）；上游 Codex_DT 只负责用户提出修改后的受约束修订')
   }
   if (state.prompts.length === 0 && source === 'skill_v1' && state.status !== 'final_images_ready' && state.status !== 'authoring_prompt') {
     throw new Error(`cannot author prompt V1 in status ${state.status}`)
   }
   if (state.prompts.length > 0 && source === 'skill_v1') {
-    throw new Error('CS Skill 只生成首版提示词；后续版本必须使用 dt_revision')
+    throw new Error('CS Skill 只生成首版提示词；后续版本必须使用 governed_revision')
   }
   const nextVersion = state.prompts.length + 1
   const now = new Date().toISOString()
@@ -340,8 +367,8 @@ export function addPrompt(state: ProjectState, text: string, source: PromptVersi
     prompts: [...state.prompts, prompt],
     updatedAt: now,
   }
-  // authoring a prompt moves back into authoring_prompt from dt_revision
-  if (state.status === 'dt_revision' || state.status === 'final_images_ready' || state.status === 'revision_requested') {
+  // authoring a prompt moves back into authoring_prompt from governed_revision
+  if (state.status === 'governed_revision' || state.status === 'final_images_ready' || state.status === 'revision_requested') {
     return transition(next, 'authoring_prompt', `prompt v${nextVersion} authored (${source})`)
   }
   if (state.status === 'authoring_prompt') return next

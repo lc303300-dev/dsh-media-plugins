@@ -15,6 +15,7 @@ import {
   mediaExtensions,
   materialPromptAliases,
   validatePromptContent,
+  migrateProjectState,
 } from '../src/shared/project-core.ts'
 
 test('state machine follows the guide sequence', () => {
@@ -33,8 +34,8 @@ test('state machine follows the guide sequence', () => {
   assert.ok(p.lockedPromptHash)
   // revision loop
   p = transition(p, 'revision_requested')
-  p = transition(p, 'dt_revision')
-  p = addPrompt(p, '修订版提示词', 'dt_revision')
+  p = transition(p, 'governed_revision')
+  p = addPrompt(p, '修订版提示词', 'governed_revision')
   assert.equal(p.status, 'authoring_prompt')
   p = confirmPrompt(p)
   assert.equal(p.prompts.length, 2)
@@ -92,7 +93,7 @@ test('buildSubmissionPayload rejects changed material hashes (unconfirmed versio
   assert.throws(() => buildSubmissionPayload(notConfirmed, { 'hero:D:/a.png': 'hash-v1' }), /prompt_confirmed/)
 })
 
-test('CS 独享 V1：首版必须 skill_v1，后续必须 dt_revision', () => {
+test('CS 独享 V1：首版必须 skill_v1，后续必须 governed_revision', () => {
   let p = createProject('cs-only')
   p = transition(p, 'awaiting_video_settings')
   p = transition(p, 'project_initialized')
@@ -101,17 +102,33 @@ test('CS 独享 V1：首版必须 skill_v1，后续必须 dt_revision', () => {
   p = transition(p, 'final_images_ready')
   // V1 用非 skill_v1 来源 → 拒绝
   assert.throws(() => addPrompt(p, '首版', 'user'), /首版提示词必须由 CS Skill/)
-  assert.throws(() => addPrompt(p, '首版', 'dt_revision'), /首版提示词必须由 CS Skill/)
+  assert.throws(() => addPrompt(p, '首版', 'governed_revision'), /首版提示词必须由 CS Skill/)
   p = addPrompt(p, 'CS Skill 生成的首版', 'skill_v1')
   assert.equal(p.prompts[0].source, 'skill_v1')
   // 第二个 skill_v1 → 拒绝
   assert.throws(() => addPrompt(p, '再来一版', 'skill_v1'), /只生成首版/)
-  // 修订走 dt_revision
+  // 修订走 governed_revision
   p = transition(p, 'awaiting_prompt_confirmation')
   p = transition(p, 'revision_requested')
-  p = transition(p, 'dt_revision')
-  p = addPrompt(p, 'DT 修订版', 'dt_revision')
-  assert.equal(p.prompts[1].source, 'dt_revision')
+  p = transition(p, 'governed_revision')
+  p = addPrompt(p, '受约束修订版', 'governed_revision')
+  assert.equal(p.prompts[1].source, 'governed_revision')
+})
+
+test('migrateProjectState migrates legacy dt_revision to governed_revision', () => {
+  const legacy = {
+    ...createProject('legacy-migrate'),
+    status: 'dt_revision',
+    history: [{ at: '2026-01-01T00:00:00.000Z', from: 'revision_requested', to: 'dt_revision' }],
+    prompts: [{ version: 1, text: '旧版修订提示词', hash: 'h', source: 'dt_revision', createdAt: '2026-01-01T00:00:00.000Z', confirmed: false }],
+  }
+  const migrated = migrateProjectState(legacy)
+  assert.equal(migrated.status, 'governed_revision')
+  assert.equal(migrated.history[0].to, 'governed_revision')
+  assert.equal(migrated.prompts[0].source, 'governed_revision')
+  // 迁移后的状态能走新跃迁表（旧名已不会被接受）
+  assert.equal(transition(migrated, 'authoring_prompt').status, 'authoring_prompt')
+  assert.throws(() => transition(legacy, 'authoring_prompt'), /invalid project transition/)
 })
 
 test('planSlots derives planned_count from count_rule and creates dirs', () => {

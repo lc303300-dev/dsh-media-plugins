@@ -124,7 +124,7 @@ Write-Host ""
 Write-Host "== 完成 ==" -ForegroundColor Cyan
 Write-Host "  1. 用 dsh plugin add 安装本 bundle（见 README）。"
 Write-Host "  2. 生图需 VPN 代理：按需改 cordis.patch.yml 的 proxyUrl。"
-Write-Host "  3. 重启 dsh 后即可使用 generate_image / generate_video / describe_image / skill_registry / project_pipeline / dt_batch / batch_image / video_to_gif / image_preview 与 Studio 技能。"
+Write-Host "  3. 重启 dsh 后即可使用 generate_image / generate_video / describe_image / skill_registry / project_pipeline / prompt_batch / batch_image / video_to_gif / image_preview 与 Studio 技能。"
 Write-Host ""
 Write-Host "  官方充值与 API 管理入口：" -ForegroundColor Cyan
 Write-Host "    火山方舟: 管理 https://console.volcengine.com/ark ｜ 充值 https://console.volcengine.com/finance/" -ForegroundColor Cyan

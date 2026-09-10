@@ -10,7 +10,7 @@ export default defineConfig({
     'tool-video-gen': 'src/tool-video-gen.ts',
     'tool-skill-registry': 'src/tool-skill-registry.ts',
     'tool-project': 'src/tool-project.ts',
-    'tool-dt': 'src/tool-dt.ts',
+    'tool-prompt-batch': 'src/tool-prompt-batch.ts',
     'tool-revision': 'src/tool-revision.ts',
     'tool-curator': 'src/tool-curator.ts',
     'tool-image-skill-curator': 'src/tool-image-skill-curator.ts',

@@ -2,11 +2,20 @@
  * Completion notification: when the agent finishes answering
  * (agent/status transitions running -> idle), show a native Windows balloon
  * with a short excerpt of the answer text. Host half only.
+ *
+ * Running state is tracked per agent id: a sub-agent's own lifecycle must not
+ * complete the parent turn's notification, nor a sibling's start swallow it.
+ *
+ * Diagnostics are opt-in: set DSH_NOTIFY_DEBUG=1 in the host environment to
+ * append one JSON line per status transition, spawn outcome, and failure to
+ * `$DSH_NOTIFY_LOG` (default `<cwd>/.dsh-media-private/logs/completion-notify.log`).
+ * The environment is read per call so a dev HMR reload cannot capture a stale value.
  * @module dsh-media-plugins/notify
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import { execFile } from 'node:child_process'
+import { appendFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { packageRootOf } from './shared/pkg-root.ts'
 
@@ -26,6 +35,7 @@ interface MessageLike {
 }
 
 interface AgentLike {
+  id?: string
   session: {
     deriveMessages(): readonly MessageLike[]
   }
@@ -34,6 +44,17 @@ interface AgentLike {
 interface StatusPayload {
   agent: AgentLike
   status: string
+}
+
+/** Append one diagnostic line; logging must never affect the agent. */
+async function debugLog(entry: Record<string, unknown>): Promise<void> {
+  if (process.env.DSH_NOTIFY_DEBUG !== '1') return
+  try {
+    const path = process.env.DSH_NOTIFY_LOG ?? join(process.cwd(), '.dsh-media-private', 'logs', 'completion-notify.log')
+    await appendFile(path, `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`, 'utf8')
+  } catch {
+    // Diagnostics are best-effort; a failed write must never surface.
+  }
 }
 
 /** Extract the visible text of the last assistant message. */
@@ -62,21 +83,32 @@ function showToast(text: string): void {
   execFile(
     'powershell.exe',
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', TOAST_SCRIPT],
-    { env: { ...process.env, NOTIFY_TEXT: encoded } },
-    () => {
-      // A missing notification must never affect the agent.
+    { env: { ...process.env, NOTIFY_TEXT: encoded }, windowsHide: false },
+    (error) => {
+      if (error) void debugLog({ event: 'spawn-failed', message: error.message })
+      else void debugLog({ event: 'spawn-completed' })
     },
   )
 }
 
 export function apply(ctx: Context): void {
-  let running = false
+  const running = new Map<string, AgentLike>()
+  void debugLog({ event: 'plugin-loaded', pid: process.pid, toastScript: TOAST_SCRIPT })
+
   ctx.on('agent/status', ({ agent, status }: StatusPayload) => {
+    const key = agent.id ?? 'default'
     if (status === 'running') {
-      running = true
-    } else if (status === 'idle' && running) {
-      running = false
-      showToast(extractAnswerText(agent))
+      running.set(key, agent)
+      void debugLog({ event: 'status', agent: key, status })
+      return
     }
+    if (status === 'idle' && running.has(key)) {
+      running.delete(key)
+      const answer = extractAnswerText(agent)
+      void debugLog({ event: 'status', agent: key, status, chars: answer.length, excerpt: answer.slice(0, 60) })
+      showToast(answer)
+      return
+    }
+    void debugLog({ event: 'status', agent: key, status, fired: false })
   })
 }
