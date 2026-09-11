@@ -1,11 +1,23 @@
 /**
  * Grid-sheet split core (Codex_IS community-revision port): split a 3×3
- * grid-sheet image into nine independent panels by locating the grid lines
- * with a morphological-style line scan (threshold + full-width white-run
- * band grouping), cropping with a small inset, and validating the result.
- * Falls back to an even split when line detection fails. No upscaling is
- * performed — this is extraction only, per the community consensus that
- * enlarging is not redrawing.
+ * grid-sheet image into nine independent panels by locating the grid lines,
+ * cropping with a small inset, and validating the result. Falls back to an
+ * even split when line detection fails. No upscaling is performed — this is
+ * extraction only, per the community consensus that enlarging is not
+ * redrawing.
+ *
+ * Two detection strategies run in order:
+ *
+ *  1. `morphological_lines` — threshold + full-width white-run band grouping.
+ *     Fast and exact for sheets with crisp pure-white gutters.
+ *  2. `profile_peaks` — row/column mean-luminance profile with a peak
+ *     prominence test. Handles soft / light-grey gutters and uneven row or
+ *     column heights, and refuses to lock onto a large bright *content* band
+ *     (sky, snow, white walls) that the morphological scan would misread.
+ *
+ * Both strategies cut on the **outside** of the detected gutter band, so no
+ * gutter pixel leaks into a panel — this is what fixes off-by-N crops when a
+ * model renders rows of unequal height.
  *
  * @module dsh-media-plugins/shared/grid-split-core
  */
@@ -13,6 +25,8 @@
 import sharp from 'sharp'
 import { basename, dirname, extname, isAbsolute, join } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
+
+export type SplitMethod = 'morphological_lines' | 'profile_peaks' | 'fallback_even'
 
 export interface SplitPanel {
   id: string
@@ -26,11 +40,12 @@ export interface SplitPanel {
 
 export interface SplitResult {
   ok: boolean
-  method: 'morphological_lines' | 'fallback_even'
+  method: SplitMethod
   sheet_path: string
   width: number
   height: number
   lines: { horizontal: number[]; vertical: number[] }
+  gutter_bands: { horizontal: Array<{ start: number; end: number }>; vertical: Array<{ start: number; end: number }> }
   normalized_ratio: string | null
   inset_percent: number
   panels: SplitPanel[]
@@ -52,9 +67,28 @@ const RUN_FRACTION = 0.6
 const INNER_MIN = 0.15
 const INNER_MAX = 0.85
 
+/** Profile detector: a gutter must be at least this bright … */
+const PROFILE_MIN_PEAK = 110
+/** … and must stand this far above the darkest sample of its search window,
+ *  which is what rejects broad bright content bands. */
+const PROFILE_MIN_PROMINENCE = 45
+/** Search window around the expected 1/3 & 2/3 positions, as a share of the
+ *  axis (a model may render unequal rows, so this is deliberately generous). */
+const PROFILE_TOL_FRACTION = 0.14
+/** Half-maximum band wider than this share of the axis is treated as content,
+ *  not as a gutter, and degrades to a narrow band around the peak. */
+const PROFILE_MAX_BAND_FRACTION = 0.04
+/** Pixels of extra safety margin kept inside a detected gutter band edge. */
+const DEFAULT_INSET_PX = 2
+
+interface Band {
+  start: number
+  end: number
+}
+
 /** Group 1-D flagged indices into bands, merging gaps of at most `gap`. */
-function groupBands(flags: number[], gap: number): Array<{ start: number; end: number }> {
-  const bands: Array<{ start: number; end: number }> = []
+function groupBands(flags: number[], gap: number): Band[] {
+  const bands: Band[] = []
   for (const idx of flags) {
     const last = bands[bands.length - 1]
     if (last && idx <= last.end + gap) last.end = idx
@@ -63,20 +97,36 @@ function groupBands(flags: number[], gap: number): Array<{ start: number; end: n
   return bands
 }
 
-/** Detect the two inner horizontal/vertical gutter lines on a downscaled
- *  grayscale buffer. Returns line positions (in working-scale pixels) or
- *  null when the sheet does not look like a clean 3×3 grid. */
-function detectGridLines(
-  gray: Uint8Array,
-  w: number,
-  h: number,
-  threshold: number,
-): { h: number[]; v: number[] } | null {
+/**
+ * Pick the two bands closest to the expected 1/3 and 2/3 positions, in order.
+ * Being lenient here (instead of demanding exactly two bands) keeps a stray
+ * false positive — or one clipped by the inner-window filter — from throwing
+ * the whole detection away.
+ */
+function pickTwoGutters(bands: Band[], len: number): Band[] | null {
+  if (bands.length < 2) return null
+  const targets = [len / 3, (2 * len) / 3]
+  const centre = (b: Band): number => (b.start + b.end) / 2
+  const first = bands
+    .map((b) => ({ b, d: Math.abs(centre(b) - targets[0]) }))
+    .sort((p, q) => p.d - q.d)[0]
+  if (!first) return null
+  const second = bands
+    .filter((b) => b !== first.b)
+    .map((b) => ({ b, d: Math.abs(centre(b) - targets[1]) }))
+    .sort((p, q) => p.d - q.d)[0]
+  if (!second) return null
+  const chosen = [first.b, second.b].sort((p, q) => p.start - q.start)
+  if (chosen[1].start - chosen[0].end < len * 0.1) return null
+  return chosen
+}
+
+/** Strategy 1: morphological scan — rows/columns that are almost entirely
+ *  white and contain a long full-width white run. */
+function detectMorphological(gray: Uint8Array, w: number, h: number, threshold: number): { h: Band[]; v: Band[] } | null {
   const bin = new Uint8Array(w * h)
   for (let i = 0; i < bin.length; i++) bin[i] = gray[i] >= threshold ? 1 : 0
 
-  // Horizontal gutters: rows that are almost entirely white with a
-  // long contiguous white run (full width), grouped into bands.
   const rowFlags: number[] = []
   for (let y = 0; y < h; y++) {
     let sum = 0
@@ -97,7 +147,6 @@ function detectGridLines(
     return c >= INNER_MIN && c <= INNER_MAX
   })
 
-  // Vertical gutters: same scan transposed.
   const colFlags: number[] = []
   for (let x = 0; x < w; x++) {
     let sum = 0
@@ -118,14 +167,104 @@ function detectGridLines(
     return c >= INNER_MIN && c <= INNER_MAX
   })
 
-  if (hBands.length !== 2 || vBands.length !== 2) return null
+  const hPick = pickTwoGutters(hBands, h)
+  const vPick = pickTwoGutters(vBands, w)
+  if (!hPick || !vPick) return null
+  return { h: hPick, v: vPick }
+}
 
-  const hPos = hBands.map((b) => Math.round((b.start + b.end) / 2))
-  const vPos = vBands.map((b) => Math.round((b.start + b.end) / 2))
-  // Sanity: the two gutters must actually separate three panels.
-  if (Math.abs(hPos[1] - hPos[0]) < 0.2 * h) return null
-  if (Math.abs(vPos[1] - vPos[0]) < 0.2 * w) return null
-  return { h: hPos, v: vPos }
+/** Mean luminance of every row of a working-scale gray buffer. */
+function rowProfile(gray: Uint8Array, w: number, h: number): Float64Array {
+  const out = new Float64Array(h)
+  for (let y = 0; y < h; y++) {
+    let sum = 0
+    for (let x = 0; x < w; x++) sum += gray[y * w + x]
+    out[y] = sum / w
+  }
+  return out
+}
+
+/** Mean luminance of every column of a working-scale gray buffer. */
+function colProfile(gray: Uint8Array, w: number, h: number): Float64Array {
+  const out = new Float64Array(w)
+  for (let x = 0; x < w; x++) {
+    let sum = 0
+    for (let y = 0; y < h; y++) sum += gray[y * w + x]
+    out[x] = sum / h
+  }
+  return out
+}
+
+/**
+ * Locate one gutter band around an expected position on a luminance profile.
+ * Accepts soft/light-grey gutters (lower absolute bar than the morphological
+ * scan) but demands a clear local peak, and degrades an over-wide half-max
+ * band — the signature of a bright content region — to a narrow band.
+ */
+function findGutterBand(prof: Float64Array, len: number, expect: number): Band | null {
+  const tol = Math.max(8, Math.round(len * PROFILE_TOL_FRACTION))
+  const lo = Math.max(0, Math.floor(expect - tol))
+  const hi = Math.min(len - 1, Math.ceil(expect + tol))
+  let base = Infinity
+  for (let i = lo; i <= hi; i++) if (prof[i] < base) base = prof[i]
+
+  // Prefer the significant LOCAL peak closest to the expected position: a
+  // gutter sits at ~1/3 or ~2/3 by construction, whereas a bright content
+  // band (sky, snow, a white wall) can sit anywhere and may well be brighter
+  // than the gutter — picking the global maximum would lock onto it.
+  const localPeaks: number[] = []
+  for (let i = lo; i <= hi; i++) {
+    const v = prof[i]
+    const left = i === 0 ? -Infinity : prof[i - 1]
+    const right = i === len - 1 ? -Infinity : prof[i + 1]
+    if (v >= left && v >= right && v >= PROFILE_MIN_PEAK) localPeaks.push(i)
+  }
+  if (localPeaks.length === 0) return null
+  localPeaks.sort((a, b) => Math.abs(a - expect) - Math.abs(b - expect))
+  let best = -1
+  let peak = -1
+  for (const idx of localPeaks) {
+    if (prof[idx] - base >= PROFILE_MIN_PROMINENCE) {
+      best = idx
+      peak = prof[idx]
+      break
+    }
+  }
+  if (best < 0) return null
+
+  const half = base + (peak - base) / 2
+  let s = best
+  while (s > lo && prof[s - 1] >= half) s--
+  let e = best
+  while (e < hi && prof[e + 1] >= half) e++
+  const maxBand = Math.max(10, Math.round(len * PROFILE_MAX_BAND_FRACTION))
+  if (e - s + 1 > maxBand) {
+    s = Math.max(lo, best - 3)
+    e = Math.min(hi, best + 3)
+  }
+  return { start: s, end: e }
+}
+
+/** Strategy 2: luminance-profile peak detection (soft / grey gutters,
+ *  unequal panel heights, bright-content rejection). */
+function detectByProfile(gray: Uint8Array, w: number, h: number): { h: Band[]; v: Band[] } | null {
+  const rows = rowProfile(gray, w, h)
+  const cols = colProfile(gray, w, h)
+  const hBands: Band[] = []
+  for (const expect of [h / 3, (2 * h) / 3]) {
+    const b = findGutterBand(rows, h, expect)
+    if (!b) return null
+    hBands.push(b)
+  }
+  const vBands: Band[] = []
+  for (const expect of [w / 3, (2 * w) / 3]) {
+    const b = findGutterBand(cols, w, expect)
+    if (!b) return null
+    vBands.push(b)
+  }
+  if (hBands[1].start - hBands[0].end < h * 0.1) return null
+  if (vBands[1].start - vBands[0].end < w * 0.1) return null
+  return { h: hBands, v: vBands }
 }
 
 /** White share of a working-scale region; used for validation only. */
@@ -207,39 +346,61 @@ export function normalizeCrop(
   return null
 }
 
+export interface SplitOptions {
+  workEdge?: number
+  normalizeRatio?: string | null
+  insetPercent?: number
+  /** Extra safety margin (full-res px) kept inside a *detected* gutter band edge. */
+  insetPx?: number
+  /** Emit the self-contained review page next to the panels (default true). */
+  reviewPage?: boolean
+}
+
+interface ScanResult {
+  gray: Uint8Array
+  workW: number
+  workH: number
+  scale: number
+  detected: { h: Band[]; v: Band[] } | null
+  method: 'morphological_lines' | 'profile_peaks' | null
+}
+
 /**
  * Split a 3×3 grid sheet into nine panels.
  *
  * @param image    sheet image path (PNG/JPEG/WEBP)
  * @param outputDir directory for the nine panels + review page
- * @param opts.insetPx  full-res margin cut inside each grid line (default 2)
- * @param opts.workEdge longest edge of the working scan image (default 1024)
+ * @param opts.insetPercent  fallback-split margin, percent of the full sheet (default 2)
+ * @param opts.insetPx       extra margin inside a detected gutter band, full-res px (default 2)
+ * @param opts.workEdge      longest edge of the working scan image (default 1024)
  */
 export async function splitGridSheet(
   image: string,
   outputDir: string,
-  opts: { workEdge?: number; normalizeRatio?: string | null; insetPercent?: number } = {},
+  opts: SplitOptions = {},
 ): Promise<SplitResult> {
-  // Uniform inset: both detection-based and fallback splits inset each side
-  // by a percentage of the full sheet dimension (default 2 %).
   const insetPercent = Math.max(0, Math.min(10, Math.round(opts.insetPercent ?? 2)))
+  const insetPx = Math.max(0, Math.min(64, Math.round(opts.insetPx ?? DEFAULT_INSET_PX)))
   const workEdge = Math.max(256, Math.round(opts.workEdge ?? 1024))
+  const wantReview = opts.reviewPage !== false
   const warnings: string[] = []
   const ratio = opts.normalizeRatio && String(opts.normalizeRatio).trim().length > 0 ? parseRatio(String(opts.normalizeRatio)) : null
+  const emptyLines = { horizontal: [] as number[], vertical: [] as number[] }
+  const emptyBands = { horizontal: [] as Band[], vertical: [] as Band[] }
   if (opts.normalizeRatio && String(opts.normalizeRatio).trim().length > 0 && !ratio) {
-    return { ok: false, method: 'fallback_even', sheet_path: image, width: 0, height: 0, lines: { horizontal: [], vertical: [] }, normalized_ratio: null, inset_percent: insetPercent, panels: [], review_page: '', warnings: [`无效比例：${opts.normalizeRatio}（应为 W:H，如 16:9 / 9:16 / 21:9）`], message: `invalid normalize_ratio: ${opts.normalizeRatio}` }
+    return { ok: false, method: 'fallback_even', sheet_path: image, width: 0, height: 0, lines: emptyLines, gutter_bands: emptyBands, normalized_ratio: null, inset_percent: insetPercent, panels: [], review_page: '', warnings: [`无效比例：${opts.normalizeRatio}（应为 W:H，如 16:9 / 9:16 / 21:9）`], message: `invalid normalize_ratio: ${opts.normalizeRatio}` }
   }
   const normalizedRatioLabel = ratio ? `${ratio.w}:${ratio.h}` : null
 
   const meta = await sharp(image, { failOn: 'none' }).rotate().metadata()
   const fullW = meta.width ?? 0
   const fullH = meta.height ?? 0
-  if (fullW === 0 || fullH === 0) return { ok: false, method: 'fallback_even', sheet_path: image, width: 0, height: 0, lines: { horizontal: [], vertical: [] }, normalized_ratio: null, inset_percent: insetPercent, panels: [], review_page: '', warnings: ['cannot read image dimensions'], message: `cannot read image: ${image}` }
+  if (fullW === 0 || fullH === 0) return { ok: false, method: 'fallback_even', sheet_path: image, width: 0, height: 0, lines: emptyLines, gutter_bands: emptyBands, normalized_ratio: null, inset_percent: insetPercent, panels: [], review_page: '', warnings: ['cannot read image dimensions'], message: `cannot read image: ${image}` }
 
   // Scan-and-detect at a given working scale. Thin (1 px) gutter lines get
   // smeared away by aggressive downscaling, so the scan is retried at a
   // higher resolution when nothing is found at the fast default scale.
-  const tryDetectAt = async (targetScale: number): Promise<{ gray: Uint8Array; workW: number; workH: number; scale: number; detected: { h: number[]; v: number[] } | null }> => {
+  const tryDetectAt = async (targetScale: number): Promise<ScanResult> => {
     const s = Math.min(1, targetScale)
     const ww = Math.max(1, Math.round(fullW * s))
     const wh = Math.max(1, Math.round(fullH * s))
@@ -251,15 +412,18 @@ export async function splitGridSheet(
       .raw()
       .toBuffer({ resolveWithObject: true })
     const g = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-    let found: { h: number[]; v: number[] } | null = null
+
+    // Strategy 1: morphological white-line scan (fast, exact for crisp gutters).
     for (const T of THRESHOLDS) {
-      const d = detectGridLines(g, ww, wh, T)
-      if (d) {
-        found = d
-        break
-      }
+      const d = detectMorphological(g, ww, wh, T)
+      if (d) return { gray: g, workW: ww, workH: wh, scale: s, detected: d, method: 'morphological_lines' }
     }
-    return { gray: g, workW: ww, workH: wh, scale: s, detected: found }
+    // Strategy 2: luminance-profile peaks (soft/grey gutters, uneven rows,
+    // and — critically — refuses bright content bands).
+    const p = detectByProfile(g, ww, wh)
+    if (p) return { gray: g, workW: ww, workH: wh, scale: s, detected: p, method: 'profile_peaks' }
+
+    return { gray: g, workW: ww, workH: wh, scale: s, detected: null, method: null }
   }
 
   const fastScale = Math.min(1, workEdge / Math.max(fullW, fullH))
@@ -272,29 +436,56 @@ export async function splitGridSheet(
     }
   }
   const { gray, workW, workH, scale } = scan
-  const detected = scan.detected
 
-  let method: 'morphological_lines' | 'fallback_even'
-  let hCuts: number[]
-  let vCuts: number[]
+  let method: SplitMethod
+  let rowRanges: Array<[number, number]> = []
+  let colRanges: Array<[number, number]> = []
   let hLinesFull: number[] = []
   let vLinesFull: number[] = []
-  // Uniform inset per axis (percent of the full sheet dimension), used by
-  // both the detection-based split and the fallback even split.
+  const bandOut = { horizontal: [] as Band[], vertical: [] as Band[] }
   const insetW = Math.max(0, Math.round((fullW * insetPercent) / 100))
   const insetH = Math.max(0, Math.round((fullH * insetPercent) / 100))
-  if (detected) {
-    method = 'morphological_lines'
+
+  if (scan.detected && scan.method) {
+    method = scan.method
     const inv = 1 / scale
-    hLinesFull = detected.h.map((y) => Math.round(y * inv))
-    vLinesFull = detected.v.map((x) => Math.round(x * inv))
-    hCuts = [0, hLinesFull[0], hLinesFull[1], fullH]
-    vCuts = [0, vLinesFull[0], vLinesFull[1], fullW]
-  } else {
+    const hb = scan.detected.h.map((b) => ({ start: Math.round(b.start * inv), end: Math.round(b.end * inv) }))
+    const vb = scan.detected.v.map((b) => ({ start: Math.round(b.start * inv), end: Math.round(b.end * inv) }))
+    bandOut.horizontal = hb
+    bandOut.vertical = vb
+    hLinesFull = hb.map((b) => Math.round((b.start + b.end) / 2))
+    vLinesFull = vb.map((b) => Math.round((b.start + b.end) / 2))
+    // Cut on the OUTSIDE of each gutter band (plus a hair of safety margin),
+    // so no gutter pixel can leak into a panel.
+    rowRanges = [
+      [0, hb[0].start - 1 - insetPx],
+      [hb[0].end + 1 + insetPx, hb[1].start - 1 - insetPx],
+      [hb[1].end + 1 + insetPx, fullH - 1],
+    ]
+    colRanges = [
+      [0, vb[0].start - 1 - insetPx],
+      [vb[0].end + 1 + insetPx, vb[1].start - 1 - insetPx],
+      [vb[1].end + 1 + insetPx, fullW - 1],
+    ]
+    // Guard against a degenerate band eating a whole panel.
+    const tooSmall = [...rowRanges, ...colRanges].some(([a, b]) => b - a + 1 < 64)
+    if (tooSmall) {
+      warnings.push('检测到的格线带过宽或位置异常，已回退为等比分割')
+      scan = { ...scan, detected: null, method: null }
+      bandOut.horizontal = []
+      bandOut.vertical = []
+      hLinesFull = []
+      vLinesFull = []
+    }
+  }
+
+  if (!scan.detected) {
     method = 'fallback_even'
-    warnings.push(`未检测到清晰的横/纵格线，已启用方案2 等比分割（每侧内缩 ${insetPercent}%，即 ${insetW}px / ${insetH}px）；请核对面板边界`)
-    hCuts = [0, Math.round(fullH / 3), Math.round((2 * fullH) / 3), fullH]
-    vCuts = [0, Math.round(fullW / 3), Math.round((2 * fullW) / 3), fullW]
+    warnings.push(`未检测到清晰格线，已启用等比分割（每侧内缩 ${insetPercent}%，即 ${insetW}px / ${insetH}px）；请核对面板边界`)
+    const hCuts = [0, Math.round(fullH / 3), Math.round((2 * fullH) / 3), fullH]
+    const vCuts = [0, Math.round(fullW / 3), Math.round((2 * fullW) / 3), fullW]
+    rowRanges = [0, 1, 2].map((r) => [hCuts[r] + insetH, hCuts[r + 1] - insetH - 1] as [number, number])
+    colRanges = [0, 1, 2].map((c) => [vCuts[c] + insetW, vCuts[c + 1] - insetW - 1] as [number, number])
   }
 
   await mkdir(outputDir, { recursive: true })
@@ -303,11 +494,9 @@ export async function splitGridSheet(
   for (let row = 0; row < 3; row++) {
     for (let col = 0; col < 3; col++) {
       const id = `r${row + 1}c${col + 1}`
-      const x0 = vCuts[col] + insetW
-      const x1 = vCuts[col + 1] - insetW
-      const y0 = hCuts[row] + insetH
-      const y1 = hCuts[row + 1] - insetH
-      const box = safeExtract(fullW, fullH, x0, y0, Math.max(1, x1 - x0), Math.max(1, y1 - y0))
+      const [y0, y1] = rowRanges[row]
+      const [x0, x1] = colRanges[col]
+      const box = safeExtract(fullW, fullH, x0, y0, Math.max(1, x1 - x0 + 1), Math.max(1, y1 - y0 + 1))
       // Optional ratio normalization: center-crop inside the panel (portrait
       // keeps height, landscape keeps width; the other axis gets cropped).
       let finalBox = box
@@ -330,7 +519,9 @@ export async function splitGridSheet(
       const wy1 = Math.max(wy0 + 1, Math.round(((finalBox.top + finalBox.height) / fullH) * workH))
       let whiteRatio = 0
       try {
-        whiteRatio = regionWhiteRatio(gray, workW, wx0, wy0, wx1, wy1)
+        const bin = new Uint8Array(gray.length)
+        for (let i = 0; i < gray.length; i++) bin[i] = gray[i] >= THRESHOLDS[THRESHOLDS.length - 1] ? 1 : 0
+        whiteRatio = regionWhiteRatio(bin, workW, wx0, wy0, Math.min(workW, wx1), Math.min(workH, wy1))
       } catch {
         /* validation is best-effort */
       }
@@ -342,11 +533,81 @@ export async function splitGridSheet(
   for (const p of panels) {
     if (p.whiteRatio > 0.55) warnings.push(`${p.id} 大面积空白（白占比 ${(p.whiteRatio * 100).toFixed(0)}%），疑似格线检测偏移`)
   }
-  const reviewPage = await buildReviewPage(image, panels, method, hLinesFull, vLinesFull, fullW, fullH, warnings, outputDir, base)
+  const reviewPage = wantReview
+    ? await buildReviewPage(image, panels, method, hLinesFull, vLinesFull, fullW, fullH, warnings, outputDir, base)
+    : ''
   const lines = { horizontal: hLinesFull, vertical: vLinesFull }
   const ratioNote = normalizedRatioLabel ? `，比例已规范为 ${normalizedRatioLabel}` : ''
   const message = `拆格完成（${method}${ratioNote}）：9 张面板 → ${outputDir}；审阅页 → ${reviewPage}`
-  return { ok: true, method, sheet_path: image, width: fullW, height: fullH, lines, normalized_ratio: normalizedRatioLabel, inset_percent: insetPercent, panels, review_page: reviewPage, warnings, message }
+  return { ok: true, method, sheet_path: image, width: fullW, height: fullH, lines, gutter_bands: bandOut, normalized_ratio: normalizedRatioLabel, inset_percent: insetPercent, panels, review_page: reviewPage, warnings, message }
+}
+
+/** One output group: a named folder holding the panels of every sheet in it. */
+export interface SplitGroupSpec {
+  /** Folder name under the output root. Panels are written flat inside it. */
+  group: string
+  /** Sheet images belonging to this group. */
+  images: string[]
+}
+
+export interface BatchSplitItem {
+  group: string
+  image: string
+  ok: boolean
+  method: SplitMethod | null
+  panels: number
+  warnings: string[]
+  message: string
+}
+
+export interface BatchSplitResult {
+  ok: boolean
+  output_root: string
+  group_count: number
+  image_count: number
+  panel_count: number
+  failed: number
+  results: BatchSplitItem[]
+  message: string
+}
+
+/**
+ * Batch split: every sheet in a group is split into its own folder, panels
+ * written **flat** (no per-sheet sub-folders) — the layout required by the
+ * "9 shots per scene, all in one folder" workflow.
+ */
+export async function splitGridSheets(
+  specs: SplitGroupSpec[],
+  outputRoot: string,
+  opts: SplitOptions = {},
+): Promise<BatchSplitResult> {
+  const clean = specs
+    .map((s) => ({ group: String(s?.group ?? '').trim() || 'group', images: (s?.images ?? []).map((i) => String(i ?? '').trim()).filter(Boolean) }))
+    .filter((s) => s.images.length > 0)
+  const results: BatchSplitItem[] = []
+  let panelCount = 0
+  let failed = 0
+  await mkdir(outputRoot, { recursive: true })
+  for (const spec of clean) {
+    const dir = join(outputRoot, spec.group)
+    await mkdir(dir, { recursive: true })
+    for (const image of spec.images) {
+      const r = await splitGridSheet(image, dir, { ...opts, reviewPage: false })
+      panelCount += r.panels.length
+      if (!r.ok || r.panels.length !== 9) failed++
+      results.push({ group: spec.group, image, ok: r.ok && r.panels.length === 9, method: r.method, panels: r.panels.length, warnings: r.warnings, message: r.message })
+    }
+  }
+  return {
+    ok: failed === 0,
+    output_root: outputRoot,
+    group_count: clean.length,
+    image_count: clean.reduce((n, s) => n + s.images.length, 0),
+    panel_count: panelCount,
+    failed,
+    results,
+    message: `批量拆格完成：${clean.length} 组 / ${clean.reduce((n, s) => n + s.images.length, 0)} 张图 → ${panelCount} 张面板（失败 ${failed}）→ ${outputRoot}`,
+  }
 }
 
 /** Self-contained review page: original thumbnail + 3×3 panel grid, all
@@ -354,7 +615,7 @@ export async function splitGridSheet(
 async function buildReviewPage(
   sheet: string,
   panels: SplitPanel[],
-  method: 'morphological_lines' | 'fallback_even',
+  method: SplitMethod,
   hLines: number[],
   vLines: number[],
   fullW: number,
@@ -376,9 +637,9 @@ async function buildReviewPage(
   const warnHtml = warnings.length
     ? `<p style="color:#b06000">⚠ ${warnings.map((w) => ` ${w}`).join('；')}</p>`
     : '<p style="color:#2a7a2a">✓ 无异常</p>'
-  const lineInfo = method === 'morphological_lines'
-    ? `横格线(px): ${hLines.join(', ')}；纵格线(px): ${vLines.join(', ')}`
-    : '等分均分（未检测到格线）'
+  const lineInfo = method === 'fallback_even'
+    ? '等分均分（未检测到格线）'
+    : `横格线(px): ${hLines.join(', ')}；纵格线(px): ${vLines.join(', ')}`
   const html = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>拆格审阅 ${base}</title>
 <style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse;margin:12px 0}td{border:1px solid #ccc;padding:6px;text-align:center;vertical-align:top}img{max-width:320px;width:100%;height:auto;display:block}.slot{font-size:12px;color:#555;margin-top:4px}h3{margin-bottom:4px}</style>
 </head><body>

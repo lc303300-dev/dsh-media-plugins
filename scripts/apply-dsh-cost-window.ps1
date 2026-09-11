@@ -1,4 +1,4 @@
-# Apply the DSH session-cost window (header capsule) to a deepseek-harness checkout.
+﻿# Apply the DSH session-cost window (header capsule) to a deepseek-harness checkout.
 #
 # This is the reusable, syncable way to get the browser-side "人民币消耗" capsule
 # (token counts + RMB + hover breakdown + 峰/谷 badge) onto ANY machine. The
