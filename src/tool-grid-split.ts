@@ -36,7 +36,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'split_grid_sheet',
       description:
-        '把 3×3 九宫格拼图按格线拆成 9 张独立面板。检测按顺序尝试：方案1 形态学线检测（阈值+整幅白色行长带分组，对纯白格线最快最准）→ 方案2 亮度曲线峰值检测（整行/整列平均亮度找峰，带突出度判据，可处理浅灰/柔和格线、行高列宽不均匀的图，并拒绝把大面积亮内容误判为格线）→ 两者都失败才回退方案3 等比分割。检测成功时按格线带**外侧**切割，格线像素不会进入任何面板。支持单张，也支持批量分组：groups=[{group, images}] 会把每组所有图的面板**平铺**写入 <output_dir>/<group>/（不再嵌套子目录）。可选 normalize_ratio 把每个面板规范到指定比例（竖构图高不变裁宽度，横构图宽不变裁高度，均居中）。只做拆线与规范裁剪，不做放大或重绘。',
+        '把 3×3 九宫格拼图按格线拆成 9 张独立面板。**流程第一步：识别源图真实分辨率**——直接读取文件本身，绝不假定 3840×2160 之类的画布尺寸，其后所有格线定位与切割都按该真实尺寸计算；因此同一批图分辨率不一致（实测存在 3840×2160 与 5504×3072 混排）也能正确拆分。可用 expected_size 传入预期分辨率，不符会告警（提示可能拿错文件）。检测按顺序尝试：方案1 形态学线检测（纯白格线最快最准）→ 方案2 亮度曲线峰值检测（取最接近 1/3、2/3 的**窄峰**，以峰宽而非绝对亮度拒绝把大片亮内容误判为格线，可处理浅灰格线、行高列宽不均匀）→ 两结果按「谁更接近标准三等分」仲裁，皆失败或偏离 >20% 时回退方案3 等比分割。检测成功时按格线带**外侧**切割，格线像素零残留。支持单张，也支持批量分组：groups=[{group, images}] 把每组所有图的面板**平铺**写入 <output_dir>/<group>/（不再嵌套子目录），批量结果含每张图的 source_resolution 与整体 resolution_summary。可选 normalize_ratio 规范比例。只做拆线与规范裁剪，不做放大或重绘。',
       parameters: {
         image: {
           type: 'string',
@@ -67,6 +67,10 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           type: 'integer',
           description: '可选：线检测工作图最长边（默认 1024），越小越快、检测精度略降。',
         },
+        expected_size: {
+          type: 'string',
+          description: '可选：预期源图分辨率 WxH（如 3840x2160 / 5504x3072）。拆解第一步先识别源图**真实分辨率**，所有格线定位与切割都按它计算；若与实际不符会告警（提示可能拿错文件），但仍按实际分辨率拆解。',
+        },
       },
       output: {
         schema: {
@@ -76,6 +80,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             ok: { type: 'boolean', required: true },
             method: { type: 'string' },
             sheet_path: { type: 'string' },
+            source_resolution: { type: 'string' },
             width: { type: 'integer' },
             height: { type: 'integer' },
             lines: { type: 'object', additionalProperties: true },
@@ -90,6 +95,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             image_count: { type: 'integer' },
             panel_count: { type: 'integer' },
             failed: { type: 'integer' },
+            resolution_summary: { type: 'array', items: { type: 'object', additionalProperties: true } },
             results: { type: 'array', items: { type: 'object', additionalProperties: true } },
             message: { type: 'string' },
           },
@@ -104,6 +110,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const insetPx = Number.isInteger(args.inset_px) ? args.inset_px : 2
         const workEdge = Number.isInteger(args.work_edge) ? args.work_edge : 1024
         const normalizeRatio = String(args.normalize_ratio ?? '').trim() || null
+        const expectedSize = String(args.expected_size ?? '').trim() || null
         const requested = String(args.output_dir ?? '').trim()
 
         try {
@@ -115,7 +122,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               images: (Array.isArray(g?.images) ? g.images : []).map((i: any) => resolvePath(String(i ?? '').trim(), workspaceRoot)).filter(Boolean),
             }))
             const outRoot = requested ? resolvePath(requested, workspaceRoot) : join(workspaceRoot, config.outputDir, 'grid-split')
-            const result = await splitGridSheets(specs, outRoot, { insetPercent, insetPx, workEdge, normalizeRatio })
+            const result = await splitGridSheets(specs, outRoot, { insetPercent, insetPx, workEdge, normalizeRatio, expectedSize })
             return {
               ok: result.ok,
               output_root: result.output_root,
@@ -123,6 +130,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               image_count: result.image_count,
               panel_count: result.panel_count,
               failed: result.failed,
+              resolution_summary: result.resolution_summary,
               results: result.results,
               warnings: result.results.flatMap((r) => r.warnings),
               message: result.message,
@@ -137,12 +145,13 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           const outDir = requested
             ? resolvePath(requested, workspaceRoot)
             : join(workspaceRoot, config.outputDir, 'grid-split', base)
-          const result = await splitGridSheet(sheetPath, outDir, { insetPercent, insetPx, workEdge, normalizeRatio })
+          const result = await splitGridSheet(sheetPath, outDir, { insetPercent, insetPx, workEdge, normalizeRatio, expectedSize })
           // 省略未规范比例时的 null 字段，避免输出 schema（string 类型）校验失败
           return {
             ok: result.ok,
             method: result.method,
             sheet_path: result.sheet_path,
+            source_resolution: result.source_resolution,
             width: result.width,
             height: result.height,
             lines: result.lines,

@@ -42,6 +42,9 @@ export interface SplitResult {
   ok: boolean
   method: SplitMethod
   sheet_path: string
+  /** Resolution actually read from the file, as "WxH". Every cut below is
+   *  computed against THIS, never against an assumed canvas size. */
+  source_resolution: string
   width: number
   height: number
   lines: { horizontal: number[]; vertical: number[] }
@@ -357,6 +360,19 @@ export interface SplitOptions {
   insetPx?: number
   /** Emit the self-contained review page next to the panels (default true). */
   reviewPage?: boolean
+  /** Optional "WxH" the sheet is expected to have. A mismatch is reported as a
+   *  warning — the split still runs against the real, identified resolution. */
+  expectedSize?: string | null
+}
+
+/** Parse a "WxH" size string into { width, height }; null when malformed. */
+export function parseSize(s: string): { width: number; height: number } | null {
+  const m = String(s ?? '').trim().match(/^(\d+)\s*[x×*]\s*(\d+)$/i)
+  if (!m) return null
+  const width = Number(m[1])
+  const height = Number(m[2])
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return null
+  return { width, height }
 }
 
 interface ScanResult {
@@ -391,14 +407,27 @@ export async function splitGridSheet(
   const emptyLines = { horizontal: [] as number[], vertical: [] as number[] }
   const emptyBands = { horizontal: [] as Band[], vertical: [] as Band[] }
   if (opts.normalizeRatio && String(opts.normalizeRatio).trim().length > 0 && !ratio) {
-    return { ok: false, method: 'fallback_even', sheet_path: image, width: 0, height: 0, lines: emptyLines, gutter_bands: emptyBands, normalized_ratio: null, inset_percent: insetPercent, panels: [], review_page: '', warnings: [`无效比例：${opts.normalizeRatio}（应为 W:H，如 16:9 / 9:16 / 21:9）`], message: `invalid normalize_ratio: ${opts.normalizeRatio}` }
+    return { ok: false, method: 'fallback_even', sheet_path: image, source_resolution: '0x0', width: 0, height: 0, lines: emptyLines, gutter_bands: emptyBands, normalized_ratio: null, inset_percent: insetPercent, panels: [], review_page: '', warnings: [`无效比例：${opts.normalizeRatio}（应为 W:H，如 16:9 / 9:16 / 21:9）`], message: `invalid normalize_ratio: ${opts.normalizeRatio}` }
   }
   const normalizedRatioLabel = ratio ? `${ratio.w}:${ratio.h}` : null
 
+  // ---- Step 1: identify the sheet's REAL resolution ----------------------
+  // Nothing downstream may assume a canvas size: AI sheets come back at
+  // 3840x2160, 5504x3072, 2752x1536 … and a hard-coded size silently cuts the
+  // wrong pixels. Every gutter position and cut below is derived from these.
   const meta = await sharp(image, { failOn: 'none' }).rotate().metadata()
   const fullW = meta.width ?? 0
   const fullH = meta.height ?? 0
-  if (fullW === 0 || fullH === 0) return { ok: false, method: 'fallback_even', sheet_path: image, width: 0, height: 0, lines: emptyLines, gutter_bands: emptyBands, normalized_ratio: null, inset_percent: insetPercent, panels: [], review_page: '', warnings: ['cannot read image dimensions'], message: `cannot read image: ${image}` }
+  const sourceResolution = `${fullW}x${fullH}`
+  if (fullW === 0 || fullH === 0) return { ok: false, method: 'fallback_even', sheet_path: image, source_resolution: sourceResolution, width: 0, height: 0, lines: emptyLines, gutter_bands: emptyBands, normalized_ratio: null, inset_percent: insetPercent, panels: [], review_page: '', warnings: ['cannot read image dimensions'], message: `cannot read image: ${image}` }
+  if (opts.expectedSize && String(opts.expectedSize).trim().length > 0) {
+    const want = parseSize(String(opts.expectedSize))
+    if (!want) {
+      warnings.push(`expected_size 格式无效：${opts.expectedSize}（应为 WxH，如 3840x2160），已忽略该参数`)
+    } else if (want.width !== fullW || want.height !== fullH) {
+      warnings.push(`源图实际分辨率 ${sourceResolution} 与预期 ${want.width}x${want.height} 不一致；已按**实际分辨率**拆解，请确认是否为目标文件`)
+    }
+  }
 
   // Scan-and-detect at a given working scale. Thin (1 px) gutter lines get
   // smeared away by aggressive downscaling, so the scan is retried at a
@@ -561,8 +590,8 @@ export async function splitGridSheet(
     : ''
   const lines = { horizontal: hLinesFull, vertical: vLinesFull }
   const ratioNote = normalizedRatioLabel ? `，比例已规范为 ${normalizedRatioLabel}` : ''
-  const message = `拆格完成（${method}${ratioNote}）：9 张面板 → ${outputDir}；审阅页 → ${reviewPage}`
-  return { ok: true, method, sheet_path: image, width: fullW, height: fullH, lines, gutter_bands: bandOut, normalized_ratio: normalizedRatioLabel, inset_percent: insetPercent, panels, review_page: reviewPage, warnings, message }
+  const message = `拆格完成（${method}，源图已识别为 ${sourceResolution}${ratioNote}）：9 张面板 → ${outputDir}${reviewPage ? `；审阅页 → ${reviewPage}` : ''}`
+  return { ok: true, method, sheet_path: image, source_resolution: sourceResolution, width: fullW, height: fullH, lines, gutter_bands: bandOut, normalized_ratio: normalizedRatioLabel, inset_percent: insetPercent, panels, review_page: reviewPage, warnings, message }
 }
 
 /** One output group: a named folder holding the panels of every sheet in it. */
@@ -579,6 +608,8 @@ export interface BatchSplitItem {
   ok: boolean
   method: SplitMethod | null
   panels: number
+  /** Resolution identified from the file itself (step 1 of the split flow). */
+  source_resolution: string
   warnings: string[]
   message: string
 }
@@ -590,6 +621,9 @@ export interface BatchSplitResult {
   image_count: number
   panel_count: number
   failed: number
+  /** How many sheets came back at each resolution — pair this with
+   *  `expected_size` to catch a stray file before it is cut. */
+  resolution_summary: Array<{ resolution: string; count: number }>
   results: BatchSplitItem[]
   message: string
 }
@@ -618,18 +652,26 @@ export async function splitGridSheets(
       const r = await splitGridSheet(image, dir, { ...opts, reviewPage: false })
       panelCount += r.panels.length
       if (!r.ok || r.panels.length !== 9) failed++
-      results.push({ group: spec.group, image, ok: r.ok && r.panels.length === 9, method: r.method, panels: r.panels.length, warnings: r.warnings, message: r.message })
+      results.push({ group: spec.group, image, ok: r.ok && r.panels.length === 9, method: r.method, panels: r.panels.length, source_resolution: r.source_resolution, warnings: r.warnings, message: r.message })
     }
   }
+  const byResolution = new Map<string, number>()
+  for (const it of results) byResolution.set(it.source_resolution, (byResolution.get(it.source_resolution) ?? 0) + 1)
+  const resolutionSummary = [...byResolution.entries()]
+    .map(([resolution, count]) => ({ resolution, count }))
+    .sort((a, b) => b.count - a.count)
+  const imageTotal = clean.reduce((n, s) => n + s.images.length, 0)
+  const resNote = resolutionSummary.map((r) => `${r.resolution}×${r.count}`).join('、')
   return {
     ok: failed === 0,
     output_root: outputRoot,
     group_count: clean.length,
-    image_count: clean.reduce((n, s) => n + s.images.length, 0),
+    image_count: imageTotal,
     panel_count: panelCount,
     failed,
+    resolution_summary: resolutionSummary,
     results,
-    message: `批量拆格完成：${clean.length} 组 / ${clean.reduce((n, s) => n + s.images.length, 0)} 张图 → ${panelCount} 张面板（失败 ${failed}）→ ${outputRoot}`,
+    message: `批量拆格完成：${clean.length} 组 / ${imageTotal} 张图 → ${panelCount} 张面板（失败 ${failed}）；源图分辨率分布 ${resNote} → ${outputRoot}`,
   }
 }
 

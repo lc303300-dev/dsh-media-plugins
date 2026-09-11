@@ -208,3 +208,47 @@ test('when the two detectors disagree, the one nearer the thirds wins', async (t
   assert.deepEqual(r.lines.horizontal, [200, 400])
   assert.deepEqual(r.lines.vertical, [300, 600])
 })
+
+test('every sheet is split against its OWN identified resolution', async (t) => {
+  const dir = tmpRoot(t)
+  const small = join(dir, 'small.png')
+  const big = join(dir, 'big.png')
+  await sharp(await makeSheet({ w: 900, h: 600, rows: [200, 400], cols: [300, 600] })).toFile(small)
+  await sharp(await makeSheet({ w: 1500, h: 1000, rows: [333, 666], cols: [500, 1000] })).toFile(big)
+
+  const r1 = await splitGridSheet(small, join(dir, 'o1'), { reviewPage: false })
+  assert.equal(r1.source_resolution, '900x600')
+  assert.deepEqual(r1.lines.horizontal, [200, 400])
+
+  const r2 = await splitGridSheet(big, join(dir, 'o2'), { reviewPage: false })
+  assert.equal(r2.source_resolution, '1500x1000')
+  assert.deepEqual(r2.lines.horizontal, [333, 666], 'a second canvas size must not inherit the first one\'s geometry')
+
+  const batch = await splitGridSheets([{ group: 'mix', images: [small, big] }], join(dir, 'shots'), {})
+  assert.equal(batch.ok, true)
+  assert.deepEqual(
+    batch.resolution_summary.map((x) => x.resolution).sort(),
+    ['1500x1000', '900x600'],
+    'the batch must report the resolution mix',
+  )
+  assert.equal(batch.results.find((x) => x.image === big).source_resolution, '1500x1000')
+  assert.equal(batch.message.includes('1500x1000'), true)
+})
+
+test('expected_size mismatch warns but still splits at the real resolution', async (t) => {
+  const dir = tmpRoot(t)
+  const sheet = join(dir, 'sheet.png')
+  await sharp(await makeSheet({ w: 900, h: 600 })).toFile(sheet)
+
+  const matching = await splitGridSheet(sheet, join(dir, 'o1'), { reviewPage: false, expectedSize: '900x600' })
+  assert.equal(matching.warnings.filter((w) => w.includes('不一致')).length, 0, 'a matching expectation must stay quiet')
+
+  const mismatch = await splitGridSheet(sheet, join(dir, 'o2'), { reviewPage: false, expectedSize: '3840x2160' })
+  assert.equal(mismatch.ok, true, 'a mismatch must not block the split')
+  assert.equal(mismatch.source_resolution, '900x600')
+  assert.deepEqual(mismatch.lines.horizontal, [200, 400], 'cuts still follow the real resolution')
+  assert.ok(mismatch.warnings.some((w) => w.includes('不一致')), 'a mismatch must be reported')
+
+  const malformed = await splitGridSheet(sheet, join(dir, 'o3'), { reviewPage: false, expectedSize: 'banana' })
+  assert.ok(malformed.warnings.some((w) => w.includes('格式无效')), 'a malformed expectation must be reported and ignored')
+})
