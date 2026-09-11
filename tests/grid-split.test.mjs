@@ -187,3 +187,24 @@ test('normalize_ratio center-crops every panel to the requested ratio', async (t
     assert.ok(Math.abs(ratio - 16 / 9) < 0.02, `${p.id} ratio ${ratio.toFixed(3)} should be 16:9`)
   }
 })
+
+test('when the two detectors disagree, the one nearer the thirds wins', async (t) => {
+  const dir = tmpRoot(t)
+  const sheet = join(dir, 'sheet.png')
+  // Two pure-white full-width bands at y≈130 and y≈470 are exactly what the
+  // morphological scan calls a gutter - they are white, full width, and their
+  // centres (21.7% / 78.3%) pass the inner-window filter, so it "succeeds"
+  // with the wrong answer. The real gutters are soft grey (170) at 200 / 400.
+  await sharp(await makeSheet({
+    lineColor: { r: 170, g: 170, b: 170 },
+    extras: [
+      { w: 900, h: 30, color: { r: 250, g: 250, b: 250 }, left: 0, top: 115 },
+      { w: 900, h: 30, color: { r: 250, g: 250, b: 250 }, left: 0, top: 455 },
+    ],
+  })).toFile(sheet)
+  const r = await splitGridSheet(sheet, join(dir, 'out'), { reviewPage: false })
+  assert.equal(r.ok, true)
+  assert.equal(r.method, 'profile_peaks', 'the profile detector must arbitrate this')
+  assert.deepEqual(r.lines.horizontal, [200, 400])
+  assert.deepEqual(r.lines.vertical, [300, 600])
+})

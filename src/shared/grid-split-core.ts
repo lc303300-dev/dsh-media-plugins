@@ -67,17 +67,17 @@ const RUN_FRACTION = 0.6
 const INNER_MIN = 0.15
 const INNER_MAX = 0.85
 
-/** Profile detector: a gutter must be at least this bright … */
+/** Profile detector: a gutter must be at least this bright. */
 const PROFILE_MIN_PEAK = 110
-/** … and must stand this far above the darkest sample of its search window,
- *  which is what rejects broad bright content bands. */
-const PROFILE_MIN_PROMINENCE = 45
 /** Search window around the expected 1/3 & 2/3 positions, as a share of the
  *  axis (a model may render unequal rows, so this is deliberately generous). */
 const PROFILE_TOL_FRACTION = 0.14
 /** Half-maximum band wider than this share of the axis is treated as content,
- *  not as a gutter, and degrades to a narrow band around the peak. */
+ *  not as a gutter, and the next-nearest peak is tried instead. */
 const PROFILE_MAX_BAND_FRACTION = 0.04
+/** A detection whose gutters stray further than this from the expected 1/3 &
+ *  2/3 positions is judged unreliable: the even split is safer. */
+const PROFILE_MAX_DEVIATION = 0.2
 /** Pixels of extra safety margin kept inside a detected gutter band edge. */
 const DEFAULT_INSET_PX = 2
 
@@ -221,34 +221,28 @@ function findGutterBand(prof: Float64Array, len: number, expect: number): Band |
   }
   if (localPeaks.length === 0) return null
   localPeaks.sort((a, b) => Math.abs(a - expect) - Math.abs(b - expect))
-  let best = -1
-  let peak = -1
-  for (const idx of localPeaks) {
-    if (prof[idx] - base >= PROFILE_MIN_PROMINENCE) {
-      best = idx
-      peak = prof[idx]
-      break
-    }
-  }
-  if (best < 0) return null
-
-  const half = base + (peak - base) / 2
-  let s = best
-  while (s > lo && prof[s - 1] >= half) s--
-  let e = best
-  while (e < hi && prof[e + 1] >= half) e++
   const maxBand = Math.max(10, Math.round(len * PROFILE_MAX_BAND_FRACTION))
-  if (e - s + 1 > maxBand) {
-    s = Math.max(lo, best - 3)
-    e = Math.min(hi, best + 3)
+  // Take the nearest narrow peak. An absolute-prominence bar is deliberately
+  // NOT used here: on an image whose upper half is a bright sky or water,
+  // every row up there clears any prominence bar — so a prominence test
+  // rejects the real (dimmer, but far narrower) gutter and hands the pick to
+  // a wide bright band further from the expected position. Shape is the
+  // discriminator that actually holds: a gutter is a thin line, a content
+  // band is broad.
+  for (const best of localPeaks) {
+    const half = base + (prof[best] - base) / 2
+    let s = best
+    while (s > lo && prof[s - 1] >= half) s--
+    let e = best
+    while (e < hi && prof[e + 1] >= half) e++
+    if (e - s + 1 <= maxBand) return { start: s, end: e }
   }
-  return { start: s, end: e }
+  return null
 }
 
 /** Strategy 2: luminance-profile peak detection (soft / grey gutters,
  *  unequal panel heights, bright-content rejection). */
-function detectByProfile(gray: Uint8Array, w: number, h: number): { h: Band[]; v: Band[] } | null {
-  const rows = rowProfile(gray, w, h)
+function detectByProfile(gray: Uint8Array, w: number, h: number): { h: Band[]; v: Band[] } | null {  const rows = rowProfile(gray, w, h)
   const cols = colProfile(gray, w, h)
   const hBands: Band[] = []
   for (const expect of [h / 3, (2 * h) / 3]) {
@@ -265,6 +259,15 @@ function detectByProfile(gray: Uint8Array, w: number, h: number): { h: Band[]; v
   if (hBands[1].start - hBands[0].end < h * 0.1) return null
   if (vBands[1].start - vBands[0].end < w * 0.1) return null
   return { h: hBands, v: vBands }
+}
+
+/** Normalised deviation of a detected gutter pair from the expected 1/3 and
+ *  2/3 positions. Used to arbitrate between the two detectors. */
+function gutterDeviation(bands: { h: Band[]; v: Band[] }, w: number, h: number): number {
+  const mid = (b: Band): number => (b.start + b.end) / 2
+  const devH = Math.abs(mid(bands.h[0]) - h / 3) + Math.abs(mid(bands.h[1]) - (2 * h) / 3)
+  const devV = Math.abs(mid(bands.v[0]) - w / 3) + Math.abs(mid(bands.v[1]) - (2 * w) / 3)
+  return (devH / h + devV / w) / 2
 }
 
 /** White share of a working-scale region; used for validation only. */
@@ -413,17 +416,24 @@ export async function splitGridSheet(
       .toBuffer({ resolveWithObject: true })
     const g = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
 
-    // Strategy 1: morphological white-line scan (fast, exact for crisp gutters).
+    // Both detectors run and the candidate whose gutters sit closest to the
+    // expected 1/3 & 2/3 positions wins. Trusting a single detector is what
+    // made the old code lock onto bright content: the morphological scan
+    // happily reports a full-width white sky/water row as a "gutter".
+    const candidates: Array<{ method: 'morphological_lines' | 'profile_peaks'; bands: { h: Band[]; v: Band[] }; dev: number }> = []
     for (const T of THRESHOLDS) {
       const d = detectMorphological(g, ww, wh, T)
-      if (d) return { gray: g, workW: ww, workH: wh, scale: s, detected: d, method: 'morphological_lines' }
+      if (d) {
+        candidates.push({ method: 'morphological_lines', bands: d, dev: gutterDeviation(d, ww, wh) })
+        break
+      }
     }
-    // Strategy 2: luminance-profile peaks (soft/grey gutters, uneven rows,
-    // and — critically — refuses bright content bands).
     const p = detectByProfile(g, ww, wh)
-    if (p) return { gray: g, workW: ww, workH: wh, scale: s, detected: p, method: 'profile_peaks' }
-
-    return { gray: g, workW: ww, workH: wh, scale: s, detected: null, method: null }
+    if (p) candidates.push({ method: 'profile_peaks', bands: p, dev: gutterDeviation(p, ww, wh) })
+    if (candidates.length === 0) return { gray: g, workW: ww, workH: wh, scale: s, detected: null, method: null }
+    candidates.sort((a, b) => a.dev - b.dev)
+    const win = candidates[0]
+    return { gray: g, workW: ww, workH: wh, scale: s, detected: win.bands, method: win.method }
   }
 
   const fastScale = Math.min(1, workEdge / Math.max(fullW, fullH))
@@ -446,6 +456,17 @@ export async function splitGridSheet(
   const insetW = Math.max(0, Math.round((fullW * insetPercent) / 100))
   const insetH = Math.max(0, Math.round((fullH * insetPercent) / 100))
 
+  // A detection that strays far from the expected 1/3 & 2/3 layout is not
+  // trustworthy — that is the "bright sky hijacked the gutter" case the old
+  // build silently accepted and cut with. The even split is the safer answer.
+  if (scan.detected && scan.method) {
+    const preDev = gutterDeviation(scan.detected, scan.workW, scan.workH)
+    if (preDev > PROFILE_MAX_DEVIATION) {
+      warnings.push(`检测到的格线偏离标准三等分 ${(preDev * 100).toFixed(0)}%，判定不可靠，已回退等比分割`)
+      scan = { ...scan, detected: null, method: null }
+    }
+  }
+
   if (scan.detected && scan.method) {
     method = scan.method
     const inv = 1 / scale
@@ -455,6 +476,8 @@ export async function splitGridSheet(
     bandOut.vertical = vb
     hLinesFull = hb.map((b) => Math.round((b.start + b.end) / 2))
     vLinesFull = vb.map((b) => Math.round((b.start + b.end) / 2))
+    const dev = gutterDeviation(scan.detected, scan.workW, scan.workH)
+    if (dev > 0.12) warnings.push(`格线位置与标准三等分偏差较大（${(dev * 100).toFixed(0)}%），请核对面板边界`)
     // Cut on the OUTSIDE of each gutter band (plus a hair of safety margin),
     // so no gutter pixel can leak into a panel.
     rowRanges = [
