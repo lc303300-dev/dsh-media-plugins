@@ -17,7 +17,6 @@ DSH Studio 媒体能力包。一次安装提供 15 个工具、10 个技能与�
 - `refs/` — 数据资产：skill 模板、seedance-forge 语料（`forge-index.jsonl`）、正式图片 Skill 库。
 - `skills/` — 随包安装到 `$DSH_HOME\skills\<技能名>` 的 Studio 技能 Markdown。
 - `scripts/` — 部署/校验/发布/任务开始检查等 PowerShell 脚本。
-- `shell/` — WebView2 桌面壳（仅 Windows，`.NET 8 SDK`）；构建产物不提交。
 - `tests/` — `node --test` 离线单测（`.mjs`，直接从 `src/*.ts` 导入）。
 - `dist/` — **构建产物，gitignore**。由 `pnpm build`（tsdown）从 `src/` 生成，不进仓库。
 
@@ -30,6 +29,13 @@ pnpm test    # node --test（离线单测）
 
 工具通过 npm 子路径加载（`dsh-media-plugins/tool-vision` 等），`package.json` 的 `exports`
 已指向 `dist/`。不要在根目录放构建产物——`dist/` 已 gitignore。
+
+## DSH schema 规则
+
+- Schemastery 没有 Zod 的 `.optional()`；对象字段需要用 `.default(...)` 或保持无默认字段。
+- 工具输出 schema 不使用 `required` 字段。
+- 每个 `type: object` 必须显式声明 `additionalProperties: true` 或 `false`。
+- 插件树可先用 `node --import tsx/esm apps/cli/src/bin.ts web --host 127.0.0.1 --port 9799 --no-open` 独立启动验证。
 
 ## 资产路径
 

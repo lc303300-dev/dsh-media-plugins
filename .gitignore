@@ -2,7 +2,6 @@
 node_modules/
 dist/
 *.tgz
-obj/
 
 # Dreamina CLI 二进制（31.9MB），由 setup.ps1 从官方地址下载，不进仓库
 bin/
