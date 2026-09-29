@@ -30,13 +30,6 @@ pnpm test    # node --test（离线单测）
 工具通过 npm 子路径加载（`dsh-media-plugins/tool-vision` 等），`package.json` 的 `exports`
 已指向 `dist/`。不要在根目录放构建产物——`dist/` 已 gitignore。
 
-## DSH schema 规则
-
-- Schemastery 没有 Zod 的 `.optional()`；对象字段需要用 `.default(...)` 或保持无默认字段。
-- 工具输出 schema 不使用 `required` 字段。
-- 每个 `type: object` 必须显式声明 `additionalProperties: true` 或 `false`。
-- 插件树可先用 `node --import tsx/esm apps/cli/src/bin.ts web --host 127.0.0.1 --port 9799 --no-open` 独立启动验证。
-
 ## 资产路径
 
 `src/shared/pkg-root.ts` 的 `packageRootOf(import.meta.url)` 从当前模块向上找到拥有
