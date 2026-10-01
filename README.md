@@ -1,13 +1,14 @@
 # dsh-media-plugins
 
-DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 15 个工具、10 个技能与一个完成通知，
+DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 15 个工具、10 个技能与一个完成通知
+（**当前火山方舟通道已屏蔽，实际注册 14 个工具**，见 `describe_image` 一行），
 覆盖 Codex_Wsstudio 指南（P0–P4 + 受约束修订系统 + Codex_IS 受治理图片业务 Skill 层）在 DSH 平台上的重建：
 
 | 功能 | 说明 | 底层 | 凭证 |
 |---|---|---|---|
 | `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 个标准比例（也接受 `1920x1080` 这类像素尺寸并自动换算成最接近的比例）、`image_resolution`（1K/2K/4K；单档位线路只钳制不报错：Gemini **2K-only**（1K/4K→2K）、GPT 2.5 **4K-only**（1K/2K→4K）、Dreamina 1K）、`image_provider` 显式线路直达不回退；默认线路 `comfly-gpt-image-2.5`（Comfly `gpt-image-2.5-sunburst`，**4K-only**：只传 4K 具体像素 `size`、1K/2K 请求钳制为 4K、不传 `resolution`/`response_format`、图片读 `data[0].b64_json` 解码），次选线路 `comfly-gemini-flash-preview`（Comfly `gemini-3.1-flash-image-preview-2k`，**2K-only**：只出 2K、1K/4K 请求钳制为 2K，提交 `resolution=2k` + `response_format=url` 并读 `data[0].url`），**单线路执行**：每条候选只选链中第一条就绪线路（comfly-gpt-image-2.5；缺凭证或熔断则顺延到 comfly-gemini-flash-preview、dreamina-image），**失败即停、绝不换线路重放已付费的尝试**，单张总预算 90s（提交 + 下载 + 下载重试共用同一时间盒），失败分类 + needs_review 禁重试 + 每线路连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px（无 alpha 时上传副本转 JPEG q88），跨进程容量锁（默认 **10**，全部图片任务共享单一池 `image`；视频侧独立 `seedance-cli` 上限 6） | Comfly / Dreamina CLI | `COMFLY_API_KEY` + VPN 代理 |
 | `generate_video` | 生视频：默认 seedance2.5 / 480p；text2video / multimodal2video；`video_execution_mode`：production（提交+轮询+下载）、production_submit_only（仅提交）、test_submit_only（强制非 VIP 2.0/720p，仅返回 submit_id，到即梦后台查看） | 即梦 Dreamina 本地 CLI（`dreamina.exe`） | OAuth 登录态 |
-| `describe_image` | 兜底看图：仅当当前主模型无法读图时用 Doubao 返回中文描述；主模型可读图时请直接用核心 `read_image`（本工具会拒绝并提示） | 火山方舟 Doubao（`doubao-seed-2-0-mini`） | `VOLCANO_ENGINE_API_KEY` |
+| `describe_image` | **当前已屏蔽**（`cordis.patch.yml` 未注册 `Ws_tool-vision`，`setup.ps1` 默认也不引导其 Key/provider；恢复见下文「前置准备 1」）。原本用途：兜底看图——仅当当前主模型无法读图时用 Doubao 返回中文描述；主模型可读图时请直接用核心 `read_image` | 火山方舟 Doubao（`doubao-seed-2-0-mini`） | `VOLCANO_ENGINE_API_KEY` |
 | `skill_registry` | 业务 Skill 治理（Codex_CS）：ingest/search/get/publish/deprecate/list，contract 校验、name@version 去重、内容哈希防漂移、FTS5 trigram 中文检索 | node:sqlite + FTS5（零原生依赖） | 无 |
 | `skill_curator` | 业务 Skill 录入治理（Codex_CS codex-cs-skill-curator）：scaffold / validate（validator 1.2.0）/ add_count_rules / planned_counts / migrate / publish（intake-receipt） | 内置模板 `refs/skill-template/` | 无 |
 | `project_pipeline` | 项目状态机（Codex_CS，**Skill 线专属**）：`create` 有 `skill_mode` 硬门（用户未显式要求启用 Skill 模式即拒绝创建）、显式状态流转、素材槽 min/max 校验、素材/提示词 sha256 锁定、`build_payload` 提交前哈希复核防未确认版本 | 原子 JSON 状态（私有运行目录） | 无 |
@@ -48,10 +49,14 @@ dsh plugin --profile <name> add ./dsh-media-plugins-0.2.0.tgz   # tarball
 
 ## 前置准备
 
-### 1. 火山方舟（看图）
+### 1. 火山方舟（看图）—— **当前已屏蔽，跳过即可**
 
-`$DSH_HOME/settings.yaml` 配置 `llm-pi-ai.providers.volcengine`（见 `setup.ps1` 或旧版 README）。
-Key 写入 `$DSH_HOME/.credentials.yaml`。
+`describe_image`（`Ws_tool-vision`）已从 `cordis.patch.yml` 注销，`setup.ps1` 默认也不再引导它的 Key 与
+provider；部署时**无需**申请或填写火山方舟 Key。
+
+恢复（三步）：`.\setup.ps1 -EnableVolcano`（或手工在 `$DSH_HOME/settings.yaml` 配
+`llm-pi-ai.providers.volcengine`，Key 写入 `$DSH_HOME/.credentials.yaml`）→ 取消
+`cordis.patch.yml` 里 `Ws_tool-vision` 两行注释 → 重启 dsh。
 
 官方入口：获取/管理 Key → <https://console.volcengine.com/ark>；充值 → <https://console.volcengine.com/finance/>
 
@@ -77,8 +82,8 @@ Key 写入 `$DSH_HOME/.credentials.yaml`。
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-会完成：写 Key（COMFLY / VOLCANO）→ 配火山 provider → 下载 dreamina.exe → 引导登录 →
-安装 9 个 Studio 技能到 `$DSH_HOME\skills\<技能名>`（DSH 技能发现根，两级结构，重启后生效）→ ffmpeg 检查。
+会完成：写 Comfly Key（火山方舟 Key 因通道屏蔽已跳过；需要时加 `-EnableVolcano`）→ 下载 dreamina.exe →
+引导登录 → 安装 10 个 Studio 技能到 `$DSH_HOME\skills\<技能名>`（DSH 技能发现根，两级结构，重启后生效）→ ffmpeg 检查。
 
 ## 使用
 

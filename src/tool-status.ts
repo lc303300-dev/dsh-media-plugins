@@ -175,7 +175,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const tools: Record<string, string> = {
           generate_image: creds.COMFLY_API_KEY ? 'ready' : (dreaminaBinary && dreaminaLogin) ? 'degraded' : 'unavailable',
           generate_video: dreaminaBinary && dreaminaLogin ? 'ready' : dreaminaBinary ? 'degraded' : 'unavailable',
-          describe_image: creds.VOLCANO_ENGINE_API_KEY ? 'ready' : 'unavailable',
+          describe_image: 'disabled',
           skill_registry: registryOk ? 'ready' : 'unavailable',
           prompt_revision: corpusOk ? 'ready' : 'degraded',
           video_to_gif: ffmpeg ? 'ready' : 'unavailable',
@@ -184,7 +184,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const toolReasons: Record<string, string> = {
           generate_image: !creds.COMFLY_API_KEY ? '主通道缺少 COMFLY_API_KEY' : 'ready',
           generate_video: !dreaminaBinary ? 'dreamina 二进制缺失' : !dreaminaLogin ? 'dreamina 未登录' : 'ready',
-          describe_image: !creds.VOLCANO_ENGINE_API_KEY ? '缺少 VOLCANO_ENGINE_API_KEY' : 'ready',
+          describe_image: '火山方舟通道已屏蔽（cordis.patch.yml 未注册 Ws_tool-vision）',
           skill_registry: !registryOk ? '注册库不可用' : 'ready',
           prompt_revision: !corpusOk ? '语料未加载' : 'ready',
           video_to_gif: !ffmpeg ? 'ffmpeg 未找到' : 'ready',
@@ -235,10 +235,12 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const readyCount = Object.values(tools).filter((t) => t === 'ready').length
         const degradedCount = Object.values(tools).filter((t) => t === 'degraded').length
         const unavailableCount = Object.values(tools).filter((t) => t === 'unavailable').length
+        const disabledCount = Object.values(tools).filter((t) => t === 'disabled').length
+        const disabledSuffix = disabledCount > 0 ? ` / ${disabledCount} disabled` : ''
         const message =
           command === 'verify'
-            ? `deployment: ${deploymentOk ? 'OK' : 'ISSUES'} | tools: ${readyCount} ready / ${degradedCount} degraded / ${unavailableCount} unavailable`
-            : `tools: ${readyCount} ready / ${degradedCount} degraded / ${unavailableCount} unavailable`
+            ? `deployment: ${deploymentOk ? 'OK' : 'ISSUES'} | tools: ${readyCount} ready / ${degradedCount} degraded / ${unavailableCount} unavailable${disabledSuffix}`
+            : `tools: ${readyCount} ready / ${degradedCount} degraded / ${unavailableCount} unavailable${disabledSuffix}`
         return {
           ok: unavailableCount === 0,
           command,
