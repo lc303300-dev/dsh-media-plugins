@@ -2,15 +2,13 @@
  * Image adapters + serial image router.
  *
  * Contract (UNIFIED_MEDIA_TOOL_REFACTOR_BLUEPRINT §1.2/§9, media-router.defaults.json):
- * - strictly serial per-adapter attempts, never parallel/hedged;
- * - one 90 s time box per candidate: the per-attempt budget, the whole-task
- *   budget and the batch per-candidate basis are the same number
- *   (`IMAGE_SECONDS_PER_CANDIDATE`), so a candidate never outlives its slot
- *   by more than that box; the batch dispatch deadline is
- *   `ceil(candidates / concurrency)` x that same basis;
- * - fallback ONLY for error classes (request rejected, zero cost, ms-fast).
- *   Timeouts and download failures never fall back: the request was already
- *   sent (possibly billed) and re-routing would pay twice. See STOP_CLASSES;
+ * - SINGLE ROUTE per candidate, never parallel/hedged: the router picks exactly
+ *   one adapter (free circuit + credential checks) and runs it once. A paid
+ *   attempt is never replayed on another route, so any failure ends the
+ *   candidate and the user decides whether to re-queue it;
+ * - one 90 s time box per candidate (`IMAGE_SECONDS_PER_CANDIDATE`) that covers
+ *   submit + download + the download retry; the batch dispatch deadline is
+ *   `ceil(candidates / concurrency)` of that same basis;
  * - one cross-process image capacity pool shared by every image route and
  *   every image tool (default 10); the video pipeline's `seedance-cli`
  *   capacity is entirely separate and never shares with images;
@@ -29,11 +27,12 @@
  */
 
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
-import { readdir } from 'node:fs/promises'
+import { access, readdir, rename, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import sharp from 'sharp'
-import { MediaError, mediaErrors, FALLBACK_ALLOWED, STOP_CLASSES, type AttemptRecord, type FailureClass } from './failure.ts'
+import { MediaError, mediaErrors, type AttemptRecord } from './failure.ts'
 import { IMAGE_RATIOS } from './ratios.ts'
 import { openAiImageResult, downloadImageTo, stageImageBytes, HttpStatusError, DEFAULT_IMAGE_REQUEST_TIMEOUT_MS } from './media-client.ts'
 import {
@@ -252,6 +251,13 @@ export interface AdapterInput {
   signal?: AbortSignal
   /** Whole-task remaining budget; the adapter must return within min(budget, adapterBudget). */
   budgetMs: number
+  /**
+   * Hard deadline for the WHOLE candidate (submit + download + retries). Every
+   * step an adapter runs must clamp itself to the time left, never to a fresh
+   * per-step budget — otherwise one candidate can outlive its 90 s slot (e.g.
+   * 90 s submit + 2 x 90 s download attempts) and break the batch deadline math.
+   */
+  deadlineAtMs: number
 }
 
 export interface ImageAdapter {
@@ -337,7 +343,8 @@ function comflyAdapter(
         images: input.images,
         proxyUrl: cfg.proxyUrl,
         signal: input.signal,
-        timeoutMs: input.budgetMs,
+        // Clamp the submit to the time actually left in this candidate's box.
+        timeoutMs: Math.max(1000, Math.min(input.budgetMs, input.deadlineAtMs - Date.now())),
       })
       const dest = join(input.privateRoot, 'jobs', '_router', 'outputs')
       const path = payload.bytes !== undefined
@@ -346,6 +353,8 @@ function comflyAdapter(
             proxyUrl: cfg.proxyUrl,
             signal: input.signal,
             timeoutMs: Math.min(input.budgetMs, DEFAULT_IMAGE_REQUEST_TIMEOUT_MS),
+            // The download (including its retry) shares the candidate's deadline.
+            deadlineAtMs: input.deadlineAtMs,
           })
       return { outputPath: path, model: effectiveModel, resolution, size }
     },
@@ -379,12 +388,15 @@ function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
         ? ['image2image', `--prompt=${input.prompt}`, `--model_version=${model}`, ...input.images.map((p) => `--image=${p}`)]
         : ['text2image', `--prompt=${input.prompt}`, `--model_version=${model}`]
       const args = [...base, `--ratio=${input.ratio}`, `--resolution_type=${resolution}`]
+      // The CLI cannot be aborted mid-run, so its timeout must be the time left
+      // in the candidate's box, never a fresh full budget.
+      const cliBudgetMs = Math.max(1000, Math.min(input.budgetMs, input.deadlineAtMs - Date.now()))
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), input.budgetMs)
+      const timer = setTimeout(() => controller.abort(), cliBudgetMs)
       try {
-        await execFileAsync(cfg.dreaminaPath, args, { timeout: input.budgetMs, windowsHide: true })
+        await execFileAsync(cfg.dreaminaPath, args, { timeout: cliBudgetMs, windowsHide: true })
       } catch (error: any) {
-        if (controller.signal.aborted) throw mediaErrors.providerTimeout(`dreamina image timed out after ${Math.round(input.budgetMs / 1000)}s`)
+        if (controller.signal.aborted) throw mediaErrors.providerTimeout(`dreamina image timed out after ${Math.round(cliBudgetMs / 1000)}s`)
         throw mediaErrors.provider(`dreamina image failed: ${String(error?.stderr ?? error?.message ?? error).slice(0, 300)}`)
       } finally {
         clearTimeout(timer)
@@ -462,26 +474,55 @@ export interface RouterOptions {
   adapters?: ImageAdapter[]
 }
 
-/** Normalize references (EXIF + ≤1920 px) into the private inputs dir. */
-async function normalizeInputs(images: string[], privateRoot: string, taskId: string): Promise<string[]> {
+/**
+ * Normalize references (EXIF + ≤1920 px) into a content-addressed private
+ * cache and return the cached paths.
+ *
+ * The key is the source path plus its size and mtime, so every candidate of a
+ * group reuses the SAME normalized file: before this cache, each of the N
+ * candidates re-ran sharp over the identical reference set and re-wrote it to
+ * a per-task directory (N x the encoding work, plus N x the disk writes). Files
+ * are written through a temp file + atomic rename, so concurrent candidates
+ * never observe a half-written input; sources are never modified.
+ */
+async function normalizeInputs(images: string[], privateRoot: string): Promise<string[]> {
   const out: string[] = []
-  const dir = await ensureDir(join(privateRoot, 'jobs', taskId, 'inputs'))
+  const cacheDir = await ensureDir(join(privateRoot, 'inputs-cache'))
   for (const src of images) {
     if (!src || src.trim().length === 0) throw mediaErrors.input('empty image path in reference list')
     try {
+      const info = await stat(src)
       const pipeline = sharp(src, { failOn: 'none' }).rotate()
       const meta = await pipeline.metadata()
+      // Reference copies are uploaded as JPEG unless the source actually carries
+      // alpha (JPEG has no alpha channel). Re-encoding opaque references as PNG
+      // made a single candidate post ~7 MB of multipart body instead of ~0.6 MB,
+      // which is slow through the proxy and a prime suspect for upstream HTTP 400.
+      const format = meta.hasAlpha === true ? 'png' : 'jpeg'
+      const key = createHash('sha1')
+        .update(`${src}|${info.size}|${Math.round(info.mtimeMs)}|ref-v2-${format}`)
+        .digest('hex')
+        .slice(0, 24)
+      const cached = join(cacheDir, `${key}.${format === 'jpeg' ? 'jpg' : 'png'}`)
+      try {
+        await access(cached)
+        out.push(cached)
+        continue
+      } catch {
+        /* not cached yet: encode below */
+      }
       const w = meta.width ?? 0
       const h = meta.height ?? 0
       const longest = Math.max(w, h)
-      let target = pipeline
-      if (longest > 1920) {
-        target = pipeline.resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true })
-      }
-      const ext = (src.split('.').pop() ?? 'png').toLowerCase().replace('jpg', 'jpeg')
-      const dest = join(dir, `input-${out.length + 1}.${ext === 'jpeg' ? 'jpg' : ext}`)
-      await target.toFile(dest)
-      out.push(dest)
+      const resized =
+        longest > 1920
+          ? pipeline.resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true })
+          : pipeline
+      const encoded = format === 'jpeg' ? resized.jpeg({ quality: 88, mozjpeg: true }) : resized.png()
+      const tmp = `${cached}.tmp-${process.pid}-${Date.now()}`
+      await encoded.toFile(tmp)
+      await rename(tmp, cached)
+      out.push(cached)
     } catch (error: any) {
       throw mediaErrors.input(`cannot read reference image ${src}: ${error?.message ?? error}`)
     }
@@ -490,11 +531,13 @@ async function normalizeInputs(images: string[], privateRoot: string, taskId: st
 }
 
 /**
- * Run the serial image router: validate ratio/resolution/provider, normalize
- * inputs, then attempt adapters in priority order with a per-attempt budget of
- * min(90 s, remaining) inside a whole-task box of that same 90 s, honoring
- * the shared image capacity lease (`IMAGE_CAPACITY_KEY`). An explicit
- * `imageProvider` restricts the run to that single adapter with no fallback.
+ * Run the image router: validate ratio/resolution/provider, normalize inputs,
+ * pick the SINGLE route for this candidate (circuit + credential checks only,
+ * never a paid probe), then run it once inside a whole-task box of
+ * `taskTimeoutMs` (default 90 s) that also covers the download and its retry,
+ * honoring the shared image capacity lease (`IMAGE_CAPACITY_KEY`). An explicit
+ * `imageProvider` restricts the run to that route. Nothing here ever retries a
+ * paid attempt: a failure is final for the candidate.
  */
 export async function runImageRouter(options: RouterOptions): Promise<RouterOutcome> {
   const { prompt, images, ratio, config, privateRoot, signal, taskId = newTaskId() } = options
@@ -503,12 +546,29 @@ export async function runImageRouter(options: RouterOptions): Promise<RouterOutc
   const fullChain = options.adapters ?? defaultAdapters({ ...config, enabled: [] })
   const enabledChain = options.adapters ?? defaultAdapters(config)
   const explicit = options.imageProvider ? resolveExplicitAdapter(options.imageProvider, fullChain, enabledChain) : undefined
-  const adapters = explicit ? [explicit] : enabledChain
   const taskDeadline = Date.now() + config.taskTimeoutMs
   const attempts: AttemptRecord[] = []
   const startedAt = Date.now()
 
-  const normalized = await normalizeInputs(images, privateRoot, taskId)
+  const normalized = await normalizeInputs(images, privateRoot)
+
+  // SINGLE ROUTE: exactly one adapter runs per candidate. Picking it is free
+  // (circuit + credential checks only); a paid attempt is never replayed on
+  // another route. A failure therefore ends the candidate here — re-queueing is
+  // the user's decision, taken from the review page.
+  const adapter = explicit ?? (await pickReadyAdapter(enabledChain, privateRoot, taskId))
+  if (adapter === undefined) {
+    throw mediaErrors.auth(
+      `no image route is ready (checked: ${enabledChain.map((a) => a.id).join(', ')}); check credentials and the enabled route list`,
+    )
+  }
+  if (explicit) {
+    const circuit = await isCircuitOpen(privateRoot, explicit.id)
+    if (circuit.open) throw mediaErrors.providerTimeout(`requested image_provider ${explicit.id} is in circuit cooldown`)
+    const ready = await explicit.checkReady()
+    if (!ready.ready) throw mediaErrors.auth(`requested image_provider ${explicit.id} is not ready: ${ready.reason ?? 'unknown'}`)
+  }
+  const adapters = [adapter]
 
   for (const adapter of adapters) {
     const remaining = taskDeadline - Date.now()
@@ -546,6 +606,7 @@ export async function runImageRouter(options: RouterOptions): Promise<RouterOutc
       release = await acquireSlot(join(privateRoot, 'locks'), adapter.capacityKey, config.maxConcurrency, {
         taskId,
         timeoutMs: adapterBudget,
+        signal,
       })
     } catch (error: any) {
       // Our own capacity limit, not a provider problem: every route leases from
@@ -567,6 +628,7 @@ export async function runImageRouter(options: RouterOptions): Promise<RouterOutc
         proxyUrl: config.proxyUrl,
         signal,
         budgetMs: adapterBudget,
+        deadlineAtMs: taskDeadline,
       })
       const model = result.model ?? adapter.model
       await recordProviderOutcome(privateRoot, adapter.id, true)
@@ -585,19 +647,39 @@ export async function runImageRouter(options: RouterOptions): Promise<RouterOutc
       attempts.push({ adapter: adapter.id, model: adapter.model, status: cls === 'provider_timeout' ? 'timeout' : 'failed', failureClass: cls, durationMs, reason: String(error?.message ?? error).slice(0, 300) })
       await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_failed', adapter: adapter.id, failureClass: cls, durationMs })
       if (explicit) throw error // explicit routes never fall back
-      // Error classes only. Timeouts / download failures / capacity / policy /
-      // indeterminate / the task budget all stop here instead of paying twice.
-      if (STOP_CLASSES.has(cls as FailureClass)) throw error
-      if (!FALLBACK_ALLOWED.has(cls as FailureClass)) throw error
-      // allowed: continue to the next adapter
+      // Single-route policy: whatever the failure class, the candidate ends
+      // here. There is no second provider and no replay — topping the batch up
+      // is the user's decision, made after reading the review page.
+      throw error
     } finally {
       await release?.()
     }
   }
 
-  throw mediaErrors.provider(
-    `all image providers failed after ${attempts.length} attempts (${Math.round((Date.now() - startedAt) / 1000)}s)`,
-  )
+  throw mediaErrors.provider(`image route ${adapters[0]?.id ?? 'unknown'} did not produce an image`)
+}
+
+/**
+ * Pick the ONE adapter this candidate will use: the first route in contract
+ * order that is neither in circuit cooldown nor missing its credentials. The
+ * scan is free (no paid call), so an unconfigured primary route simply hands
+ * over to the next one; once a route is chosen it is the only route attempted.
+ */
+async function pickReadyAdapter(chain: ImageAdapter[], privateRoot: string, taskId: string): Promise<ImageAdapter | undefined> {
+  for (const adapter of chain) {
+    const circuit = await isCircuitOpen(privateRoot, adapter.id)
+    if (circuit.open) {
+      await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_circuit_open', adapter: adapter.id })
+      continue
+    }
+    const ready = await adapter.checkReady()
+    if (!ready.ready) {
+      await appendSafeLog(privateRoot, 'media-router', { taskId, event: 'adapter_skipped', adapter: adapter.id, reason: ready.reason })
+      continue
+    }
+    return adapter
+  }
+  return undefined
 }
 
 /** Re-export helpers used by tools. */

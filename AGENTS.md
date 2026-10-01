@@ -9,6 +9,18 @@ DSH Studio 媒体能力包。一次安装提供 15 个工具、10 个技能与�
 - **Skill 线（仅用户显式要求"启用 Skill 模式"时）**：`skills/video-skill-router` → `project_pipeline`（`create` 有 `skill_mode=true` 硬门）+ `skill_registry`。进入时必须告知用户已进入 Skill 模式。
 - **图片侧对称**：`image-skill-router` / `image_skill_pipeline` / `image-skill-curator`（治理层 `skill_curator` / `image_skill_curator` 只在用户上传资料入库时走，不受上面收紧影响）。
 
+## 批量生图交付约定（工具级，已固化）
+
+> **只要用了 `batch_image`，就一定有审阅页** —— 这是工具的固定行为，不依赖使用者记得手动调用。
+
+- **自动生成**：`batch_image` 任务结算（scheduler 收尾）后自动写审阅页 `<outputDir>/contact-<jobKey>.html`；显式 `contact_sheet` 命令复用同一实现（`writeReviewPage` in `src/tool-batch-image.ts`）。
+- **图片必须内嵌**：审阅页用 data URI（`data:image/jpeg;base64,…`）嵌入缩略图，并用自适应 CSS grid 排版。`file://` 或相对路径的 `img src` 会被沙箱查看器拦成坏图 —— 不要退回外部路径引用（回归测试：`tests/batch-review-page.test.mjs`）。
+- **一任务一页**：页面只含该次任务的图（含未落地槽位占位），不累积历史批次、**不渲染参考图** —— `original_image` / `reference_images` 即使传入也被忽略（旧的 “slot 0 = 原始／参考图” 行为已移除）。
+- **原图另行交付**：审阅页内是缩略图；原始分辨率的成品图按原尺寸交付，不缩小。
+- **并发口径（不要改小）**：`batch_image` 不写 `concurrency` 就是**默认 10**（= 共享图片池上限），`deadline = ceil(张数÷并发)×90s + 并发s`。**不要在 manifest 或技能文档里把默认写死成 `concurrency: 1`** —— 实测 75 张：并发 10 约 11 分钟，串行约 36 分钟。`start` 回执会在 manifest 显式钉住低于 10 的并发时给出 ⚠ 提示。
+- **失败即停、不自动补跑**：每条候选只走一条线路（选定前只做免费的熔断/凭证检查），失败即终；到点（deadline + 宽限）**硬停**，只收集已落地的成功图写审阅页，缺失槽位由用户决定是否换新组 id 重排。
+- 实现落在 `src/shared/batch-core.ts` 的 `buildContactSheetHtml`（async，依赖 `sharp`）。
+
 ## 布局
 
 - `src/tool-*.ts` — 工具入口（每个工具一个文件，对应 cordis.patch.yml 里的一行）。

@@ -242,6 +242,13 @@ interface DownloadOptions {
   timeoutMs?: number
   /** Total attempts for this url (default {@link DOWNLOAD_MAX_ATTEMPTS}). */
   maxAttempts?: number
+  /**
+   * Hard deadline for the WHOLE download (all attempts). Each attempt is
+   * clamped to the time left, so a retry can never restart a fresh 90 s box:
+   * without this, "provider returned a url + 2 download attempts" could spend
+   * 90 s generating plus 2 x 90 s downloading, blowing the per-candidate box.
+   */
+  deadlineAtMs?: number
 }
 
 /** One download attempt: fetch, validate the signature, stage atomically. */
@@ -294,11 +301,22 @@ export async function downloadImageTo(
   options: DownloadOptions = {},
 ): Promise<string> {
   const maxAttempts = Math.max(1, options.maxAttempts ?? DOWNLOAD_MAX_ATTEMPTS)
+  const baseTimeout = options.timeoutMs ?? DEFAULT_IMAGE_REQUEST_TIMEOUT_MS
   let lastError: any
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (options.signal?.aborted) throw mediaErrors.cancelled('image download cancelled')
+    let attemptTimeout = baseTimeout
+    if (options.deadlineAtMs !== undefined) {
+      const remaining = options.deadlineAtMs - Date.now()
+      if (remaining <= 0) {
+        throw mediaErrors.download(
+          `image download budget exhausted after ${attempt - 1} attempt(s) on ${url}`,
+        )
+      }
+      attemptTimeout = Math.max(1000, Math.min(baseTimeout, remaining))
+    }
     try {
-      return await downloadOnce(url, destDir, options)
+      return await downloadOnce(url, destDir, { ...options, timeoutMs: attemptTimeout })
     } catch (error: any) {
       lastError = error
       if (options.signal?.aborted) throw error

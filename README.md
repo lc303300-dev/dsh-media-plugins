@@ -5,7 +5,7 @@ DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 15 �
 
 | 功能 | 说明 | 底层 | 凭证 |
 |---|---|---|---|
-| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 个标准比例（也接受 `1920x1080` 这类像素尺寸并自动换算成最接近的比例）、`image_resolution`（1K/2K/4K；单档位线路只钳制不报错：Gemini **2K-only**（1K/4K→2K）、GPT 2.5 **4K-only**（1K/2K→4K）、Dreamina 1K）、`image_provider` 显式线路直达不回退；默认线路 `comfly-gpt-image-2.5`（Comfly `gpt-image-2.5-sunburst`，**4K-only**：只传 4K 具体像素 `size`、1K/2K 请求钳制为 4K、不传 `resolution`/`response_format`、图片读 `data[0].b64_json` 解码），次选线路 `comfly-gemini-flash-preview`（Comfly `gemini-3.1-flash-image-preview-2k`，**2K-only**：只出 2K、1K/4K 请求钳制为 2K，提交 `resolution=2k` + `response_format=url` 并读 `data[0].url`），3 级适配器严格串行回退（comfly-gpt-image-2.5 → comfly-gemini-flash-preview → dreamina-image），单张总预算 90s（单次尝试、整任务、每股基准是同一个数字），失败分类 + 只有错误类才换线路 + needs_review 禁重试 + 每适配器连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px，跨进程容量锁（默认 **10**，全部图片任务共享单一池 `image`；视频侧独立 `seedance-cli` 上限 6） | Comfly / Dreamina CLI | `COMFLY_API_KEY` + VPN 代理 |
+| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 个标准比例（也接受 `1920x1080` 这类像素尺寸并自动换算成最接近的比例）、`image_resolution`（1K/2K/4K；单档位线路只钳制不报错：Gemini **2K-only**（1K/4K→2K）、GPT 2.5 **4K-only**（1K/2K→4K）、Dreamina 1K）、`image_provider` 显式线路直达不回退；默认线路 `comfly-gpt-image-2.5`（Comfly `gpt-image-2.5-sunburst`，**4K-only**：只传 4K 具体像素 `size`、1K/2K 请求钳制为 4K、不传 `resolution`/`response_format`、图片读 `data[0].b64_json` 解码），次选线路 `comfly-gemini-flash-preview`（Comfly `gemini-3.1-flash-image-preview-2k`，**2K-only**：只出 2K、1K/4K 请求钳制为 2K，提交 `resolution=2k` + `response_format=url` 并读 `data[0].url`），**单线路执行**：每条候选只选链中第一条就绪线路（comfly-gpt-image-2.5；缺凭证或熔断则顺延到 comfly-gemini-flash-preview、dreamina-image），**失败即停、绝不换线路重放已付费的尝试**，单张总预算 90s（提交 + 下载 + 下载重试共用同一时间盒），失败分类 + needs_review 禁重试 + 每线路连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px（无 alpha 时上传副本转 JPEG q88），跨进程容量锁（默认 **10**，全部图片任务共享单一池 `image`；视频侧独立 `seedance-cli` 上限 6） | Comfly / Dreamina CLI | `COMFLY_API_KEY` + VPN 代理 |
 | `generate_video` | 生视频：默认 seedance2.5 / 480p；text2video / multimodal2video；`video_execution_mode`：production（提交+轮询+下载）、production_submit_only（仅提交）、test_submit_only（强制非 VIP 2.0/720p，仅返回 submit_id，到即梦后台查看） | 即梦 Dreamina 本地 CLI（`dreamina.exe`） | OAuth 登录态 |
 | `describe_image` | 兜底看图：仅当当前主模型无法读图时用 Doubao 返回中文描述；主模型可读图时请直接用核心 `read_image`（本工具会拒绝并提示） | 火山方舟 Doubao（`doubao-seed-2-0-mini`） | `VOLCANO_ENGINE_API_KEY` |
 | `skill_registry` | 业务 Skill 治理（Codex_CS）：ingest/search/get/publish/deprecate/list，contract 校验、name@version 去重、内容哈希防漂移、FTS5 trigram 中文检索 | node:sqlite + FTS5（零原生依赖） | 无 |
@@ -55,9 +55,9 @@ Key 写入 `$DSH_HOME/.credentials.yaml`。
 
 官方入口：获取/管理 Key → <https://console.volcengine.com/ark>；充值 → <https://console.volcengine.com/finance/>
 
-### 2. Comfly（生图回退链）
+### 2. Comfly（生图线路）
 
-- `COMFLY_API_KEY`（必填，回退链 1–2 级共用）
+- `COMFLY_API_KEY`（必填，两条 Comfly 线路共用）
 - 需要 **VPN 代理**：`cordis.patch.yml` 里默认 `proxyUrl: 'http://127.0.0.1:7897'`，按本机代理端口改。
 - 官方入口：充值 → <https://pay.comfly.chat/pay/>；获取/管理 Key → <https://comfly.chat>
 
@@ -107,8 +107,8 @@ video_to_gif(video="D:\\out\\clip.mp4")
 
 **职责边界**：图片线路只对**数量与速度**负责——生成后不做质量检查：不逐张 `read_image`/`describe_image` 验收、不做审美/一致性/尺寸判断、不自动淘汰或重生成。成功即以返回路径（或联系表）交付，取舍由用户人工判断；只有工具返回失败或 `needs_review` 时才如实上报。
 
-- **单张（`generate_image`，技能 `default-image-generation`）**：`image_ratio` 必填（8 个标准比例，或 `1920x1080` 这类像素写法，自动换算）；默认线路 `comfly-gpt-image-2.5`（4K-only）→ 允许回退的失败才转 `comfly-gemini-flash-preview`（2K-only）→ `dreamina-image`（1K）；`image_provider` 点名则单线路、失败不回退。预算：单张总预算 90s（`IMAGE_SECONDS_PER_CANDIDATE`，单次尝试、整任务与批量的每股基准是同一个数字）；`needs_review` 禁重试。**只有错误类失败（401/403、402/429、5xx）才换下一条线路**——超时类（`timeout_before_submit` / `provider_timeout`）与 `download_failure` 直接判失败，因为请求已经发出、可能已计费，换线路等于对同一张图付两次钱；下载失败改为重试同一个 URL。
-- **批量（`batch_image`，技能 `batch-image-generation`）**：manifest（组 × 候选）→ 稳定 job key（同一 manifest 重复提交被拒）→ SQLite 状态 → 分派并发默认 10（`concurrency` 1..10）、真实提交间隔 ≥1s → 分派截止 `ceil(总数÷并发)×90s`（可 `deadline_seconds` 覆盖）：截止后**未启动**任务永久 `abandoned`（`batch_deadline_not_submitted`，不查询不重试）→ 已在跑的再等 `completion_grace_seconds`（默认/上限 120s），超时记 `failed`（`batch_completion_grace_timeout`）→ `contact_sheet` 出固定槽位编号联系表供人工选图。
+- **单张（`generate_image`，技能 `default-image-generation`）**：`image_ratio` 必填（8 个标准比例，或 `1920x1080` 这类像素写法，自动换算）；**单线路策略**——只选第一条就绪线路（默认 `comfly-gpt-image-2.5` 4K-only；缺凭证或熔断时顺延到 `comfly-gemini-flash-preview` 2K-only、`dreamina-image` 1K），选定后**失败即停，绝不换线路、绝不重放已付费的尝试**；`image_provider` 点名则只用该线路。预算：单张总预算 90s（`IMAGE_SECONDS_PER_CANDIDATE`），提交 + 下载 + 下载重试共用这一个时间盒；`needs_review` 禁重试。失败的候选由用户决定是否重新排队。
+- **批量（`batch_image`，技能 `batch-image-generation`）**：manifest（组 × 候选）→ 稳定 job key（同一 manifest 重复提交被拒）→ SQLite 状态 → 分派并发默认 10（`concurrency` 1..10）、真实提交间隔 ≥1s → 分派截止 `ceil(总数÷并发)×90s + 并发s`（可 `deadline_seconds` 覆盖）：截止后**未启动**任务永久 `abandoned`（`batch_deadline_not_submitted`，不查询不重试）→ 已在跑的再等 `completion_grace_seconds`（默认/上限 120s），到点**硬停**（中止在跑任务，最多再给 5 秒善后），超时记 `failed`（`batch_completion_grace_timeout`）→ **不读图、不做任何内容检查**，直接收集已落地的成功图并自动写审阅页（`contact-<jobKey>.html`）；缺失槽位**永不自动补跑**，由用户看审阅页决定重跑哪些（换新组 id 才会重排）。
 - **并发容量（单一图片池）**：图片侧只有一个跨进程共享的容量池（`IMAGE_CAPACITY_KEY = 'image'`，默认 **10**）：`generate_image` 单张、`batch_image` 批量、所有线路、同一 workspace 下的所有 dsh 进程都从这 10 个槽位取用——**任何时刻最多只有 10 张图在同时生成**。批量分派并发默认也是 10（`concurrency` 1..10），与池子对齐；调小 `concurrency` 只是让分派更保守，池子仍可能被其他会话的单张任务占用。**视频侧容量完全独立**（`seedance-cli` 上限 6，来自上游 CLI 自己的 `max_concurrency`），图片与视频互不占额度。
 - **受治理业务 Skill 线（`image-skill-router` + `image_skill_pipeline`）**：仅在用户使用受治理图片 Skill 时走；总任务量 = 场景数 × 候选数，=1 交 `generate_image`，>1 需 `confirm_paid_batch` 后交 `batch_image`。
 
@@ -116,14 +116,14 @@ video_to_gif(video="D:\\out\\clip.mp4")
 
 ```text
 batch_image(command="start", manifest={groups:[…5 组…], image_resolution:"4K"})
-→ total 40 · concurrency 10（默认）· estimate ceil(40/10)×90 = 360s · dispatch deadline 360s · grace 120s · max runtime 480s
+→ total 40 · concurrency 10（默认）· estimate ceil(40/10)×90 + 10 = 370s · dispatch deadline 370s · grace 120s · max runtime 490s
 → 提交节流 ≥1s：前 10 张在约 9s 内按 1s 间隔起跑，之后每完成一张补一张；全程同时在跑的图片不超过 10
-→ 360s 起不再发起新任务：未启动的永久 abandoned，在跑的再等 ≤120s，超时 failed
+→ 370s 起不再发起新任务：未启动的永久 abandoned，在跑的再等 ≤120s，超时 failed
 batch_image(command="status", job_key=…)        # 轮询 landed/abandoned
 batch_image(command="contact_sheet", job_key=…) # 生成编号联系表 → 用户人工选图
 ```
 
-`deadline` 只由一个数字决定：**每股 90 秒**（`IMAGE_SECONDS_PER_CANDIDATE`，与单张的超时预算同一个值），`deadline = ceil(候选数 ÷ 并发) × 90s`，**没有额外的余量系数**——40 张即 `ceil(40/10)×90 = 360s`。要放宽就显式给 `deadline_seconds`；`concurrency` 只管分派节奏，真正的并发上限始终是那个共享的 10。
+`deadline` 只由一个数字决定：**每股 90 秒**（`IMAGE_SECONDS_PER_CANDIDATE`，与单张的超时预算同一个值），`deadline = ceil(候选数 ÷ 并发) × 90s + 并发s`（末项是 ≥1 秒真实提交间隔的小余量）——40 张即 `ceil(40/10)×90 + 10 = 370s`。要放宽就显式给 `deadline_seconds`；`concurrency` 只管分派节奏，真正的并发上限始终是那个共享的 10。
 
 ## Codex_IS：受治理图片业务 Skill 层
 

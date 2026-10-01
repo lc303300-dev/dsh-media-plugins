@@ -53,7 +53,11 @@ export const ALL_FAILURE_CLASSES: readonly FailureClass[] = [
 /**
  * ERROR classes only: the provider rejected the request or failed before
  * generating anything, so the attempt cost nothing and returned quickly.
- * Switching routes here is free and can genuinely rescue the candidate.
+ *
+ * NOT USED by the current router policy: images run SINGLE ROUTE — one adapter
+ * per candidate, no second provider and no replay, so the user decides what to
+ * re-queue. The set is kept because the classifier and the audit trail still
+ * speak this vocabulary (and a future opt-in could allow error-only fallback).
  */
 export const FALLBACK_ALLOWED: ReadonlySet<FailureClass> = new Set<FailureClass>([
   'auth_unavailable',

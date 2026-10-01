@@ -16,16 +16,16 @@ test('dispatch concurrency defaults to the shared image pool size (10)', () => {
   const plan = computeDeadline(withoutConcurrency)
   assert.equal(plan.concurrency, 10)
   assert.equal(plan.total, 40)
-  assert.equal(plan.estimateSeconds, 360, '40 candidates / 10 concurrent x 90 s')
-  assert.equal(plan.deadlineSeconds, 360, 'the estimate itself — no multiplier')
+  assert.equal(plan.estimateSeconds, 370, '40 candidates / 10 concurrent x 90 s + 10 s of submit spacing')
+  assert.equal(plan.deadlineSeconds, 370, 'the estimate itself — no multiplier')
 })
 
 test('deadline basis: one 90 s per-candidate number, identical to the provider timeout, no multiplier', () => {
   assert.equal(IMAGE_SECONDS_PER_CANDIDATE, 90, 'the per-candidate basis is 90 s')
   assert.equal(DEFAULT_IMAGE_REQUEST_TIMEOUT_MS, 90_000, 'the provider timeout IS that basis, not a second number')
   const plan = computeDeadline({ groups: [{ id: 'a', prompt: 'p', candidates: 10, image_ratio: '1:1' }] })
-  assert.equal(plan.estimateSeconds, 90, 'one wave x the 90 s basis')
-  assert.equal(plan.deadlineSeconds, 90, 'the estimate itself — no multiplier')
+  assert.equal(plan.estimateSeconds, 100, 'one wave x the 90 s basis + the wave\'s submit spacing')
+  assert.equal(plan.deadlineSeconds, 100, 'the estimate itself — no multiplier')
 })
 
 test('manifest validation accepts a valid manifest', () => {
@@ -67,27 +67,27 @@ test('stable job key: same content, same key; order-insensitive; resolution/prov
   assert.notEqual(jobKeyFor(m1), jobKeyFor(m6))
 })
 
-test('deadline math: 40 candidates @10 → estimate 360s, dispatch deadline 360s, grace 120s, max runtime 480s', () => {
+test('deadline math: 40 candidates @10 → estimate 370s, dispatch deadline 370s, grace 120s, max runtime 490s', () => {
   const plan = computeDeadline(baseManifest, 1_000_000)
   assert.equal(plan.total, 40)
-  assert.equal(plan.estimateSeconds, 360)
-  assert.equal(plan.deadlineSeconds, 360)
+  assert.equal(plan.estimateSeconds, 370)
+  assert.equal(plan.deadlineSeconds, 370)
   assert.equal(plan.completionGraceSeconds, 120)
-  assert.equal(plan.maxRuntimeSeconds, 480)
-  assert.equal(plan.deadlineAtMs, 1_000_000 + 360_000)
+  assert.equal(plan.maxRuntimeSeconds, 490)
+  assert.equal(plan.deadlineAtMs, 1_000_000 + 370_000)
 })
 
 test('deadline math: ceil up partial waves; explicit override wins; grace shortens max runtime', () => {
   const partial = computeDeadline({ groups: [{ id: 'a', prompt: 'p', candidates: 21, image_ratio: '1:1' }], concurrency: 10 })
-  assert.equal(partial.estimateSeconds, Math.ceil(21 / 10) * 90) // 270
-  assert.equal(partial.deadlineSeconds, 270) // the estimate itself
-  assert.equal(partial.maxRuntimeSeconds, 390)
+  assert.equal(partial.estimateSeconds, Math.ceil(21 / 10) * 90 + 10) // 280
+  assert.equal(partial.deadlineSeconds, 280) // the estimate itself
+  assert.equal(partial.maxRuntimeSeconds, 400)
   const explicit = computeDeadline({ ...baseManifest, deadline_seconds: 500 })
   assert.equal(explicit.deadlineSeconds, 500)
   assert.equal(explicit.maxRuntimeSeconds, 620)
   const shortGrace = computeDeadline({ ...baseManifest, completion_grace_seconds: 30 })
   assert.equal(shortGrace.completionGraceSeconds, 30)
-  assert.equal(shortGrace.maxRuntimeSeconds, 390)
+  assert.equal(shortGrace.maxRuntimeSeconds, 400)
 })
 
 test('flattenTasks yields one task per candidate in slot order and carries batch resolution/provider', () => {

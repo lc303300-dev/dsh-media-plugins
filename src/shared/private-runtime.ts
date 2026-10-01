@@ -206,6 +206,12 @@ export interface SlotLeaseOptions {
   pollMs?: number
   /** Staleness threshold; locks older than this are reclaimed. */
   staleMs?: number
+  /**
+   * Abort the wait (e.g. the batch completion grace expired). Without this the
+   * lease kept polling up to `timeoutMs` after its task was already cancelled,
+   * which pushed a job past its advertised maximum runtime.
+   */
+  signal?: AbortSignal
 }
 
 /**
@@ -220,7 +226,7 @@ export async function acquireSlot(
   maxSlots: number,
   options: SlotLeaseOptions,
 ): Promise<() => Promise<void>> {
-  const { taskId, timeoutMs, pollMs = 250, staleMs = 10 * 60 * 1000 } = options
+  const { taskId, timeoutMs, pollMs = 250, staleMs = 10 * 60 * 1000, signal } = options
   const dir = await ensureDir(join(lockRoot, 'providers', capacityKey))
   const started = Date.now()
 
@@ -257,6 +263,11 @@ export async function acquireSlot(
   }
 
   for (;;) {
+    if (signal?.aborted) {
+      const err: any = new Error(`slot acquisition cancelled on capacity "${capacityKey}" (task ${taskId})`)
+      err.cls = 'cancelled'
+      throw err
+    }
     const acquired = await tryAcquire()
     if (acquired) {
       const release = async (): Promise<void> => {

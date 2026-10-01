@@ -25,6 +25,8 @@ import {
   computeDeadline,
   flattenTasks,
   validateManifest,
+  waitWithHardStop,
+  SHUTDOWN_DRAIN_MS,
   type BatchManifest,
 } from './shared/batch-core.ts'
 import { DEFAULT_IMAGE_CONCURRENCY, runImageRouter, type RouterConfig } from './shared/adapters.ts'
@@ -142,7 +144,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'batch_image',
       description:
-        '确定性批量图片调度器（Codex_Batch_Image 的 DSH 重建）：manifest（组 id 唯一、每组 prompt 非空、candidates ≥ 1、image_ratio 必填（8 个标准比例之一，或 1920x1080 这类像素尺寸，工具会换算成最接近的标准比例）；可选批次级 image_resolution 1K/2K/4K（单档位线路只钳制不报错：默认线路 GPT 2.5 固定 4K、Gemini 固定 2K）、image_provider 单线路、completion_grace_seconds 完成宽限期）→ 稳定 job key → SQLite 状态 → 最多 10 路并发、真实提交间隔 ≥ 1 秒 → 分派截止（默认 ceil(总数÷并发)×90 秒，可用 deadline_seconds 覆盖）：截止后不再启动新任务，未启动任务永久 abandoned（batch_deadline_not_submitted，不查询、不重试）；已在运行的任务最多再等 completion_grace_seconds（默认 120 秒、上限 120 秒、可缩短不可延长），宽限期内落地成功照常收集，超时仍未完成的运行中任务终止并标记 failed（batch_completion_grace_timeout）→ 生成固定槽位编号联系表供人工选图。付费执行全部走统一媒体路由器；同一候选绝不重复提交（job key + 任务 id 幂等）。调度器只对数量与速度负责：不做生成后质量检查、不逐张读图验收、不自动淘汰或重提；选图由用户看联系表决定。',
+        '确定性批量图片调度器（Codex_Batch_Image 的 DSH 重建）：manifest（组 id 唯一、每组 prompt 非空、candidates ≥ 1、image_ratio 必填（8 个标准比例之一，或 1920x1080 这类像素尺寸，工具会换算成最接近的标准比例）；可选批次级 image_resolution 1K/2K/4K（单档位线路只钳制不报错：默认线路 GPT 2.5 固定 4K、Gemini 固定 2K）、image_provider 单线路、completion_grace_seconds 完成宽限期）→ 稳定 job key → SQLite 状态 → 最多 10 路并发、真实提交间隔 ≥ 1 秒 → 分派截止（默认 ceil(总数÷并发)×90 秒，可用 deadline_seconds 覆盖）：截止后不再启动新任务，未启动任务永久 abandoned（batch_deadline_not_submitted，不查询、不重试）；已在运行的任务最多再等 completion_grace_seconds（默认 120 秒、上限 120 秒、可缩短不可延长），宽限期内落地成功照常收集，超时仍未完成的运行中任务终止并标记 failed（batch_completion_grace_timeout）→ 生成固定槽位编号联系表供人工选图。付费执行全部走统一媒体路由器，**每条候选只走一条线路、失败即停，绝不换线路或重试**；同一候选绝不重复提交（job key + 任务 id 幂等）。到点硬停：截止后停止派发，宽限到点即中止在跑任务（最多再给 5 秒善后），随后**不读图、不做任何内容检查**，直接收集已落地的成功图并写审阅页；未落地槽位永不自动补跑，由用户看审阅页决定重跑哪些。',
       parameters: {
         command: {
           type: 'string',
@@ -219,9 +221,16 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               db.prepare("UPDATE jobs SET status = 'failed', finished_at = ? WHERE job_key = ?").run(new Date().toISOString(), plan.jobKey)
               void appendSafeLog(privateRoot, 'batch_image', { jobKey: plan.jobKey, event: 'scheduler_crashed', detail: String(error?.message ?? error).slice(0, 300) })
             })
+            // Surface a manifest that pins parallelism below the pool size: a
+            // batch silently running at concurrency 1 is the difference between
+            // ~11 minutes and ~36 minutes for 75 candidates.
+            const concurrencyNote =
+              manifest.concurrency !== undefined && manifest.concurrency < DEFAULT_IMAGE_CONCURRENCY
+                ? ` ⚠ manifest pinned concurrency=${manifest.concurrency} (default ${DEFAULT_IMAGE_CONCURRENCY}); leave it unset for full parallelism`
+                : ''
             return {
               ok: true,
-              message: `batch ${plan.jobKey} started: ${plan.total} candidate(s), concurrency ${plan.concurrency}, estimate ${plan.estimateSeconds}s, dispatch deadline ${plan.deadlineSeconds}s, completion grace ${plan.completionGraceSeconds}s (max runtime ${plan.maxRuntimeSeconds}s); scheduler runs in background, poll status`,
+              message: `batch ${plan.jobKey} started: ${plan.total} candidate(s), concurrency ${plan.concurrency}${concurrencyNote}, estimate ${plan.estimateSeconds}s, dispatch deadline ${plan.deadlineSeconds}s, completion grace ${plan.completionGraceSeconds}s (max runtime ${plan.maxRuntimeSeconds}s); scheduler runs in background, poll status`,
               job_key: plan.jobKey,
               plan: { jobKey: plan.jobKey, total: plan.total, concurrency: plan.concurrency, estimateSeconds: plan.estimateSeconds, deadlineSeconds: plan.deadlineSeconds, completionGraceSeconds: plan.completionGraceSeconds, maxRuntimeSeconds: plan.maxRuntimeSeconds },
             }
@@ -240,23 +249,14 @@ function apply(ctx: Context, config: ResolvedConfig): void {
 
           if (command === 'contact_sheet') {
             const manifest = JSON.parse(job.manifest_json) as BatchManifest
-            const base = job.manifest_base ?? workspaceRoot
-            const landed = db.prepare("SELECT group_id AS groupId, slot, output_path AS path FROM tasks WHERE job_key = ? AND status = 'success'").all(args.job_key)
-            const plan = computeDeadline(manifest, 0)
-            const outDir = join(workspaceRoot, config.outputDir)
-            await ensureDir(outDir)
-            const groups = manifest.groups.map((g) => ({
-              id: g.id,
-              candidates: g.candidates,
-              image_ratio: g.image_ratio ?? manifest.image_ratio ?? '',
-              original_image: g.original_image
-                ? resolveBatchPath(g.original_image, base)
-                : g.reference_images?.[0]
-                  ? resolveBatchPath(g.reference_images[0], base)
-                  : undefined,
-            }))
-            const sheetPath = join(outDir, `contact-${args.job_key}.html`)
-            await writeFile(sheetPath, buildContactSheetHtml({ ...plan, deadlineAtMs: job.deadline_seconds }, groups, landed), 'utf8')
+            const sheetPath = await writeReviewPage(
+              db,
+              args.job_key,
+              manifest,
+              job.manifest_base ?? workspaceRoot,
+              config.outputDir,
+              workspaceRoot,
+            )
             return { ok: true, message: `contact sheet: ${sheetPath}`, contact_sheet_path: sheetPath, summary: { landed: job.landed, abandoned: job.abandoned, status: job.status } }
           }
           return { ok: false, message: `unknown command: ${command}` }
@@ -394,15 +394,30 @@ async function runSchedulerWith(
     const abandonedCount = db.prepare("UPDATE tasks SET status = 'abandoned', finished_at = ?, error = ? WHERE job_key = ? AND status = 'pending'")
       .run(new Date().toISOString(), 'batch_deadline_not_submitted', jobKey).changes
     if (abandonedCount > 0) db.prepare('UPDATE jobs SET abandoned = abandoned + ? WHERE job_key = ?').run(abandonedCount, jobKey)
-    // completion grace: keep waiting only for already-running tasks, at most completion_grace_seconds
+    // completion grace: wait only for already-running tasks, then HARD STOP.
+    // The batch contract is a MAXIMUM wait, not a suggestion: once the grace is
+    // spent the runners are aborted, handed a bounded drain window, and anything
+    // still running is recorded as failed. Nothing is ever retried here — topping
+    // a batch up is the user's decision, taken after reading the review page.
     if (inFlight.size > 0) {
-      const graceTimer = setTimeout(() => {
-        for (const controller of controllers.values()) controller.abort()
-      }, graceMs)
-      try {
-        await Promise.allSettled([...inFlight.values()])
-      } finally {
-        clearTimeout(graceTimer)
+      const outcome = await waitWithHardStop(
+        Promise.allSettled([...inFlight.values()]),
+        graceMs,
+        SHUTDOWN_DRAIN_MS,
+        () => {
+          for (const controller of controllers.values()) controller.abort()
+        },
+      )
+      // Abort once more: the hard stop can win the race before the grace timer
+      // fires, and a runner that is still alive must not outlive the job.
+      for (const controller of controllers.values()) controller.abort()
+      if (outcome === 'stopped' && inFlight.size > 0) {
+        void appendSafeLog(privateRoot, 'batch_image', {
+          jobKey,
+          event: 'hard_stop',
+          waitedMs: graceMs + SHUTDOWN_DRAIN_MS,
+          stillRunning: inFlight.size,
+        })
       }
       // tasks still running when the grace period ends -> failed (batch_completion_grace_timeout)
       const timedOut = db.prepare("UPDATE tasks SET status = 'failed', finished_at = ?, error = ? WHERE job_key = ? AND status = 'running'")
@@ -413,9 +428,51 @@ async function runSchedulerWith(
     const landed = (db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE job_key = ? AND status = 'success'").get(jobKey) as any).n
     db.prepare('UPDATE jobs SET landed = ? WHERE job_key = ?').run(landed, jobKey)
     void appendSafeLog(privateRoot, 'batch_image', { jobKey, event: 'finished', landed, abandoned: (db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE job_key = ? AND status IN ('failed','abandoned')").get(jobKey) as any).n })
+
+    // Fixed action: every batch job settles with a review page. Images are
+    // embedded as data URIs and the layout is responsive, so exactly one
+    // self-contained page per task is always available for human review.
+    try {
+      const sheetPath = await writeReviewPage(db, jobKey, manifest, manifestBase, outputDir, workspaceRoot)
+      void appendSafeLog(privateRoot, 'batch_image', { jobKey, event: 'review_page', path: sheetPath })
+    } catch (error: any) {
+      void appendSafeLog(privateRoot, 'batch_image', { jobKey, event: 'review_page_failed', error: String(error?.message ?? error).slice(0, 300) })
+    }
   } finally {
     // no-op: detached loop leaves the DB as the source of truth
   }
+}
+
+/**
+ * Write the batch review page (`<outputDir>/contact-<jobKey>.html`).
+ *
+ * Shared by the explicit `contact_sheet` command and the automatic post-settle
+ * step, so a review page always exists once a batch job finishes.
+ */
+async function writeReviewPage(
+  db: DatabaseSync,
+  jobKey: string,
+  manifest: BatchManifest,
+  manifestBase: string,
+  outputDir: string,
+  workspaceRoot: string,
+): Promise<string> {
+  const landed = db
+    .prepare("SELECT group_id AS groupId, slot, output_path AS path FROM tasks WHERE job_key = ? AND status = 'success'")
+    .all(jobKey) as Array<{ groupId: string; slot: number; path: string }>
+  const plan = computeDeadline(manifest, 0)
+  const groups = manifest.groups.map((g) => ({
+    id: g.id,
+    candidates: g.candidates,
+    image_ratio: g.image_ratio ?? manifest.image_ratio ?? '',
+    // original_image / reference_images are intentionally omitted: the review
+    // page must contain only the images this task produced.
+  }))
+  const outDir = join(workspaceRoot, outputDir)
+  await ensureDir(outDir)
+  const sheetPath = join(outDir, `contact-${jobKey}.html`)
+  await writeFile(sheetPath, await buildContactSheetHtml(plan, groups, landed), 'utf8')
+  return sheetPath
 }
 
 export { apply }

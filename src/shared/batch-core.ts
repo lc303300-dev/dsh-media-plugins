@@ -19,6 +19,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import sharp from 'sharp'
 import { IMAGE_SECONDS_PER_CANDIDATE } from './media-client.ts'
 import {
   SUPPORTED_RATIOS,
@@ -70,6 +71,42 @@ export interface BatchPlan {
 
 /** Default completion grace after the dispatch deadline (contract: default and maximum 120 s). */
 export const DEFAULT_COMPLETION_GRACE_SECONDS = 120
+
+/**
+ * Bounded drain window after the completion grace aborts the runners.
+ *
+ * The batch contract is a HARD maximum wait: once the grace elapses the job
+ * stops waiting, collects what landed, writes the review page and reports. A
+ * runner that ignores its abort signal (a hung socket, a stuck CLI) therefore
+ * gets this short window to unwind — it can never extend the job indefinitely.
+ */
+export const SHUTDOWN_DRAIN_MS = 5000
+
+/**
+ * Wait for `work`, but never longer than `graceMs + drainMs`.
+ *
+ * `onGraceElapsed` fires exactly once when the grace is up (the caller aborts
+ * its runners there). Returns `'settled'` when the work finished on its own and
+ * `'stopped'` when the hard stop won — in both cases the caller owns whatever
+ * state the work left behind and must collect results from its own store, not
+ * from this promise.
+ */
+export async function waitWithHardStop(
+  work: Promise<unknown>,
+  graceMs: number,
+  drainMs: number,
+  onGraceElapsed: () => void,
+): Promise<'settled' | 'stopped'> {
+  const graceTimer = setTimeout(onGraceElapsed, Math.max(0, graceMs))
+  try {
+    return await Promise.race([
+      work.then(() => 'settled' as const),
+      new Promise<'stopped'>((resolve) => setTimeout(() => resolve('stopped'), Math.max(0, graceMs) + Math.max(0, drainMs))),
+    ])
+  } finally {
+    clearTimeout(graceTimer)
+  }
+}
 
 /** Structural validation; throws with a precise message. */
 export function validateManifest(raw: unknown): BatchManifest {
@@ -149,14 +186,16 @@ export function jobKeyFor(manifest: BatchManifest): string {
 /**
  * Deadline math: one candidate is budgeted the 90 s per-candidate basis
  * (`IMAGE_SECONDS_PER_CANDIDATE`, the same basis as the default provider
- * timeout), so the dispatch cutoff is `ceil(candidates / concurrency)` times
- * that basis — no extra multiplier. Completion grace follows the cutoff
- * (default/max 120 s).
+ * timeout), so the dispatch cutoff is `ceil(candidates / concurrency)` waves of
+ * that basis plus `concurrency` seconds — the extra covers the enforced >= 1 s
+ * spacing between the real submissions inside the last wave (they never start
+ * simultaneously) and the slot-pool hand-off between waves. Completion grace
+ * follows the cutoff (default/max 120 s).
  */
 export function computeDeadline(manifest: BatchManifest, now = Date.now()): BatchPlan {
   const total = manifest.groups.reduce((acc, g) => acc + g.candidates, 0)
   const concurrency = manifest.concurrency ?? 10
-  const estimateSeconds = Math.ceil(total / concurrency) * IMAGE_SECONDS_PER_CANDIDATE
+  const estimateSeconds = Math.ceil(total / concurrency) * IMAGE_SECONDS_PER_CANDIDATE + concurrency
   const deadlineSeconds = manifest.deadline_seconds ?? estimateSeconds
   const completionGraceSeconds = manifest.completion_grace_seconds ?? DEFAULT_COMPLETION_GRACE_SECONDS
   return {
@@ -171,49 +210,113 @@ export function computeDeadline(manifest: BatchManifest, now = Date.now()): Batc
   }
 }
 
-/** Contact sheet HTML: slot 0 shows the group's original/reference image, then fixed numbered candidate slots. */
-export function buildContactSheetHtml(
+/**
+ * Review-page HTML for a batch job.
+ *
+ * Self-contained and responsive by design: every image is embedded as a data
+ * URI (a `file://`/relative `src` is blocked by sandboxed viewers and renders
+ * as a broken image), and the layout is a CSS grid so the page never needs
+ * horizontal scrolling. Built automatically once a job settles — see
+ * `tool-batch-image.ts`.
+ */
+export async function buildContactSheetHtml(
   plan: BatchPlan,
   groups: Array<Pick<BatchGroup, 'id' | 'candidates' | 'image_ratio' | 'original_image'>>,
   landed: Array<{ groupId: string; slot: number; path: string; width?: number; height?: number }>,
-): string {
+): Promise<string> {
   const byGroup = new Map<string, Map<number, (typeof landed)[number]>>()
   for (const item of landed) {
     if (!byGroup.has(item.groupId)) byGroup.set(item.groupId, new Map())
     byGroup.get(item.groupId)!.set(item.slot, item)
   }
-  const rows: string[] = []
-  rows.push('<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>Batch contact sheet</title>')
-  rows.push('<style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse;margin-bottom:24px}td{border:1px solid #ccc;padding:8px;text-align:center;vertical-align:top}img{max-width:180px;max-height:180px;display:block}.slot{font-size:12px;color:#666;margin-top:4px}</style>')
-  rows.push('</head><body>')
-  rows.push(`<h1>Batch ${plan.jobKey}</h1><p>total ${plan.total} · concurrency ${plan.concurrency} · deadline ${plan.deadlineSeconds}s · landed ${landed.length}</p>`)
+
+  const cache = new Map<string, string>()
+  const embed = async (p: string, edge: number): Promise<string> => {
+    const hit = cache.get(p)
+    if (hit !== undefined) return hit
+    let uri = ''
+    try {
+      const buf = await sharp(p, { failOn: 'none' })
+        .rotate()
+        .resize({ width: edge, height: edge, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 84 })
+        .toBuffer()
+      uri = `data:image/jpeg;base64,${buf.toString('base64')}`
+    } catch {
+      uri = ''
+    }
+    cache.set(p, uri)
+    return uri
+  }
+
+  const figure = (uri: string, label: string, placeholder = ''): string => {
+    const caption = `<figcaption>${escapeHtml(label)}</figcaption>`
+    return uri
+      ? `<figure><img src="${uri}" alt="${escapeHtml(label)}">${caption}</figure>`
+      : `<figure class="miss"><div class="ph">${escapeHtml(placeholder || '无法读取')}</div>${caption}</figure>`
+  }
+
+  // NOTE: a group's original/reference image is deliberately NOT rendered. A
+  // review page lists only what this task produced — mixing inputs in makes it
+  // impossible to tell produced images from references at a glance.
+  //
+  // Every slot is embedded CONCURRENTLY: decoding a 4K PNG down to a 900 px
+  // JPEG costs ~100 ms, so the previous serial loop made a 16-image page spend
+  // ~1.6 s in the post-settle step (parallel: ~0.5 s, identical output).
+  const slotPlans: Array<{ group: (typeof groups)[number]; slot: number; item?: (typeof landed)[number] }> = []
   for (const group of groups) {
     const items = byGroup.get(group.id) ?? new Map()
-    const cells: string[] = []
-    if (group.original_image !== undefined) {
-      cells.push(
-        `<td><img src="${relPath(group.original_image)}" alt="original"><div class="slot">${group.id} · 原始图</div></td>`,
-      )
-    }
     for (let slot = 1; slot <= group.candidates; slot += 1) {
-      const item = items.get(slot)
-      cells.push(
-        item
-          ? `<td><img src="${relPath(item.path)}" alt="slot ${slot}"><div class="slot">${group.id} · #${slot} ✓</div></td>`
-          : `<td style="color:#bbb"><div>—</div><div class="slot">${group.id} · #${slot} ∅</div></td>`,
-      )
+      slotPlans.push({ group, slot, item: items.get(slot) })
     }
-    rows.push(`<h2>${group.id} (${group.image_ratio ?? ''}, ${group.candidates} 张)</h2><table><tr>${cells.join('')}</tr></table>`)
   }
-  rows.push('</body></html>')
-  return rows.join('\n')
+  const uris = await Promise.all(slotPlans.map((plan) => (plan.item ? embed(plan.item.path, 900) : Promise.resolve(''))))
+  const figuresByGroup = new Map<string, string[]>()
+  slotPlans.forEach((plan, index) => {
+    const figures = figuresByGroup.get(plan.group.id) ?? []
+    figures.push(
+      plan.item
+        ? figure(uris[index] ?? '', `${plan.group.id} · #${plan.slot} ✓`)
+        : figure('', `${plan.group.id} · #${plan.slot}`, '∅ 未落地'),
+    )
+    figuresByGroup.set(plan.group.id, figures)
+  })
+  const sections: string[] = groups.map(
+    (group) =>
+      `<section><h2>${escapeHtml(group.id)} <span class="meta">${escapeHtml(group.image_ratio ?? '')} · ${group.candidates} 张</span></h2><div class="grid">${(figuresByGroup.get(group.id) ?? []).join('')}</div></section>`,
+  )
+
+  const abandoned = plan.total - landed.length
+  return `<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>批量审阅页 ${escapeHtml(plan.jobKey)}</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:#0f1013;color:#e9e9ec;font-family:system-ui,"Microsoft YaHei",sans-serif}
+h1{font-size:17px;margin:0 0 6px}
+h2{font-size:14px;margin:18px 0 8px}
+.meta{font-weight:400;font-size:12.5px;color:#98a0a8}
+.hint{font-size:12.5px;color:#98a0a8;margin:0 0 14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:12px}
+figure{margin:0;background:#191b1f;border:1px solid #2a2d33;border-radius:10px;overflow:hidden}
+figure img{display:block;width:100%;height:auto}
+figcaption{padding:6px 10px;font-size:12.5px;color:#c6cad0;border-top:1px solid #2a2d33}
+figure.miss .ph{padding:48px 10px;text-align:center;color:#ff8f8f;font-size:13px}
+</style></head><body>
+<h1>批量审阅页 ${escapeHtml(plan.jobKey)}</h1>
+<p class="hint">total ${plan.total} · landed ${landed.length} · 未落地 ${abandoned} · concurrency ${plan.concurrency} · deadline ${plan.deadlineSeconds}s｜图片已内嵌，窗口自适应</p>
+<p class="hint">到点即收摊：只收集已落地的成功图，未落地的槽位不会自动重试。要不要补跑由你决定 —— 确认后换一个新的组 id 重新排队即可（同一 manifest 会被 job key 拒绝）。</p>
+${sections.join('\n')}
+</body></html>`
 }
 
-/** Relative path from the HTML file's directory (forward slashes); the sheet
- *  lives in <outputDir>/contact-<key>.html and outputs sit under
- *  <outputDir>/<jobKey>/..., so strip the workspace-root "outputs" segment. */
-function relPath(p: string): string {
-  return p.split('\\').join('/').replace(/^.*\/outputs\//, '')
+/** Minimal HTML text escaping for labels interpolated into the page. */
+function escapeHtml(value: string): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }
 
 /** Flatten the manifest into one task descriptor per candidate. */
