@@ -16,9 +16,9 @@
  *   accepted as-is and a concrete pixel size (1920x1080) is converted to the
  *   nearest standard ratio;
  * - `image_resolution` (1K/2K/4K) is optional; both Comfly routes are
- *   single-class and clamp rather than reject: GPT 2.5 is 4K-only (1K/2K
- *   clamp up to 4K) and Gemini is 2K-only (1K/4K clamp to 2K, 1K/4K are
- *   withdrawn). Dreamina keeps its 1K default;
+ *   single-class and clamp rather than reject: GPT Image 2 reports 2K (it
+ *   renders a 2048-px long edge) and Gemini is 2K-only (1K/4K clamp to 2K,
+ *   1K/4K are withdrawn). Dreamina keeps its 1K default;
  * - `image_provider` is a user-explicit restricted route: only that adapter
  *   runs, there is no cross-route fallback, and unknown/disabled routes are
  *   rejected as input_error before any paid call.
@@ -55,7 +55,7 @@ export const SUPPORTED_RESOLUTIONS: readonly string[] = ['1K', '2K', '4K'] as co
 
 /** Public image route ids accepted by `image_provider` (DSH canonical ids, default route first). */
 export const SUPPORTED_IMAGE_PROVIDERS: readonly string[] = [
-  'comfly-gpt-image-2.5',
+  'comfly-gpt-image-2-4k',
   'comfly-gemini-flash-preview',
   'dreamina-image',
 ] as const
@@ -75,7 +75,7 @@ export const RATIO_SIZES: Readonly<Record<string, string>> = {
 /**
  * The Gemini route is **2K-only**: 1K and 4K are withdrawn. A request for
  * either withdrawn class is clamped to 2K (never rejected), mirroring the
- * GPT 2.5 route's 4K-only clamping behaviour.
+ * single-class clamping behaviour of the GPT Image 2 route.
  */
 export const GEMINI_IMAGE_RESOLUTION = '2K'
 
@@ -84,37 +84,19 @@ export const GEMINI_MODELS_BY_RESOLUTION: Readonly<Record<string, string>> = {
   '2K': 'gemini-3.1-flash-image-preview-2k',
 }
 
-/** Comfly GPT Image 2.5 model id (default image route). */
-export const GPT_IMAGE_25_MODEL = 'gpt-image-2.5-sunburst'
+/** Comfly GPT Image 2 model id (default image route). */
+export const GPT_IMAGE_2_4K_MODEL = 'gpt-image-2-4k'
 
 /**
- * The GPT 2.5 route is 4K-only: every request is submitted with the 4K pixel
- * table, and a user-supplied 1K/2K `image_resolution` is clamped to 4K
- * instead of downgrading the output.
+ * The GPT Image 2 route outputs the 2K class: submitted with an
+ * `aspect_ratio` token (never a pixel `size`), the provider renders a fixed
+ * 2048-px long edge, e.g. 2048x1152 for 16:9. The `-4k` in the model id is a
+ * Comfly channel suffix, not an output-size promise — measured 2048x1152.
  */
-export const GPT_IMAGE_25_RESOLUTION = '4K'
+export const GPT_IMAGE_2_4K_RESOLUTION = '2K'
 
-/**
- * GPT Image 2.5 concrete pixel sizes (contract: GPT_IMAGE_2_5_SIZES). The
- * route is 4K-only, so the table holds exactly the Comfly
- * `gpt-image-2.5-sunburst` 4K contract row; a requested 1K/2K class is
- * clamped up to 4K by the adapter before this table is consulted.
- */
-export const GPT_IMAGE_2_5_SIZES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  '4K': {
-    '21:9': '3840x1648',
-    '16:9': '3840x2160',
-    '3:2': '3520x2352',
-    '4:3': '3312x2480',
-    '1:1': '2880x2880',
-    '3:4': '2480x3312',
-    '2:3': '2352x3520',
-    '9:16': '2160x3840',
-  },
-}
-
-/** @deprecated Legacy name of {@link GPT_IMAGE_2_5_SIZES} (same table object). */
-export const GPT_IMAGE_2_SIZES = GPT_IMAGE_2_5_SIZES
+/** Long edge the GPT Image 2 route renders in `aspect_ratio` mode. */
+export const GPT_IMAGE_2_4K_LONG_EDGE = 2048
 
 /** Pixel-size spelling accepted in `image_ratio` (e.g. 1920x1080 / 1920×1080 / 1920*1080). */
 const PIXEL_SIZE_PATTERN = /^(\d{2,5})\s*[x×*]\s*(\d{2,5})$/i
@@ -144,7 +126,8 @@ export function ratioFromPixels(width: number, height: number): string {
 /**
  * Normalize an `image_ratio` value. The 8 standard ratios pass through
  * unchanged; a concrete pixel size (`1920x1080`) is converted to the nearest
- * standard ratio — the GPT 2.5 route then renders that ratio at 4K.
+ * standard ratio — the GPT Image 2 route then renders that ratio as its own
+ * fixed output size.
  */
 export function normalizeRatio(value: string): string {
   const raw = (value ?? '').trim()
@@ -194,21 +177,18 @@ export function geminiSizeFor(ratio: string, resolution: string): string {
   return `${width * 2}x${height * 2}`
 }
 
-/** GPT Image 2.5 pixel size: table lookup per ratio x resolution. */
-export function gptImage25SizeFor(ratio: string, resolution: string): string {
-  const sizes = GPT_IMAGE_2_5_SIZES[resolution]
-  if (sizes === undefined) {
-    throw mediaErrors.input(`Unsupported image_resolution "${resolution}"; supported values: ${SUPPORTED_RESOLUTIONS.join(', ')}`)
-  }
-  const px = sizes[normalizeRatio(ratio)]
-  if (px === undefined) {
-    throw mediaErrors.input(`Unsupported image_ratio "${ratio}" for ${resolution} output; supported values: ${SUPPORTED_RATIOS.join(', ')}`)
-  }
-  return px
+/**
+ * Expected GPT Image 2 output pixels for a ratio: the route renders a fixed
+ * 2048-px long edge in `aspect_ratio` mode (16:9 -> 2048x1152). Used as the
+ * reported size of last resort — the adapter first measures the file it
+ * actually downloaded, because the real dimensions are the ground truth.
+ */
+export function gptImage2SizeFor(ratio: string): string {
+  const value = normalizeRatio(ratio)
+  const [w, h] = value.split(':').map(Number)
+  const scale = GPT_IMAGE_2_4K_LONG_EDGE / Math.max(w, h)
+  return `${Math.round(w * scale)}x${Math.round(h * scale)}`
 }
-
-/** @deprecated Legacy alias of {@link gptImage25SizeFor}. */
-export const gptImage2SizeFor = gptImage25SizeFor
 
 /**
  * Single cross-process capacity pool shared by EVERY image task: both image
@@ -301,13 +281,15 @@ function credentials(cfg: RouterConfig, env: string): string | undefined {
 /**
  * Comfly OpenAI-compatible adapter (one fixed model, one request).
  *
- * The `profile` switches contracts. `gemini` is the 2K-only route: it sends
- * the provider-specific `resolution` field (always `2k`) plus
- * `response_format: 'url'`, and any requested 1K/4K class is clamped to 2K.
- * `gpt` is the Comfly GPT Image 2.5
- * ("sunburst") contract: one fixed model, a concrete pixel `size`, and
- * neither `resolution` nor `response_format`; the image comes back as
- * `data[0].b64_json`.
+ * The `profile` switches contracts.
+ * - `gemini` is the 2K-only route: it sends the provider-specific
+ *   `resolution` field (always `2k`) plus `response_format: 'url'`, and any
+ *   requested 1K/4K class is clamped to 2K.
+ * - `gpt` is the Comfly GPT Image 2 (`gpt-image-2-4k`) contract: it submits
+ *   the ratio as `aspect_ratio` and NO pixel `size` — on a size-based request
+ *   the gateway rewrites the model id and routes to a channel with no quota,
+ *   answering HTTP 503. It sends neither `resolution` nor `response_format`,
+ *   and receives `data[0].url`, which this adapter downloads.
  */
 function comflyAdapter(
   id: string,
@@ -325,21 +307,20 @@ function comflyAdapter(
     async execute(input) {
       const apiKey = credentials(cfg, cfg.comflyApiKeyEnv)
       if (!apiKey) throw mediaErrors.auth(`missing credential ${cfg.comflyApiKeyEnv}`)
-      // Both Comfly routes are single-class: GPT 2.5 is 4K-only and Gemini is
-      // 2K-only. A user-requested class is clamped to the route's own class —
-      // never downgraded to a smaller class and never rejected.
-      const resolution = profile === 'gemini' ? GEMINI_IMAGE_RESOLUTION : GPT_IMAGE_25_RESOLUTION
+      // Both Comfly routes are single-class: GPT Image 2 renders the 2K class
+      // and Gemini is 2K-only. A user-requested class is clamped to the
+      // route's own class — never downgraded and never rejected.
+      const resolution = profile === 'gemini' ? GEMINI_IMAGE_RESOLUTION : GPT_IMAGE_2_4K_RESOLUTION
       const effectiveModel = profile === 'gemini' ? (GEMINI_MODELS_BY_RESOLUTION[resolution] ?? model) : model
-      const size = profile === 'gemini' ? geminiSizeFor(input.ratio, resolution) : gptImage25SizeFor(input.ratio, resolution)
       const payload = await openAiImageResult({
         baseURL: cfg.comflyBaseURL,
         apiKey,
         model: effectiveModel,
         prompt: input.prompt,
-        size,
-        sendResolution: profile === 'gemini',
-        sendResponseFormat: profile === 'gemini',
-        resolution,
+        // The GPT route is ratio-addressed; only the Gemini route sends pixels.
+        ...(profile === 'gemini'
+          ? { size: geminiSizeFor(input.ratio, resolution), sendResolution: true, sendResponseFormat: true, resolution }
+          : { aspectRatio: input.ratio }),
         images: input.images,
         proxyUrl: cfg.proxyUrl,
         signal: input.signal,
@@ -356,9 +337,29 @@ function comflyAdapter(
             // The download (including its retry) shares the candidate's deadline.
             deadlineAtMs: input.deadlineAtMs,
           })
+      // Report the pixels the provider really produced. The GPT route's output
+      // size is not requested explicitly, so measuring the delivered file is
+      // the only honest source; the expected long edge is a last resort.
+      const size = profile === 'gemini'
+        ? geminiSizeFor(input.ratio, resolution)
+        : (await measurePixelSize(path)) ?? gptImage2SizeFor(input.ratio)
       return { outputPath: path, model: effectiveModel, resolution, size }
     },
   }
+}
+
+/**
+ * Real pixel dimensions of a staged image, or undefined when they cannot be
+ * read. Reporting-only: a paid image is never failed over a failed measurement.
+ */
+async function measurePixelSize(path: string): Promise<string | undefined> {
+  try {
+    const meta = await sharp(path, { failOn: 'none' }).metadata()
+    if (meta.width !== undefined && meta.height !== undefined) return `${meta.width}x${meta.height}`
+  } catch {
+    /* fall through to the expected-size fallback */
+  }
+  return undefined
 }
 
 /**
@@ -411,13 +412,16 @@ function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
 
 /** Legacy adapter ids -> current ids (configs written against old names keep working). */
 export const ADAPTER_ALIASES: Readonly<Record<string, string>> = {
-  'comfly-gpt-image-2': 'comfly-gpt-image-2.5',
+  // The GPT Image 2 generation replaced the 2.5 sunburst route; both former
+  // spellings still resolve to the single current GPT route.
+  'comfly-gpt-image-2': 'comfly-gpt-image-2-4k',
+  'comfly-gpt-image-2.5': 'comfly-gpt-image-2-4k',
 }
 
-/** Build the default adapter chain in contract priority order (GPT 2.5 first). */
+/** Build the default adapter chain in contract priority order (GPT Image 2 first). */
 export function defaultAdapters(cfg: RouterConfig): ImageAdapter[] {
   const chain: ImageAdapter[] = [
-    comflyAdapter('comfly-gpt-image-2.5', GPT_IMAGE_25_MODEL, cfg, 'gpt'),
+    comflyAdapter('comfly-gpt-image-2-4k', GPT_IMAGE_2_4K_MODEL, cfg, 'gpt'),
     comflyAdapter('comfly-gemini-flash-preview', GEMINI_MODELS_BY_RESOLUTION[GEMINI_IMAGE_RESOLUTION], cfg, 'gemini'),
     dreaminaImageAdapter(cfg),
   ]
@@ -449,7 +453,7 @@ export interface RouterOutcome {
   outputPath: string
   provider: string
   model: string
-  /** Resolution class actually used (the GPT 2.5 route always reports 4K). */
+  /** Resolution class actually used (the GPT Image 2 route always reports 2K). */
   resolution?: string
   /** Concrete pixel size actually submitted when the route uses pixels. */
   size?: string
@@ -461,7 +465,7 @@ export interface RouterOptions {
   /** Raw local reference paths; the router normalizes them first. */
   images: string[]
   ratio: string
-  /** Optional user-selected resolution class (1K/2K/4K); single-class routes clamp it (GPT 4K, Gemini 2K), Dreamina applies 1K otherwise. */
+  /** Optional user-selected resolution class (1K/2K/4K); single-class routes clamp it (GPT 2K, Gemini 2K), Dreamina applies 1K otherwise. */
   resolution?: string
   /** Optional user-explicit route id; only that adapter runs without fallback. */
   imageProvider?: string
@@ -540,7 +544,11 @@ async function normalizeInputs(images: string[], privateRoot: string): Promise<s
  * paid attempt: a failure is final for the candidate.
  */
 export async function runImageRouter(options: RouterOptions): Promise<RouterOutcome> {
-  const { prompt, images, ratio, config, privateRoot, signal, taskId = newTaskId() } = options
+  const { prompt, images, config, privateRoot, signal, taskId = newTaskId() } = options
+  // Normalize the ratio ONCE, here: every adapter then receives a canonical
+  // ratio token, so a pixel spelling (1920x1080) can never reach a provider's
+  // `aspect_ratio` field or Dreamina's `--ratio` flag.
+  const ratio = normalizeRatio(options.ratio)
   ratioToSize(ratio) // throws input_error for missing/unsupported
   assertSupportedResolution(options.resolution)
   const fullChain = options.adapters ?? defaultAdapters({ ...config, enabled: [] })

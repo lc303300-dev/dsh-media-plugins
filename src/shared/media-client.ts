@@ -92,9 +92,10 @@ export interface OpenAiImagePayload {
 }
 
 /**
- * Parse `payload.data[0]`, preferring inline `b64_json` (Comfly GPT 2.5
- * "sunburst" returns Base64 without `response_format`) and falling back to
- * `url` (Gemini / legacy GPT routes).
+ * Parse `payload.data[0]`, preferring inline `b64_json` and falling back to
+ * `url`. Which shape arrives depends on the route, not on `response_format`:
+ * the Comfly GPT routes answer with `url` while some Comfly providers inline
+ * Base64 without ever being asked for it.
  */
 export function extractImagePayload(payload: any): OpenAiImagePayload {
   const data = payload?.data
@@ -116,14 +117,20 @@ export interface OpenAiImageOptions {
   apiKey: string
   model: string
   prompt: string
-  size: string
-  /** Send the provider-specific `resolution` field; Gemini routes only —
-   *  Comfly GPT 2.5 requires concrete pixel `size` and never accepts it. */
+  /** Concrete pixel size; mutually exclusive with {@link aspectRatio}. */
+  size?: string
+  /**
+   * Ratio token (`16:9`) submitted as the provider-specific `aspect_ratio`
+   * field. The Comfly GPT Image 2 route takes a ratio and never a pixel
+   * `size`: on the default group a size-based request is routed to a pool
+   * with no quota and fails with HTTP 503.
+   */
+  aspectRatio?: string
+  /** Send the provider-specific `resolution` field; Gemini routes only. */
   sendResolution?: boolean
   /** Resolution class (1K/2K/4K) used when `sendResolution` is set. */
   resolution?: string
-  /** Send `response_format: 'url'`; Gemini routes only — Comfly GPT 2.5
-   *  returns `data[0].b64_json` and must not receive the field. */
+  /** Send `response_format: 'url'`; Gemini routes only. */
   sendResponseFormat?: boolean
   images?: string[]
   proxyUrl?: string
@@ -135,10 +142,13 @@ export interface OpenAiImageOptions {
  * POST /images/generations (text) or /images/edits (with references,
  * multipart) and return the parsed provider payload: inline Base64 bytes
  * (`data[0].b64_json`) or a remote URL (`data[0].url`).
+ *
+ * Exactly one of `size` / `aspectRatio` should be set: pixel routes send
+ * `size`, the Comfly GPT Image 2 route sends `aspect_ratio` instead.
  */
 export async function openAiImageResult(options: OpenAiImageOptions): Promise<OpenAiImagePayload> {
   const {
-    baseURL, apiKey, model, prompt, size, resolution,
+    baseURL, apiKey, model, prompt, size, aspectRatio, resolution,
     sendResolution = false, sendResponseFormat = false,
     images = [], proxyUrl, signal, timeoutMs = DEFAULT_IMAGE_REQUEST_TIMEOUT_MS,
   } = options
@@ -167,8 +177,9 @@ export async function openAiImageResult(options: OpenAiImageOptions): Promise<Op
         ['model', model],
         ['prompt', prompt],
         ['n', '1'],
-        ['size', size],
       ]
+      if (size !== undefined) fields.push(['size', size])
+      if (aspectRatio !== undefined) fields.push(['aspect_ratio', aspectRatio])
       if (sendResolution && resolution !== undefined) {
         fields.push(['resolution', resolution.toLowerCase()])
       }
@@ -194,7 +205,9 @@ export async function openAiImageResult(options: OpenAiImageOptions): Promise<Op
         ...common,
       })
     } else {
-      const payload: Record<string, unknown> = { model, prompt, n: 1, size }
+      const payload: Record<string, unknown> = { model, prompt, n: 1 }
+      if (size !== undefined) payload.size = size
+      if (aspectRatio !== undefined) payload.aspect_ratio = aspectRatio
       if (sendResolution && resolution !== undefined) {
         payload.resolution = resolution.toLowerCase()
       }

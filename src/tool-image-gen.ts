@@ -7,13 +7,13 @@
  *   such as 1920x1080 that is converted to the nearest standard ratio); missing
  *   or unsupported values fail as input_error before any provider is called.
  * - `image_resolution` is optional (1K/2K/4K); both Comfly routes are
- *   single-class and clamp rather than reject: GPT 2.5 is 4K-only (1K/2K
- *   clamp up to 4K) and Gemini is 2K-only (1K/4K clamp to 2K). Dreamina
- *   keeps 1K.
- * - The default route is `comfly-gpt-image-2.5` (`gpt-image-2.5-sunburst`,
- *   concrete pixel `size`, no `resolution`, no `response_format`, image read
- *   from `data[0].b64_json`).
- * - Adapters run strictly serially: comfly-gpt-image-2.5 →
+ *   single-class and clamp rather than reject: GPT Image 2 reports 2K (it
+ *   renders a 2048-px long edge) and Gemini is 2K-only (1K/4K clamp to 2K).
+ *   Dreamina keeps 1K.
+ * - The default route is `comfly-gpt-image-2-4k` (`gpt-image-2-4k`, the ratio
+ *   submitted as `aspect_ratio`, no pixel `size`, no `resolution`, no
+ *   `response_format`; the image arrives as `data[0].url` and is downloaded).
+ * - Adapters run strictly serially: comfly-gpt-image-2-4k →
  *   comfly-gemini-flash-preview → dreamina-image. Fallback only for allowed failure classes;
  *   indeterminate submissions never retry.
  * - `image_provider` (restricted enum) pins the run to exactly one route
@@ -129,7 +129,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'generate_image',
       description:
-        '用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。默认图片线路是 comfly-gpt-image-2.5（Comfly gpt-image-2.5-sunburst），该线路只出 4K：提交 4K 具体像素尺寸，不传 resolution/response_format，图片读 data[0].b64_json 解码；用户给的是具体像素尺寸（如 1920x1080、1920×1080、1920*1080、1080x1920）时，直接把它填进 image_ratio 即可，工具自动换算成最接近的标准比例（1920x1080 → 16:9、1080x1920 → 9:16、2880x2880 → 1:1 等）再出图，无需自行换算。次选线路 comfly-gemini-flash-preview 仅出 2K（1K/4K 请求一律按 2K 执行）。image_provider 可选：仅当用户明确点名某条受支持线路时传入（comfly-gpt-image-2.5、comfly-gemini-flash-preview、dreamina-image；comfly-gpt-image-2 是 comfly-gpt-image-2.5 的兼容别名），指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前以 input_error 拒绝。未点名线路时只走链中第一条就绪线路（comfly-gpt-image-2.5；缺凭证或熔断则顺延到 comfly-gemini-flash-preview、dreamina-image），**单线路执行、失败即停，绝不换线路重试、绝不重放已付费的尝试**；单张总预算 90 秒（提交 + 下载 + 下载重试共用同一个时间盒），提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。本工具只对出图数量与速度负责：生成后不做质量、审美或一致性检查，不逐张读图验收、不自动重生成；质量判断交由用户。全部图片任务（含 batch_image 与同一 workspace 的其他会话）共享一个跨进程容量池，默认最多 10 张图同时生成；视频容量独立。',
+        '用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。默认图片线路是 comfly-gpt-image-2-4k（Comfly gpt-image-2-4k）：只提交 aspect_ratio 比例、**绝不传 size**（传 size 会被网关改写成无配额渠道并返回 503），不传 resolution/response_format，实测输出固定 2048 长边（16:9 → 2048x1152，属 2K 档；模型名里的 4k 只是 Comfly 渠道后缀），图片读 data[0].url 下载；用户给的是具体像素尺寸（如 1920x1080、1920×1080、1920*1080、1080x1920）时，直接把它填进 image_ratio 即可，工具自动换算成最接近的标准比例（1920x1080 → 16:9、1080x1920 → 9:16、2880x2880 → 1:1 等）再出图，无需自行换算。次选线路 comfly-gemini-flash-preview 仅出 2K（1K/4K 请求一律按 2K 执行）。image_provider 可选：仅当用户明确点名某条受支持线路时传入（comfly-gpt-image-2-4k、comfly-gemini-flash-preview、dreamina-image；comfly-gpt-image-2、comfly-gpt-image-2.5 均为 comfly-gpt-image-2-4k 的兼容别名），指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前以 input_error 拒绝。未点名线路时只走链中第一条就绪线路（comfly-gpt-image-2-4k；缺凭证或熔断则顺延到 comfly-gemini-flash-preview、dreamina-image），**单线路执行、失败即停，绝不换线路重试、绝不重放已付费的尝试**；单张总预算 90 秒（提交 + 下载 + 下载重试共用同一个时间盒），提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。本工具只对出图数量与速度负责：生成后不做质量、审美或一致性检查，不逐张读图验收、不自动重生成；质量判断交由用户。全部图片任务（含 batch_image 与同一 workspace 的其他会话）共享一个跨进程容量池，默认最多 10 张图同时生成；视频容量独立。',
       parameters: {
         prompt: {
           type: 'string',
@@ -143,12 +143,12 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         image_resolution: {
           type: 'string',
           enum: [...SUPPORTED_RESOLUTIONS],
-          description: '可选：图片输出分辨率（1K/2K/4K）。两条 Comfly 线路都是单档位、只钳制不报错：默认线路 comfly-gpt-image-2.5 只出 4K（传 1K/2K 按 4K 执行），comfly-gemini-flash-preview 只出 2K（传 1K/4K 按 2K 执行）；Dreamina 缺省 1K。用户要求的是具体像素尺寸（如 1920x1080）时不要用本字段，直接把像素尺寸传进 image_ratio，工具会自动换算成最接近的标准比例。',
+          description: '可选：图片输出分辨率（1K/2K/4K）。两条 Comfly 线路都是单档位、只钳制不报错：默认线路 comfly-gpt-image-2-4k 实测输出 2048 长边（属 2K 档，传 1K/2K/4K 都按该档执行），comfly-gemini-flash-preview 只出 2K（传 1K/4K 按 2K 执行）；Dreamina 缺省 1K。用户要求的是具体像素尺寸（如 1920x1080）时不要用本字段，直接把像素尺寸传进 image_ratio，工具会自动换算成最接近的标准比例。',
         },
         image_provider: {
           type: 'string',
-          enum: [...SUPPORTED_IMAGE_PROVIDERS, 'comfly-gpt-image-2'],
-          description: '可选：用户明确点名的图片线路。默认线路是 comfly-gpt-image-2.5；comfly-gpt-image-2 是它的兼容别名。指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前以 input_error 拒绝。',
+          enum: [...SUPPORTED_IMAGE_PROVIDERS, 'comfly-gpt-image-2', 'comfly-gpt-image-2.5'],
+          description: '可选：用户明确点名的图片线路。默认线路是 comfly-gpt-image-2-4k；comfly-gpt-image-2 与 comfly-gpt-image-2.5 都是它的兼容别名。指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前以 input_error 拒绝。',
         },
         image: {
           type: 'array',

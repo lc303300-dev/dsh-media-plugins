@@ -144,7 +144,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'batch_image',
       description:
-        '确定性批量图片调度器（Codex_Batch_Image 的 DSH 重建）：manifest（组 id 唯一、每组 prompt 非空、candidates ≥ 1、image_ratio 必填（8 个标准比例之一，或 1920x1080 这类像素尺寸，工具会换算成最接近的标准比例）；可选批次级 image_resolution 1K/2K/4K（单档位线路只钳制不报错：默认线路 GPT 2.5 固定 4K、Gemini 固定 2K）、image_provider 单线路、completion_grace_seconds 完成宽限期）→ 稳定 job key → SQLite 状态 → 最多 10 路并发、真实提交间隔 ≥ 1 秒 → 分派截止（默认 ceil(总数÷并发)×90 秒，可用 deadline_seconds 覆盖）：截止后不再启动新任务，未启动任务永久 abandoned（batch_deadline_not_submitted，不查询、不重试）；已在运行的任务最多再等 completion_grace_seconds（默认 120 秒、上限 120 秒、可缩短不可延长），宽限期内落地成功照常收集，超时仍未完成的运行中任务终止并标记 failed（batch_completion_grace_timeout）→ 生成固定槽位编号联系表供人工选图。付费执行全部走统一媒体路由器，**每条候选只走一条线路、失败即停，绝不换线路或重试**；同一候选绝不重复提交（job key + 任务 id 幂等）。到点硬停：截止后停止派发，宽限到点即中止在跑任务（最多再给 5 秒善后），随后**不读图、不做任何内容检查**，直接收集已落地的成功图并写审阅页；未落地槽位永不自动补跑，由用户看审阅页决定重跑哪些。',
+        '确定性批量图片调度器（Codex_Batch_Image 的 DSH 重建）：manifest（组 id 唯一、每组 prompt 非空、candidates ≥ 1、image_ratio 必填（8 个标准比例之一，或 1920x1080 这类像素尺寸，工具会换算成最接近的标准比例）；可选批次级 image_resolution 1K/2K/4K（单档位线路只钳制不报错：默认线路 GPT Image 2 实测输出 2048 长边、Gemini 固定 2K）、image_provider 单线路、completion_grace_seconds 完成宽限期）→ 稳定 job key → SQLite 状态 → 最多 10 路并发、真实提交间隔 ≥ 1 秒 → 分派截止（默认 ceil(总数÷并发)×90 秒，可用 deadline_seconds 覆盖）：截止后不再启动新任务，未启动任务永久 abandoned（batch_deadline_not_submitted，不查询、不重试）；已在运行的任务最多再等 completion_grace_seconds（默认 120 秒、上限 120 秒、可缩短不可延长），宽限期内落地成功照常收集，超时仍未完成的运行中任务终止并标记 failed（batch_completion_grace_timeout）→ 生成固定槽位编号联系表供人工选图。付费执行全部走统一媒体路由器，**每条候选只走一条线路、失败即停，绝不换线路或重试**；同一候选绝不重复提交（job key + 任务 id 幂等）。到点硬停：截止后停止派发，宽限到点即中止在跑任务（最多再给 5 秒善后），随后**不读图、不做任何内容检查**，直接收集已落地的成功图并写审阅页；未落地槽位永不自动补跑，由用户看审阅页决定重跑哪些。',
       parameters: {
         command: {
           type: 'string',

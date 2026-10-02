@@ -52,7 +52,7 @@ test('candidate box: a hanging image download cannot spend a fresh budget per at
       providerTimeoutMs: boxMs,
       taskTimeoutMs: boxMs,
       outputDir: 'o',
-      enabled: ['comfly-gpt-image-2.5'],
+      enabled: ['comfly-gpt-image-2-4k'],
       credentials: { K: 'test-key' },
     }
     const adapters = defaultAdapters(cfg)
@@ -66,7 +66,7 @@ test('candidate box: a hanging image download cannot spend a fresh budget per at
         workspaceRoot: dir,
         privateRoot: join(dir, 'private'),
         adapters,
-        imageProvider: 'comfly-gpt-image-2.5',
+        imageProvider: 'comfly-gpt-image-2-4k',
       }),
     )
     const elapsed = Date.now() - started

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ratioToSize, ratioFromPixels, normalizeRatio, SUPPORTED_RATIOS, SUPPORTED_RESOLUTIONS, SUPPORTED_IMAGE_PROVIDERS, classifyHttp, runImageRouter, defaultAdapters, geminiSizeFor, gptImage25SizeFor, GPT_IMAGE_2_5_SIZES, GPT_IMAGE_25_MODEL, GPT_IMAGE_25_RESOLUTION, GEMINI_IMAGE_RESOLUTION, GEMINI_MODELS_BY_RESOLUTION, ADAPTER_ALIASES, IMAGE_CAPACITY_KEY, DEFAULT_IMAGE_CONCURRENCY } from '../src/shared/adapters.ts'
+import { ratioToSize, ratioFromPixels, normalizeRatio, SUPPORTED_RATIOS, SUPPORTED_RESOLUTIONS, SUPPORTED_IMAGE_PROVIDERS, classifyHttp, runImageRouter, defaultAdapters, geminiSizeFor, gptImage2SizeFor, GPT_IMAGE_2_4K_MODEL, GPT_IMAGE_2_4K_RESOLUTION, GPT_IMAGE_2_4K_LONG_EDGE, GEMINI_IMAGE_RESOLUTION, GEMINI_MODELS_BY_RESOLUTION, ADAPTER_ALIASES, IMAGE_CAPACITY_KEY, DEFAULT_IMAGE_CONCURRENCY } from '../src/shared/adapters.ts'
 import { MediaError, FALLBACK_ALLOWED, STOP_CLASSES, ALL_FAILURE_CLASSES, mediaErrors } from '../src/shared/failure.ts'
 import { hasImageSignature, extensionFor, decodeBase64Image, extractImagePayload, stageImageBytes } from '../src/shared/media-client.ts'
 
@@ -13,8 +13,8 @@ test('SUPPORTED_RATIOS is exactly the 8 contract values', () => {
 
 test('SUPPORTED_RESOLUTIONS and SUPPORTED_IMAGE_PROVIDERS match the contract', () => {
   assert.deepEqual(SUPPORTED_RESOLUTIONS, ['1K', '2K', '4K'])
-  assert.deepEqual(SUPPORTED_IMAGE_PROVIDERS, ['comfly-gpt-image-2.5', 'comfly-gemini-flash-preview', 'dreamina-image'])
-  assert.equal(SUPPORTED_IMAGE_PROVIDERS[0], 'comfly-gpt-image-2.5', 'the GPT 2.5 route is the default image route')
+  assert.deepEqual(SUPPORTED_IMAGE_PROVIDERS, ['comfly-gpt-image-2-4k', 'comfly-gemini-flash-preview', 'dreamina-image'])
+  assert.equal(SUPPORTED_IMAGE_PROVIDERS[0], 'comfly-gpt-image-2-4k', 'the GPT Image 2 route is the default image route')
   assert.ok(!SUPPORTED_IMAGE_PROVIDERS.includes('comfly-gpt-image-2-all'), 'retired comfly-gpt-image-2-all must not be a public route')
 })
 
@@ -58,26 +58,16 @@ test('geminiSizeFor is 2K-only: the withdrawn 1K/4K classes are input_error at t
   assert.throws(() => geminiSizeFor('5:7', '2K'), (e) => e instanceof MediaError && e.cls === 'input_error')
 })
 
-test('gptImage25SizeFor resolves the 4K-only GPT 2.5 pixel table (the Comfly sunburst contract)', () => {
-  assert.equal(GPT_IMAGE_25_MODEL, 'gpt-image-2.5-sunburst')
-  assert.equal(GPT_IMAGE_25_RESOLUTION, '4K', 'the GPT 2.5 route is 4K-only')
-  assert.equal(gptImage25SizeFor('16:9', '4K'), '3840x2160')
-  assert.equal(gptImage25SizeFor('1920x1080', '4K'), '3840x2160', 'pixel spelling resolves to 16:9')
-  assert.equal(gptImage25SizeFor('1080x1920', '4K'), '2160x3840')
-  assert.equal(GPT_IMAGE_2_5_SIZES['1K'], undefined, 'the 4K-only route has no 1K ladder')
-  assert.equal(GPT_IMAGE_2_5_SIZES['2K'], undefined, 'the 4K-only route has no 2K ladder')
-  assert.deepEqual(GPT_IMAGE_2_5_SIZES['4K'], {
-    '21:9': '3840x1648',
-    '16:9': '3840x2160',
-    '3:2': '3520x2352',
-    '4:3': '3312x2480',
-    '1:1': '2880x2880',
-    '3:4': '2480x3312',
-    '2:3': '2352x3520',
-    '9:16': '2160x3840',
-  })
-  assert.throws(() => gptImage25SizeFor('16:9', '8K'), (e) => e instanceof MediaError && e.cls === 'input_error')
-  assert.throws(() => gptImage25SizeFor('5:7', '1K'), (e) => e instanceof MediaError && e.cls === 'input_error')
+test('gptImage2SizeFor derives the 2048-px long edge the GPT Image 2 route renders (aspect_ratio mode)', () => {
+  assert.equal(GPT_IMAGE_2_4K_MODEL, 'gpt-image-2-4k')
+  assert.equal(GPT_IMAGE_2_4K_RESOLUTION, '2K', 'the GPT Image 2 route reports the 2K class')
+  assert.equal(GPT_IMAGE_2_4K_LONG_EDGE, 2048, 'aspect_ratio mode renders a 2048-px long edge')
+  assert.equal(gptImage2SizeFor('16:9'), '2048x1152', 'measured output for 16:9')
+  assert.equal(gptImage2SizeFor('1920x1080'), '2048x1152', 'pixel spelling resolves to 16:9')
+  assert.equal(gptImage2SizeFor('1080x1920'), '1152x2048')
+  assert.equal(gptImage2SizeFor('1:1'), '2048x2048')
+  assert.equal(gptImage2SizeFor('21:9'), '2048x878')
+  assert.throws(() => gptImage2SizeFor('5:7'), (e) => e instanceof MediaError && e.cls === 'input_error')
 })
 
 test('GEMINI_MODELS_BY_RESOLUTION keeps only the 2K model', () => {
@@ -131,7 +121,7 @@ test('image signature detection', () => {
   assert.equal(extensionFor(new Uint8Array([0xff, 0xd8, 0xff])), '.jpg')
 })
 
-test('extractImagePayload prefers b64_json (GPT 2.5) and falls back to url', () => {
+test('extractImagePayload prefers b64_json and falls back to url', () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]).toString('base64')
   const inline = extractImagePayload({ data: [{ b64_json: png }] })
   assert.ok(inline.bytes instanceof Uint8Array)
@@ -163,14 +153,14 @@ test('stageImageBytes validates the signature and stages atomically', async () =
   }
 })
 
-test('defaultAdapters puts the GPT 2.5 route first (default image route)', () => {
+test('defaultAdapters puts the GPT Image 2 route first (default image route)', () => {
   const cfg = {
     comflyBaseURL: 'x', comflyApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
     maxConcurrency: 6, providerTimeoutMs: 90000, taskTimeoutMs: 90000, outputDir: 'o', enabled: [],
   }
   const all = defaultAdapters(cfg)
-  assert.deepEqual(all.map((a) => a.id), ['comfly-gpt-image-2.5', 'comfly-gemini-flash-preview', 'dreamina-image'])
-  assert.equal(all[0].model, 'gpt-image-2.5-sunburst')
+  assert.deepEqual(all.map((a) => a.id), ['comfly-gpt-image-2-4k', 'comfly-gemini-flash-preview', 'dreamina-image'])
+  assert.equal(all[0].model, 'gpt-image-2-4k')
   const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gemini-flash-preview'] })
   assert.equal(filtered.length, 1)
   assert.equal(filtered[0].id, 'comfly-gemini-flash-preview')
@@ -183,20 +173,23 @@ test('retired alias: comfly-gemini-lite is neither an adapter id nor an alias an
     maxConcurrency: 6, providerTimeoutMs: 90000, taskTimeoutMs: 90000, outputDir: 'o', enabled: [],
   }
   assert.equal(ADAPTER_ALIASES['comfly-gemini-lite'], undefined)
-  assert.deepEqual(Object.keys(ADAPTER_ALIASES), ['comfly-gpt-image-2'], 'only the GPT 2 alias remains')
+  assert.deepEqual(Object.keys(ADAPTER_ALIASES), ['comfly-gpt-image-2', 'comfly-gpt-image-2.5'], 'only the two former GPT spellings remain')
   assert.deepEqual(defaultAdapters({ ...cfg, enabled: ['comfly-gemini-lite'] }), [], 'the retired id selects no adapter')
 })
 
-test('legacy adapter id alias: comfly-gpt-image-2 still selects the GPT 2.5 route', () => {
+test('legacy adapter id aliases: both former GPT spellings select the GPT Image 2 route', () => {
   const cfg = {
     comflyBaseURL: 'x', comflyApiKeyEnv: 'K', dreaminaPath: 'd', proxyUrl: '',
     maxConcurrency: 6, providerTimeoutMs: 90000, taskTimeoutMs: 90000, outputDir: 'o', enabled: [],
   }
-  assert.equal(ADAPTER_ALIASES['comfly-gpt-image-2'], 'comfly-gpt-image-2.5')
-  const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gpt-image-2'] })
-  assert.equal(filtered.length, 1)
-  assert.equal(filtered[0].id, 'comfly-gpt-image-2.5')
-  assert.equal(filtered[0].model, 'gpt-image-2.5-sunburst')
+  assert.equal(ADAPTER_ALIASES['comfly-gpt-image-2'], 'comfly-gpt-image-2-4k')
+  assert.equal(ADAPTER_ALIASES['comfly-gpt-image-2.5'], 'comfly-gpt-image-2-4k')
+  for (const legacy of ['comfly-gpt-image-2', 'comfly-gpt-image-2.5']) {
+    const filtered = defaultAdapters({ ...cfg, enabled: [legacy] })
+    assert.equal(filtered.length, 1)
+    assert.equal(filtered[0].id, 'comfly-gpt-image-2-4k')
+    assert.equal(filtered[0].model, 'gpt-image-2-4k')
+  }
 })
 
 test('every image route leases ONE shared image pool; video capacity is never image-visible', () => {
@@ -205,7 +198,7 @@ test('every image route leases ONE shared image pool; video capacity is never im
     maxConcurrency: DEFAULT_IMAGE_CONCURRENCY, providerTimeoutMs: 90000, taskTimeoutMs: 90000, outputDir: 'o', enabled: [],
   }
   const chain = defaultAdapters(cfg)
-  assert.equal(chain.length, 3, 'GPT 2.5 -> Gemini 2K -> Dreamina')
+  assert.equal(chain.length, 3, 'GPT Image 2 -> Gemini 2K -> Dreamina')
   assert.deepEqual([...new Set(chain.map((a) => a.capacityKey))], [IMAGE_CAPACITY_KEY], 'all image routes share the single pool')
   assert.equal(IMAGE_CAPACITY_KEY, 'image')
   assert.equal(DEFAULT_IMAGE_CONCURRENCY, 10, 'the shared image pool is 10 concurrent images')

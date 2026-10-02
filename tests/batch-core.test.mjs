@@ -30,8 +30,8 @@ test('deadline basis: one 90 s per-candidate number, identical to the provider t
 
 test('manifest validation accepts a valid manifest', () => {
   assert.doesNotThrow(() => validateManifest(baseManifest))
-  assert.doesNotThrow(() => validateManifest({ ...baseManifest, image_resolution: '2K', image_provider: 'comfly-gpt-image-2.5' }))
-  assert.doesNotThrow(() => validateManifest({ ...baseManifest, image_provider: 'comfly-gpt-image-2' }), 'legacy GPT route id resolves to the GPT 2.5 route')
+  assert.doesNotThrow(() => validateManifest({ ...baseManifest, image_resolution: '2K', image_provider: 'comfly-gpt-image-2-4k' }))
+  assert.doesNotThrow(() => validateManifest({ ...baseManifest, image_provider: 'comfly-gpt-image-2' }), 'legacy GPT route id resolves to the GPT Image 2 route')
   assert.throws(() => validateManifest({ ...baseManifest, image_provider: 'comfly-gemini-lite' }), /image_provider/, 'the retired comfly-gemini-lite alias is no longer accepted')
   assert.doesNotThrow(() => validateManifest({ ...baseManifest, completion_grace_seconds: 60 }))
   assert.doesNotThrow(() => validateManifest({ ...baseManifest, completion_grace_seconds: 120 }))
@@ -95,8 +95,8 @@ test('flattenTasks yields one task per candidate in slot order and carries batch
   assert.equal(tasks.length, 40)
   assert.deepEqual(tasks[0], { groupId: 'a', slot: 1, prompt: '一只橘猫', ratio: '1:1', resolution: undefined, imageProvider: undefined, references: undefined })
   assert.deepEqual(tasks[20], { groupId: 'b', slot: 1, prompt: '未来城市', ratio: '16:9', resolution: undefined, imageProvider: undefined, references: undefined })
-  const withOpts = flattenTasks({ ...baseManifest, image_resolution: '2K', image_provider: 'comfly-gpt-image-2.5' })
-  assert.deepEqual(withOpts[0], { groupId: 'a', slot: 1, prompt: '一只橘猫', ratio: '1:1', resolution: '2K', imageProvider: 'comfly-gpt-image-2.5', references: undefined })
+  const withOpts = flattenTasks({ ...baseManifest, image_resolution: '2K', image_provider: 'comfly-gpt-image-2-4k' })
+  assert.deepEqual(withOpts[0], { groupId: 'a', slot: 1, prompt: '一只橘猫', ratio: '1:1', resolution: '2K', imageProvider: 'comfly-gpt-image-2-4k', references: undefined })
 })
 
 test('pixel-size image_ratio is accepted and normalized to the standard ratio (shared job key)', () => {
