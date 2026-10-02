@@ -21,6 +21,11 @@
       config:
         # Comfly 需要 VPN 代理；按本机代理端口修改。
         proxyUrl: 'http://127.0.0.1:7897'
+        # 上游渠道高峰期单张实测 121–195 s，默认 90 s 预算会造成
+        # “工具 90 s 放弃、上游继续跑完并计费”的空烧，故放宽到 300 s。
+        # 回滚：删除下面两行即恢复默认 90 s。
+        providerTimeoutMs: 300000
+        taskTimeoutMs: 300000
 
     - id: Ws_tool-video-gen
       name: dsh-media-plugins/Ws_tool-video-gen
@@ -55,6 +60,10 @@
       name: dsh-media-plugins/Ws_tool-batch-image
       config:
         proxyUrl: 'http://127.0.0.1:7897'
+        # 同 generate_image：上游慢时把单张预算从 90 s 放宽到 300 s，
+        # 否则调度器会在 90 s 判失败而上游仍在计费。回滚：删掉下面两行。
+        providerTimeoutMs: 300000
+        taskTimeoutMs: 300000
 
     - id: Ws_tool-video-to-gif
       name: dsh-media-plugins/Ws_tool-video-to-gif

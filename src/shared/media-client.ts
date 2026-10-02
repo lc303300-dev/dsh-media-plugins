@@ -10,7 +10,7 @@
 import { fetch, ProxyAgent, type Dispatcher } from 'undici'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
-import { mediaErrors } from './failure.ts'
+import { MediaError, mediaErrors } from './failure.ts'
 
 /**
  * The single per-candidate time basis for image work: one candidate is

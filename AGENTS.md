@@ -24,6 +24,8 @@ DSH Studio 媒体能力包。一次安装提供 15 个工具、10 个技能与�
 - **原图另行交付**：审阅页内是缩略图；原始分辨率的成品图按原尺寸交付，不缩小。
 - **并发口径（不要改小）**：`batch_image` 不写 `concurrency` 就是**默认 10**（= 共享图片池上限），`deadline = ceil(张数÷并发)×90s + 并发s`。**不要在 manifest 或技能文档里把默认写死成 `concurrency: 1`** —— 实测 75 张：并发 10 约 11 分钟，串行约 36 分钟。`start` 回执会在 manifest 显式钉住低于 10 的并发时给出 ⚠ 提示。
 - **失败即停、不自动补跑**：每条候选只走一条线路（选定前只做免费的熔断/凭证检查），失败即终；到点（deadline + 宽限）**硬停**，只收集已落地的成功图写审阅页，缺失槽位由用户决定是否换新组 id 重排。
+- **单张超时必须显式钉住（上游慢速期尤其重要）**：`IMAGE_SECONDS_PER_CANDIDATE = 90` 只是**默认**预算，可在 `cordis.patch.yml` 的 `Ws_tool-image-gen` / `Ws_tool-batch-image` 用 `providerTimeoutMs` / `taskTimeoutMs` 覆盖（现为 **300000**，即 300s）。上游渠道高峰期实测单张 **121–195s**：90s 预算会让工具先放弃、上游却继续跑完并计费（`timeout_before_submit` + 后台消费记录），等于空烧。改这两个值时同步调整 manifest 的 `deadline_seconds`（慢速期用 1800）。回归测试：`tests/shared-symbol-imports.test.mjs`。
+- **共享符号必须显式导入**：tsdown/esbuild **不做类型检查**，漏 `import` 不会在构建期报错，只会在运行时抛 `X is not defined` 并**掩盖真实失败原因**（曾发生：`media-client.ts` 用了 `MediaError` 却没导入，所有慢请求的失败分类被打成 `MediaError is not defined`）。改 `src/shared/*.ts` 后务必跑 `pnpm test`（含导入一致性回归）。
 - 实现落在 `src/shared/batch-core.ts` 的 `buildContactSheetHtml`（async，依赖 `sharp`）。
 
 ## 布局
