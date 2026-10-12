@@ -205,7 +205,15 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           const status = value.ok ? 'ok' : `failed(${value.outcome ?? 'unknown'})`
           const action = value.action ? ` ${value.action}` : ''
           const hint = value.required_action ? ` → requiredAction=${value.required_action}` : ''
-          return [{ type: 'text', text: `dreamina_canvas${action}: ${status}${hint}` }]
+          // 关键：调用方（Agent）读到的就是这段文本，必须把 data 原样带出来 ——
+          // 否则"先查 schema 再调用"这条官方要求根本无从执行（实测：只回摘要等于什么都没回）。
+          const parts = [`dreamina_canvas${action}: ${status}${hint}`]
+          if (value.request_id) parts.push(`request_id: ${value.request_id}`)
+          if (!value.ok && value.message) parts.push(`message: ${value.message}`)
+          if (value.partial_items) parts.push(`partial_items: ${JSON.stringify(value.partial_items)}`)
+          if (value.credit_confirmation) parts.push(`credit_confirmation: ${JSON.stringify(value.credit_confirmation)}`)
+          if (value.data !== undefined) parts.push(JSON.stringify(value.data, null, 2))
+          return [{ type: 'text', text: parts.join('\n') }]
         },
       },
       async execute(args: any, exec: any) {
