@@ -84,7 +84,7 @@ export const Config: z<Config> = z.object({
   dreaminaAccount: z.string().default(''),
   stateDir: z.string().default(''),
   timeoutMs: z.number().default(300000),
-  openCanvasInBrowser: z.boolean().default(false),
+  openCanvasInBrowser: z.boolean().default(true),
   canvasBrowserPath: z.string().default(''),
   canvasOpenCooldownMs: z.number().default(10 * 60 * 1000),
 })
@@ -279,15 +279,27 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         })
 
         // 官方 Skill 要求：创建/进入画布后主动打开画布（best-effort，失败不影响结果）。
-        const webUrl = result.envelope?.data?.project?.webUrl ?? result.envelope?.data?.webUrl
-        const projectId = result.envelope?.data?.project?.projectId ?? result.envelope?.data?.projectId
-        if (config.openCanvasInBrowser && typeof webUrl === 'string' && typeof projectId === 'string') {
-          await openCanvasInBrowser(webUrl, {
+        //
+        // projectId 优先取返回体，其次取本次调用显式传的 `--project-id`（node/operation/
+        // resource 这类命令的返回里没有画布对象）；webUrl 缺失时按官方画布路由构造
+        // （实测形态：https://jimeng.jianying.com/ai-tool/ai-canvas/<projectId>）。
+        const explicitProjectId = typeof flags.project_id === 'string' ? flags.project_id : undefined
+        const projectId =
+          result.envelope?.data?.project?.projectId ?? result.envelope?.data?.projectId ?? explicitProjectId
+        const webUrl =
+          result.envelope?.data?.project?.webUrl ??
+          result.envelope?.data?.webUrl ??
+          (typeof projectId === 'string' && projectId.length > 0
+            ? `https://jimeng.jianying.com/ai-tool/ai-canvas/${projectId}`
+            : undefined)
+        if (config.openCanvasInBrowser && typeof webUrl === 'string' && typeof projectId === 'string' && projectId.length > 0) {
+          const opened = await openCanvasInBrowser(webUrl, {
             privateRoot,
             projectId,
             cooldownMs: config.canvasOpenCooldownMs,
             browserPath: config.canvasBrowserPath,
           })
+          await appendSafeLog(privateRoot, 'dreamina-canvas-tool', { event: 'canvas-open', projectId, ...opened })
         }
 
         const payload: Record<string, unknown> = {
