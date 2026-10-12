@@ -296,13 +296,12 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             ? `https://jimeng.jianying.com/ai-tool/ai-canvas/${projectId}`
             : undefined)
         if (config.openCanvasInBrowser && typeof webUrl === 'string' && typeof projectId === 'string' && projectId.length > 0) {
-          // 固定浏览器 + 固定 `--user-data-dir`：即梦登录态持久化在该目录，登录一次长期复用；
-          // 该 profile 已在运行时，URL 会交给已有窗口开新标签页，不会重复开窗。
-          const browserPath = await resolveBrowserBinary(config.canvasBrowserPath)
+          // 默认交给**电脑默认浏览器**打开（用户口径）。
+          // 只有显式配置 canvasBrowserPath 时才用指定浏览器；那种情况下可再配
+          // canvasBrowserProfileDir 固定 `--user-data-dir` 来保留登录态。
+          const browserPath = config.canvasBrowserPath.trim().length > 0 ? config.canvasBrowserPath.trim() : undefined
           const profileDir =
-            config.canvasBrowserProfileDir.trim().length > 0
-              ? config.canvasBrowserProfileDir.trim()
-              : join(privateRoot, 'browser-profile')
+            config.canvasBrowserProfileDir.trim().length > 0 ? config.canvasBrowserProfileDir.trim() : undefined
           const opened = await openCanvasInBrowser(webUrl, {
             privateRoot,
             projectId,
@@ -313,8 +312,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           await appendSafeLog(privateRoot, 'dreamina-canvas-tool', {
             event: 'canvas-open',
             projectId,
-            browserPath: browserPath ?? '',
-            profileDir,
+            browserPath: browserPath ?? '(system default)',
+            profileDir: profileDir ?? '',
             ...opened,
           })
         }
