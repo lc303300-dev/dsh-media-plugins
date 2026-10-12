@@ -73,6 +73,27 @@ export const Config: z<Config> = z.object({
 type ResolvedConfig = Required<Config>
 
 /**
+ * 递归剔除 `undefined` 键。
+ *
+ * DSH 对工具返回值做无损 JSON 校验，而账号元数据里的画布字段
+ * （`canvasSubKey` / `canvasValueName` / `canvasFingerprint`）是可选的：旧账号
+ * 没有它们，直接 `{...meta}` 展开就会带出 `undefined`，整个工具调用会被判
+ * 「value is not lossless JSON」而失败。
+ */
+function jsonSafe<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((entry) => jsonSafe(entry)) as unknown as T
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry === undefined) continue
+      out[key] = jsonSafe(entry)
+    }
+    return out as T
+  }
+  return value
+}
+
+/**
  * 画布 CLI 的账号身份（`auth account` → userId / isVip / vipLevel）。
  *
  * 画布 CLI **不返回积分余额**（官方口径：账户信息里暂无 credit），所以
@@ -269,7 +290,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           const message = live.value
             ? `当前即梦账号: ${describeIdentity(identity)}${matched ? `（账号库: ${matched.name}）` : '（未入库）'}；管线默认账号: ${defaultName ?? '（未设置）'}`
             : `当前未检测到即梦登录态（keychain 无有效值）；管线默认账号: ${defaultName ?? '（未设置）'}`
-          return { ok: true, command, message, active, default_account: defaultName ?? '' }
+          return jsonSafe({ ok: true, command, message, active, default_account: defaultName ?? '' })
         }
 
         if (command === 'list') {
@@ -279,7 +300,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             is_active: Boolean(matched && matched.name === a.name),
             is_default: a.name === defaultName,
           }))
-          return {
+          return jsonSafe({
             ok: true,
             command,
             message: `账号库共有 ${rows.length} 个账号（${accountsRoot(privateRoot)}）${defaultName ? `；管线默认 = ${defaultName}` : ''}`,
@@ -293,7 +314,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               credit: identity?.credit ?? matched?.credit ?? null,
             },
             default_account: defaultName ?? '',
-          }
+          })
         }
 
         if (command === 'save') {
@@ -424,7 +445,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             )
           }
           await logSwitch({ action: 'default', account: target, userId: identity?.userId ?? meta.userId, switched })
-          return {
+          return jsonSafe({
             ok: true,
             command,
             message: switched
@@ -432,9 +453,9 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               : `已把管线默认账号设为 "${target}"（当前登录态已一致，无需切换）`,
             default_account: target,
             active: switched
-              ? { userId: identity?.userId, vip_level: identity?.vipLevel, credit: identity?.credit, fingerprint: meta.fingerprint, account: target }
+              ? { userId: identity?.userId ?? meta.userId, vip_level: identity?.vipLevel ?? meta.vipLevel, credit: identity?.credit ?? meta.credit, fingerprint: meta.fingerprint, account: target }
               : { userId: meta.userId, vip_level: meta.vipLevel, credit: meta.credit, fingerprint: meta.fingerprint, account: target },
-          }
+          })
         }
 
         if (command === 'rename') {
@@ -452,7 +473,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           const list = await listAccounts(privateRoot)
           const defaultName = await readDefaultAccount(privateRoot)
           const followed = Boolean(defaultName && defaultName.toLowerCase() === renamed.name.toLowerCase())
-          return {
+          return jsonSafe({
             ok: true,
             command,
             message:
@@ -461,7 +482,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             accounts: list.map((a) => ({ ...a, is_default: a.name === defaultName })),
             default_account: defaultName ?? '',
             active: { account: renamed.name, userId: renamed.userId, fingerprint: renamed.fingerprint },
-          }
+          })
         }
 
         if (command === 'login') {
@@ -533,7 +554,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             canvas: canvasLive,
           })
           await logSwitch({ action: 'login-complete', account: target, userId: meta.userId, fingerprint: meta.fingerprint })
-          return {
+          return jsonSafe({
             ok: true,
             command,
             message:
@@ -541,7 +562,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               `如需让管线默认使用它：dreamina_account default name=${target}`,
             accounts: (await listAccounts(privateRoot)).map((a) => ({ ...a, is_active: a.name === target })),
             active: { userId: identity.userId, vip_level: identity.vipLevel, credit: identity.credit, fingerprint: meta.fingerprint, account: target },
-          }
+          })
         }
 
         if (command === 'forget') {
