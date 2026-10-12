@@ -1,31 +1,60 @@
 # dsh-media-plugins
 
-DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 15 个工具、10 个技能与一个完成通知
-（**当前火山方舟通道已屏蔽，实际注册 14 个工具**，见 `describe_image` 一行），
+DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 16 个工具、11 个技能与一个完成通知
+（**当前火山方舟通道已屏蔽，实际注册 15 个工具**，见 `describe_image` 一行），
 覆盖 Codex_Wsstudio 指南（P0–P4 + 受约束修订系统 + Codex_IS 受治理图片业务 Skill 层）在 DSH 平台上的重建：
 
 | 功能 | 说明 | 底层 | 凭证 |
 |---|---|---|---|
-| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 个标准比例（也接受 `1920x1080` 这类像素尺寸并自动换算成最接近的比例）、`image_resolution`（1K/2K/4K；单档位线路只钳制不报错：Gemini **2K-only**（1K/4K→2K）、GPT Image 2 固定输出 2048 长边（属 2K，1K/2K/4K 请求都按该档执行）、Dreamina 1K）、`image_provider` 显式线路直达不回退；默认线路 `comfly-gpt-image-2-4k`（Comfly `gpt-image-2-4k`：只传 `aspect_ratio` 比例、**绝不传 `size`**（size 请求会被网关改写成无配额渠道并 503）、不传 `resolution`/`response_format`、**实测输出 2048 长边**（16:9 → 2048x1152，模型名里的 4k 只是渠道后缀）、图片读 `data[0].url` 下载），次选线路 `comfly-gemini-flash-preview`（Comfly `gemini-3.1-flash-image-preview-2k`，**2K-only**：只出 2K、1K/4K 请求钳制为 2K，提交 `resolution=2k` + `response_format=url` 并读 `data[0].url`），**单线路执行**：每条候选只选链中第一条就绪线路（comfly-gpt-image-2-4k；缺凭证或熔断则顺延到 comfly-gemini-flash-preview、dreamina-image），**失败即停、绝不换线路重放已付费的尝试**，单张总预算 90s（提交 + 下载 + 下载重试共用同一时间盒），失败分类 + needs_review 禁重试 + 每线路连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px（无 alpha 时上传副本转 JPEG q88），跨进程容量锁（默认 **10**，全部图片任务共享单一池 `image`；视频侧独立 `seedance-cli` 上限 6） | Comfly / Dreamina CLI | `COMFLY_API_KEY` + VPN 代理 |
-| `generate_video` | 生视频：默认 seedance2.5 / 480p；text2video / multimodal2video；`video_execution_mode`：production（提交+轮询+下载）、production_submit_only（仅提交）、test_submit_only（强制非 VIP 2.0/720p，仅返回 submit_id，到即梦后台查看） | 即梦 Dreamina 本地 CLI（`dreamina.exe`） | OAuth 登录态 |
+| `generate_image` | 统一媒体路由器生图/改图：`image_ratio` 必填 8 个标准比例（也接受 `1920x1080` 这类像素尺寸并自动换算成最接近的比例）、`image_resolution`（1K/2K/4K；单档位线路只钳制不报错：Gemini **2K-only**（1K/4K→2K）、GPT Image 2 固定输出 2048 长边（属 2K，1K/2K/4K 请求都按该档执行）、Dreamina 1K）、`image_provider` 显式线路直达不回退；默认线路 `comfly-gpt-image-2-4k`（Comfly `gpt-image-2-4k`：只传 `aspect_ratio` 比例、**绝不传 `size`**（size 请求会被网关改写成无配额渠道并 503）、不传 `resolution`/`response_format`、**实测输出 2048 长边**（16:9 → 2048x1152，模型名里的 4k 只是渠道后缀）、图片读 `data[0].url` 下载），次选线路 `comfly-gemini-flash-preview`（Comfly `gemini-3.1-flash-image-preview-2k`，**2K-only**：只出 2K、1K/4K 请求钳制为 2K，提交 `resolution=2k` + `response_format=url` 并读 `data[0].url`），**单线路执行**：每条候选只选链中第一条就绪线路（comfly-gpt-image-2-4k；缺凭证或熔断则顺延到 comfly-gemini-flash-preview、dreamina-image），**失败即停、绝不换线路重放已付费的尝试**，单张总预算 90s（提交 + 下载 + 下载重试共用同一时间盒），失败分类 + needs_review 禁重试 + 每线路连续 3 次失败熔断 60s，EXIF 归一化 + 最长边 1920px（无 alpha 时上传副本转 JPEG q88），跨进程容量锁（默认 **10**，全部图片任务共享单一池 `image`；视频侧独立池按 `videoCapacity`（默认 10）限制并发提交） | Comfly / Dreamina CLI | `COMFLY_API_KEY` + VPN 代理 |
+| `generate_video` | 生视频（即梦画布 CLI）：默认 `seedance_2.5` / 480p / 16:9 / 5 秒；公开模式只有 `t2v` / `first_last_frame` / `m2v`（**没有 i2v**：无参考→`t2v`；单图锁首帧、或两张有序图片→`first_last_frame`；单图但显式指定比例、或含视频/音频/多图参考→`m2v`）；多产物**分节点**（每节点 `--count 1`）；付费链路固定 `resource upload → node create（保存）→ node quote → node confirm --credit-ceiling → node run --submit-id → operation wait → resource download`，报价不等于授权、同一 submit-id 绝不重放、等待超时记 needs_review 而不重提；`video_execution_mode`：production（提交+等待+下载）、production_submit_only（仅提交）、test_submit_only（最低成本模型 + 720p，仅提交） | 即梦画布 CLI（`dreamina-canvas`） | OAuth 设备授权（`auth login`） |
 | `describe_image` | **当前已屏蔽**（`cordis.patch.yml` 未注册 `Ws_tool-vision`，`setup.ps1` 默认也不引导其 Key/provider；恢复见下文「前置准备 1」）。原本用途：兜底看图——仅当当前主模型无法读图时用 Doubao 返回中文描述；主模型可读图时请直接用核心 `read_image` | 火山方舟 Doubao（`doubao-seed-2-0-mini`） | `VOLCANO_ENGINE_API_KEY` |
 | `skill_registry` | 业务 Skill 治理（Codex_CS）：ingest/search/get/publish/deprecate/list，contract 校验、name@version 去重、内容哈希防漂移、FTS5 trigram 中文检索 | node:sqlite + FTS5（零原生依赖） | 无 |
 | `skill_curator` | 业务 Skill 录入治理（Codex_CS codex-cs-skill-curator）：scaffold / validate（validator 1.2.0）/ add_count_rules / planned_counts / migrate / publish（intake-receipt） | 内置模板 `refs/skill-template/` | 无 |
 | `project_pipeline` | 项目状态机（Codex_CS，**Skill 线专属**）：`create` 有 `skill_mode` 硬门（用户未显式要求启用 Skill 模式即拒绝创建）、显式状态流转、素材槽 min/max 校验、素材/提示词 sha256 锁定、`build_payload` 提交前哈希复核防未确认版本 | 原子 JSON 状态（私有运行目录） | 无 |
-| `prompt_batch` | 批次创作工作台（导演线的多素材批次能力，原 `dt_batch`）：init_batch / prepare_previews（≤1024px）/ set_visuals / set_prompts（裸标签绑定门 + **每段一次性检索凭证门**）/ finalize_review（审阅 HTML）/ run_batch（提交计划） | sharp | 无 |
+| `prompt_batch` | 批次创作工作台（导演线的多素材批次能力，原 `dt_batch`）：init_batch / prepare_previews（≤1024px）/ set_visuals / set_prompts（裸标签绑定门 + **每段一次性检索凭证门**）/ finalize_review（审阅 HTML：每张参考图带复选框 + **复制勾选名称/路径**）/ run_batch（提交计划） | sharp | 无 |
 | `prompt_revision` | 提示词修订系统（Codex_DT）：classify 确定性分类（explicit_local/ambiguous_creative/structural_rewrite）+ 规范哈希修订契约；search_corpus 内置 seedance-forge 全量语料（2477 条，≤10 上限、保留 provenance、语料模型版本绝不用于选模型）；validate_result 校验（locked_context_sha256 回显、explicit_local 禁语料）；**search_corpus 每次发放一张一次性检索凭证 `search_id`**（账本 `<private>/corpus-ledger.json`），`authoring_gate` 校验并消费它——因此 N 段创作必须 N 次检索，自报命中数不再被接受 | 内置语料 `refs/forge-index.jsonl` | 无 |
-| `batch_image` | 确定性批量生图调度器：manifest 校验（支持组级 `reference_images`/`original_image` 槽 0）、稳定 job key、SQLite 状态、≤10 并发、≥1s 间隔、分派截止（默认 ceil(总数÷并发)×90s，可配 `deadline_seconds`）、完成宽限期（`completion_grace_seconds` 默认/上限 120s，可缩短不可延长）：截止后未启动任务永久 abandoned（`batch_deadline_not_submitted`）、运行中任务宽限期内落地照常收集、超时标记 failed（`batch_completion_grace_timeout`）；编号联系表（HTML，槽 0 原图）；重复提交被 job key 幂等拒绝 | node:sqlite + 统一路由器 | 同 generate_image |
+| `batch_image` | 确定性批量生图调度器：manifest 校验（支持组级 `reference_images`/`original_image` 槽 0、组级 `grid` 多宫格声明如 `"3x3"`）、稳定 job key、SQLite 状态、≤10 并发、≥1s 间隔、分派截止（默认 ceil(总数÷并发)×90s，可配 `deadline_seconds`）、完成宽限期（`completion_grace_seconds` 默认/上限 120s，可缩短不可延长）：截止后未启动任务永久 abandoned（`batch_deadline_not_submitted`）、运行中任务宽限期内落地照常收集、超时标记 failed（`batch_completion_grace_timeout`）；编号联系表（HTML，**每张图可勾选 + 一键复制名称/路径**；落地图若是九宫格/四宫格等**单图多小图会被自动拆分并逐格列出**，页面只展示拆出来的小图、不再重复展示拆前的整图，无缝拼版按 `grid` 声明等比切割，面板落在 `<outputDir>/<jobKey>/_panels/`）；重复提交被 job key 幂等拒绝 | node:sqlite + 统一路由器 | 同 generate_image |
 | `video_to_gif` | 视频转 GIF：FFmpeg 双遍 palettegen/paletteuse，宽度/FPS/颜色/抖动分档降级，默认 ≤10MB；可选 strict/quality 模式、denoise、anti-moire、palette stats/diff 模式、bayer_scale、gifsicle lossy 优化、max_duration_sec 截断、input_dir 批量 + CSV 转换报告 | FFmpeg（`FFMPEG_PATH` / PATH / 常见安装路径）+ 可选 gifsicle | 无 |
 | `image_preview` | EXIF 归一化 ≤1024px 预览 + 尺寸报告（视觉检查/审阅页用，不读原始大图） | sharp | 无 |
-| `split_grid_sheet` | 3×3 九宫格拆格（**先识别分辨率 + 双检测器 + 仲裁**）：**流程第一步读取文件本身确认真实分辨率**（绝不假定 3840×2160 画布），其后格线定位与切割全部按该真实尺寸计算——同批图分辨率不一致（实测 3840×2160 与 5504×3072 混排）也能正确拆；`expected_size` 可传预期分辨率，不符会告警。方案1 形态学线检测（纯白格线最快最准）→ 方案2 **亮度曲线峰值检测**（取最接近 1/3、2/3 的**窄峰**，以峰宽而非绝对亮度拒绝把大片亮内容（天空/水面/白墙）误判为格线，可处理浅灰格线、行高列宽不均匀）→ 两结果按「谁更接近标准三等分」仲裁，皆失败或**偏离 >20% 判定不可靠**时回退方案3 等比分割。检测成功时按格线带**外侧**切割，格线像素零残留。**支持批量分组**：`groups=[{group, images}]` 把每组所有图的面板**平铺**写入 `<output_dir>/<group>/`，组内不再嵌套子目录；批量结果含每张图的 `source_resolution` 与整体 `resolution_summary`。可选 normalize_ratio 规范比例；单张输出 r1c1..r3c3 + 自包含审阅页 | sharp | 无 |
+| `split_grid_sheet` | 3×3 九宫格拆格（**先识别分辨率 + 双检测器 + 仲裁**）：**流程第一步读取文件本身确认真实分辨率**（绝不假定 3840×2160 画布），其后格线定位与切割全部按该真实尺寸计算——同批图分辨率不一致（实测 3840×2160 与 5504×3072 混排）也能正确拆；`expected_size` 可传预期分辨率，不符会告警。方案1 形态学线检测（纯白格线最快最准）→ 方案2 **亮度曲线峰值检测**（取最接近 1/3、2/3 的**窄峰**，以峰宽而非绝对亮度拒绝把大片亮内容（天空/水面/白墙）误判为格线，可处理浅灰格线、行高列宽不均匀）→ 两结果按「谁更接近标准三等分」仲裁，皆失败或**偏离 >20% 判定不可靠**时回退方案3 等比分割。检测成功时按格线带**外侧**切割，格线像素零残留。**支持批量分组**：`groups=[{group, images}]` 把每组所有图的面板**平铺**写入 `<output_dir>/<group>/`，组内不再嵌套子目录；批量结果含每张图的 `source_resolution` 与整体 `resolution_summary`。可选 normalize_ratio 规范比例；单张输出 r1c1..r3c3 + 自包含审阅页（**只列拆分后的面板**、每张可勾选并一键复制名称/路径，拆前的源图只在标题行标路径、不重复展示） | sharp | 无 |
 | `image_skill_curator` | 图片业务 Skill 录入治理（Codex_IS image-skill-curator）：scaffold（image-skill-template 骨架）/ audit（validator 2.0.0 intake-report：契约/路由/收据 schema、反泛化与反污染扫描、来源哈希）/ approve（approved_by=user）/ validate / publish（staging 原子发布 + 注册表重建，禁覆盖）/ upgrade（备份+回滚原子升级）/ seed_library（同步插件自带正式图片 Skill 库） | 内置模板 `refs/image-skill-template/` + 正式库 `refs/image-skill-library/` | 无 |
 | `image_skill_pipeline` | 图片业务 Skill 项目管线（Codex_IS project-pipeline）：create 校验已发布包收据/包哈希 + 比例/场景数/候选数契约门禁，按 references 逐场景建素材槽；add_material 只收 allowed_slot_ids 声明槽并校验每场景参考图上限；lock_materials sha256 快照锁定（变化作废提示词）；set_prompt/confirm_prompt 哈希绑定确认；多场景或多候选须 confirm_paid_batch 付费批次确认；start_generation --dry-run 生成执行清单（单候选 generate_image / 多候选 batch-image-generation） | 原子 JSON 状态（私有运行目录 `<private>/image-projects/`） | 无 |
-| `media_status` | 媒体/业务工具就绪检查：status（ready/degraded/unavailable）+ verify（部署验证：凭证存在性只报变量名、dreamina 二进制/登录/credit、ffmpeg、私有目录可写、语料、注册库） | 只读探针 | 无 |
+| `media_status` | 媒体/业务工具就绪检查：status（ready/degraded/unavailable）+ verify（部署验证：凭证存在性只报变量名、dreamina 二进制/登录/credit/**激活账号 + user_id + 管线默认账号 + 是否不一致**、ffmpeg、私有目录可写、语料、注册库） | 只读探针 | 无 |
+| `dreamina_account` | 即梦 CLI 账号切换。CLI **同一时刻只持有一个登录态**，真实位置是注册表 `HKCU\Software\BytedAuthClient\keychain\dreamina` 的 DPAPI 值（值名 base64 = `byted_cli_user_token`）——`~/.dreamina_cli/credential.json` 是 CLI **从不读取**的遗留文件（删掉/改坏它 CLI 照常工作）。命令：`current`（当前激活 + 管线默认）、`list`（账号库）、`save`（把当前登录态存为命名账号）、`use`（切换；有活动即梦任务时拒绝，除非 `force=true`）、`default`（**设置管线默认账号并立即切换**）、`rename`（给账号改名，默认指针跟随）、`login`（引导 OAuth Device Flow：先把现有登录态自动备份入库再清空，输出 `verification_uri`/`user_code`/`device_code`，用目标浏览器授权）、`login-check`（轮询完成授权并自动入库）、`forget`（从库中删账号，不动当前登录态）。账号名大小写不敏感（显示保留写法，如 `ISUN`/`wsstudio`）。只输出 user_id/额度/指纹，绝不输出登录态内容 | Windows 注册表 keychain + `<private>/dreamina-accounts/` | 无 |
 | 完成通知 | 答案生成完成时弹 Windows 托盘气泡 | `notify-toast.ps1` | 无（仅 Windows） |
 
 所有任务状态、锁、日志、注册库、项目/批次状态写入 **私有运行目录**
 `<workspace>/.dsh-media-private/`（对应 `.codex-image-private`），凭证走 DSH credentials
 系统，均不进入仓库或聊天。
+
+### 即梦账号切换（`dreamina_account`）
+
+即梦 CLI 的登录态**不在** `%USERPROFILE%\.dreamina_cli\credential.json`（那是遗留文件），
+而在注册表 `HKCU\Software\BytedAuthClient\keychain\dreamina` 的一个 DPAPI 值里，因此
+**同一时刻只可能有一个账号在线**。切换账号 = 用另一个账号的 blob 覆盖该值；账号库落在
+`<private>/dreamina-accounts/<name>/{token.txt,account.json}`（原样保存 DPAPI blob，只有
+当前 Windows 用户 + 本机能复用）。
+
+把管线固定到某个账号（例如你在 Chrome 里登录的那个）：
+
+```text
+dreamina_account command=save   name=wsstudio               # 先把当前（默认浏览器）账号入库备份
+dreamina_account command=login  name=ISUN                   # 输出 verification_uri / user_code / device_code
+   → 在 Chrome 打开 verification_uri（该浏览器已登录目标即梦账号），确认 user_code 完成授权
+dreamina_account command=login-check name=ISUN device_code=<上一步的 device_code>
+dreamina_account command=default name=ISUN                  # 设为管线默认，并立即切换
+```
+
+**账号命名**：字母（大小写皆可）/数字/`. _ -`，≤32 字符。显示名保留你写的写法（`ISUN` 就是 `ISUN`），
+但目录与 `default.json` 指针统一按小写归一，因此大小写不敏感（`ISUN` = `isun`），改名只改写法
+（`rename name=isun new_name=ISUN`）不会搬动目录。改名用
+`dreamina_account command=rename name=<旧名> new_name=<新名>`，管线默认指针会自动跟随。
+
+此后 `generate_video` / `generate_image` / `batch_image` 在**每次 CLI 调用前**都会确保默认账号
+是激活态（幂等：指纹一致时只做一次 `reg query`，不写注册表）；想回到旧账号执行
+`dreamina_account command=use name=wsstudio` 即可，无需再次授权。若有正在运行的
+即梦任务，切换会被拒绝（避免进行中的任务用错账号轮询），确需强制时传 `force=true`。
 
 ## 安装
 
@@ -66,10 +95,13 @@ provider；部署时**无需**申请或填写火山方舟 Key。
 - 需要 **VPN 代理**：`cordis.patch.yml` 里默认 `proxyUrl: 'http://127.0.0.1:7897'`，按本机代理端口改。
 - 官方入口：充值 → <https://pay.comfly.chat/pay/>；获取/管理 Key → <https://comfly.chat>
 
-### 3. 即梦 Dreamina（生视频）
+### 3. 即梦画布 CLI（生视频 / 即梦图片兜底线路）
 
-- `dreamina.exe` 由 `setup.ps1` 下载到本包 `bin/`（不随仓库分发）。
-- **OAuth 登录**：`.\bin\dreamina.exe login`，登录态存于 `~\.dreamina_cli\credential.json`。
+- 安装（官方安装器，装到 `~/bin/dreamina-canvas.exe` 并附带 Agent Skill `~/.agents/skills/dreamina-canvas-cli`）：
+  `irm https://jimeng.jianying.com/canvas-cli/install.ps1 | iex`
+- **OAuth 设备授权登录**：`dreamina-canvas auth login`；自检 `auth status` / `auth account`。
+- 登录态在 `HKCU\Software\BytedAuthClient\keychain\dreamina_canvas_oauth_v2_<hash>`（DPAPI 值），与旧 CLI 的 `...\keychain\dreamina` **互不覆盖**。
+- 旧的 `dreamina.exe` 自 2026-11 停止维护：本包**不再分发**、也**不再提供余额查询**。账户身份与会员等级取 `auth account`（`userId` / `isVip` / `vipLevel`，**不返回积分余额**）。
 - 即梦创作平台（会员/积分充值）：<https://jimeng.jianying.com>
 
 ### 4. FFmpeg（video_to_gif）
@@ -82,8 +114,8 @@ provider；部署时**无需**申请或填写火山方舟 Key。
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-会完成：写 Comfly Key（火山方舟 Key 因通道屏蔽已跳过；需要时加 `-EnableVolcano`）→ 下载 dreamina.exe →
-引导登录 → 安装 10 个 Studio 技能到 `$DSH_HOME\skills\<技能名>`（DSH 技能发现根，两级结构，重启后生效）→ ffmpeg 检查。
+会完成：写 Comfly Key（火山方舟 Key 因通道屏蔽已跳过；需要时加 `-EnableVolcano`）→ 检测/安装即梦画布 CLI（`dreamina-canvas`）→
+引导 `auth login` → 安装 11 个 Studio 技能到 `$DSH_HOME\skills\<技能名>`（DSH 技能发现根，两级结构，重启后生效）→ ffmpeg 检查。
 
 ## 使用
 
@@ -113,9 +145,10 @@ video_to_gif(video="D:\\out\\clip.mp4")
 **职责边界**：图片线路只对**数量与速度**负责——生成后不做质量检查：不逐张 `read_image`/`describe_image` 验收、不做审美/一致性/尺寸判断、不自动淘汰或重生成。成功即以返回路径（或联系表）交付，取舍由用户人工判断；只有工具返回失败或 `needs_review` 时才如实上报。
 
 - **单张（`generate_image`，技能 `default-image-generation`）**：`image_ratio` 必填（8 个标准比例，或 `1920x1080` 这类像素写法，自动换算）；**单线路策略**——只选第一条就绪线路（默认 `comfly-gpt-image-2-4k` 输出 2048 长边；缺凭证或熔断时顺延到 `comfly-gemini-flash-preview` 2K-only、`dreamina-image` 1K），选定后**失败即停，绝不换线路、绝不重放已付费的尝试**；`image_provider` 点名则只用该线路。预算：单张总预算 90s（`IMAGE_SECONDS_PER_CANDIDATE`），提交 + 下载 + 下载重试共用这一个时间盒；`needs_review` 禁重试。失败的候选由用户决定是否重新排队。
-- **批量（`batch_image`，技能 `batch-image-generation`）**：manifest（组 × 候选）→ 稳定 job key（同一 manifest 重复提交被拒）→ SQLite 状态 → 分派并发默认 10（`concurrency` 1..10）、真实提交间隔 ≥1s → 分派截止 `ceil(总数÷并发)×90s + 并发s`（可 `deadline_seconds` 覆盖）：截止后**未启动**任务永久 `abandoned`（`batch_deadline_not_submitted`，不查询不重试）→ 已在跑的再等 `completion_grace_seconds`（默认/上限 120s），到点**硬停**（中止在跑任务，最多再给 5 秒善后），超时记 `failed`（`batch_completion_grace_timeout`）→ **不读图、不做任何内容检查**，直接收集已落地的成功图并自动写审阅页（`contact-<jobKey>.html`）；缺失槽位**永不自动补跑**，由用户看审阅页决定重跑哪些（换新组 id 才会重排）。
+- **批量（`batch_image`，技能 `batch-image-generation`）**：manifest（组 × 候选，可选组级 `grid` 如 `"3x3"` 声明多宫格拼版）→ 稳定 job key（同一 manifest 重复提交被拒）→ SQLite 状态 → 分派并发默认 10（`concurrency` 1..10）、真实提交间隔 ≥1s → 分派截止 `ceil(总数÷并发)×90s + 并发s`（可 `deadline_seconds` 覆盖）：截止后**未启动**任务永久 `abandoned`（`batch_deadline_not_submitted`，不查询不重试）→ 已在跑的再等 `completion_grace_seconds`（默认/上限 120s），到点**硬停**（中止在跑任务，最多再给 5 秒善后），超时记 `failed`（`batch_completion_grace_timeout`）→ **不读图、不做任何内容检查**，直接收集已落地的成功图并自动写审阅页（`contact-<jobKey>.html`）；审阅页**每张图可勾选 + 一键复制名称/路径**，识别出的九宫格/四宫格等拼版会**拆成独立面板逐格列出**（面板落 `<outputDir>/<jobKey>/_panels/`；页面上只出现这些小图，拆前的整图不重复展示），无缝拼版按 `grid` 声明等比切割；缺失槽位**永不自动补跑**，由用户看审阅页决定重跑哪些（换新组 id 才会重排）。
 - **并发容量（单一图片池）**：图片侧只有一个跨进程共享的容量池（`IMAGE_CAPACITY_KEY = 'image'`，默认 **10**）：`generate_image` 单张、`batch_image` 批量、所有线路、同一 workspace 下的所有 dsh 进程都从这 10 个槽位取用——**任何时刻最多只有 10 张图在同时生成**。批量分派并发默认也是 10（`concurrency` 1..10），与池子对齐；调小 `concurrency` 只是让分派更保守，池子仍可能被其他会话的单张任务占用。**视频侧容量完全独立**（`seedance-cli` 上限 6，来自上游 CLI 自己的 `max_concurrency`），图片与视频互不占额度。
 - **受治理业务 Skill 线（`image-skill-router` + `image_skill_pipeline`）**：仅在用户使用受治理图片 Skill 时走；总任务量 = 场景数 × 候选数，=1 交 `generate_image`，>1 需 `confirm_paid_batch` 后交 `batch_image`。
+- **洗图 / 去绘画感 / 高清化（技能 `image-repaint-cleanup`）**：把插画、概念图、效果图或 AI 绘画按**原构图与设计**重渲染为 UE5 风格写实 CG，去掉绘画笔触、涂抹感、碎裂纹理。触发词：洗图、洗一下、去掉绘画感、去 AI 味、插画转写实、写实化、高清化、修复绘画感。固定参数：`comfly-gemini-flash-preview`（2K）、每组 1 候选、多张走 `batch_image`（并发 10）、成品 `<原名>-UE5.jpg`、原图只读不覆盖；`image_ratio` 按原图长宽比**就近**取标准比例并在交付中说明。**前置看图门（不可跳过）**：提交前必须 `image_preview` + `read_image` 逐张看图（`describe_image` 已 disabled，靠自身视觉），登记"有没有人物/角色/身体部位（脸、手、臂、腿、脚、背影、群像、雕像、拟人动物、玩偶机甲）"；**发现即必挂 `M8` 人物/角色与身体部位修复**（按景别/风格选变体：完整版 / 风格化条款 / 远景精简句 / 局部特写），修复多指并指、肢体融合、五官崩坏、塑料皮肤，并锁死人物身份、数量、位置、朝向与遮挡，禁止补全画外肢体与新增人物。防"全局黄染"与"逆光剪影压黑主体"用提示词模块（`M3`/`M4`）；**自然产物与透明材质专项**：看图发现水 / 植被 / 树叶 / 云 / 地形大气 → 挂 `M6-水` / `M6-植被` / `M6-树叶` / `M6-云朵` / `M6-地形与大气`（逐项点名波纹与倒影、叶簇体积与叶片半透、云体受光背光，防糊成涂抹色块）；发现玻璃 / 幕墙 / 窗 / 瓶罐 / 镜面 → 挂 `M10`（反射与折射、厚度断面、反射内容必须来自场景，防洗成不透明板或塑料片）；**可选风格统一**：用户提供一张风格参考图时挂 `M9`（图 2 = 风格参考，只给影调/色温/色彩关系/光比/后期质感，不给内容；强度三档默认「中」，人物画面 ≤ 中档；批量时**所有组共用同一张风格图 + 同一段风格描述**以保证跨图一致）。完整主模板、模块、看图判定表与实测坑位见技能内 `references/repaint-template.md`。
 
 **40 张怎么走**（例：5 组 × 8 候选，`image_ratio` 16:9，`image_resolution` 4K）：
 

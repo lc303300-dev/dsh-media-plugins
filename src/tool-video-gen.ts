@@ -1,39 +1,23 @@
 /**
- * Model-facing `generate_video` tool: one unified Seedance/Dreamina video
- * pipeline (Codex_image Media-Router rebuild). There is no separate
- * "single" vs "batch" execution path — every call decomposes into N tasks,
- * each isolated in its own job/output directory, then submits all and
- * (for `production`) polls all and downloads each task's own result.
+ * Model-facing `generate_video` tool — 即梦画布 CLI（dreamina-canvas）版。
  *
- * Precise polling (never grabs another task's video):
- * - each task downloads into `<private>/jobs/<batch>/<task>/outputs/`;
- * - after `query_result --submit_id=X --download_dir=<taskDir>`, the result
- *   is picked only from that task's own directory, matched by `submit_id`
- *   appearing in the filename (fallback: newest valid video in the same
- *   isolated directory — safe because the dir belongs to exactly one task);
- * - the picked file is validated as a real video before acceptance.
+ * 与旧 `seedance-cli` 版的根本差别：不再是「一次性命令行 + query_result 下载」，
+ * 而是画布上的**节点式**生成，付费链路是显式的四段：
  *
- * Contract (Codex_image video_router.py / UNIFIED_MEDIA_TOOL_REFACTOR_BLUEPRINT):
- * - default model `seedance2.5`, default resolution `480p`, default
- *   ratio `16:9`, default duration `5`; ratio/duration may also be inferred
- *   from the prompt when not passed as structured parameters;
- * - commands: text2video / image2video / frames2video / multimodal2video
- *   (auto-selected; `video_command` may override). multiframe2video is the
- *   disabled legacy command — never emitted;
- * - `video_execution_mode`: production (submit + poll + download),
- *   production_submit_only (submit, return submit_id, no poll),
- *   test_submit_only (forces non-VIP seedance2.0 + 720p + poll=0, returns
- *   submit_id only, never queries/downloads);
- * - formal production submission requires a confirmation gate: the caller
- *   must pass `video_confirmation_model` / `video_confirmation_resolution`
- *   / `video_confirmation_duration` and each must equal the resolved value;
- * - a non-default 2.0-family model requires `video_model_selection_source=
- *   user_explicit` (never infer or fall back); ordinary explicit 2.0-series
- *   normalizes to seedance2.0_vip;
- * - `video_group` reuses one dated Dreamina session for every task in the
- *   call (Codex semantics); test_submit_only must provide a group;
- * - every real submit records task state under the private runtime and
- *   refuses to re-submit the same task id.
+ *   resource upload → node create（保存）→ node quote（报价）
+ *     → node confirm（取凭证）→ node run（提交）→ operation wait → resource download
+ *
+ * 契约要点（2026-10 实测 1.0.2 / 09e50ac）：
+ * - 公开视频模式只有 `t2v` / `first_last_frame` / `m2v`，**没有 i2v**：
+ *   无参考 → t2v；单图（锁首帧比例）或两张有序图片 → first_last_frame；
+ *   单图但保留调用方比例、或图片/视频/音频混合参考 → m2v；
+ * - 多产物**分节点**（每节点 `--count 1`），不再用单节点多输出承载多候选；
+ * - 报价 ≠ 授权：每个任务先 `node quote`，再以用户 `video_credit_ceiling`
+ *   （或报价本身）作为 `--credit-ceiling` 批准，最后才 `node run`；
+ * - 同一任务绝不换新的 submit-id 重放（付费不可回滚）；等待超时只表示本地等待
+ *   结束，服务端任务仍在继续，因此标记 `needs_review` 并保留身份；
+ * - `video_execution_mode`：production（提交+等待+下载）、production_submit_only
+ *   （只提交）、test_submit_only（强制最低成本模型 + 720p，只提交不轮询）。
  *
  * @module @deepseek-ai/dsh-tool-video-gen
  */
@@ -42,23 +26,26 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { access, mkdir, readdir, rename, stat } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { access, mkdir, readFile, rename } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { mediaErrors } from './shared/failure.ts'
 import { packageRootOf } from './shared/pkg-root.ts'
 import {
   TaskStore,
-  acquireSlot,
   appendSafeLog,
   newTaskId,
   redactPrompt,
   resolvePrivateRoot,
 } from './shared/private-runtime.ts'
+import { createAccountGate } from './shared/dreamina-account.ts'
 import { normalizeProviderImage } from './shared/image-ops.ts'
-
-const execFileAsync = promisify(execFile)
+import { createCanvasCli, resolveCanvasBinary, resolveCanvasProject } from './shared/dreamina-canvas.ts'
+import {
+  runCanvasVideoBatch,
+  type CanvasVideoTask,
+  type CanvasVideoTaskResult,
+} from './shared/video-canvas-pipeline.ts'
 
 /** Bundle root: the built tool file lives in dist/, so resolve from the package root. */
 const PACKAGE_ROOT = packageRootOf(import.meta.url)
@@ -73,54 +60,64 @@ import {
   VIDEO_EXECUTION_MODES,
   VIDEO_COMMANDS,
   SUPPORTED_VIDEO_MODELS,
-  selectVideoCommand,
+  FIRST_LAST_PATTERN,
   promptPreferences,
   isSupportedVideoModel,
   requiresExplicitSelectionSource,
   resolveVideoModel,
   resolveVideoResolution,
+  resolutionEquals,
   normalizeModel,
   limitsFor,
-  type VideoCommand,
+  DEFAULT_VIDEO_CAPACITY,
   type VideoExecutionMode,
 } from './shared/video-policy.ts'
-import { confirmationGateError, isVideoExtName, pickDownloadedVideo as pickDownloadedVideoPure, promptCompletenessBoundaryIssue } from './shared/video-pipeline.ts'
+import { confirmationGateErrorForDurations, parseTasksPayload, promptCompletenessBoundaryIssue } from './shared/video-pipeline.ts'
 
 export { VIDEO_EXECUTION_MODES }
 export type { VideoExecutionMode }
 
-/**
- * Upstream `seedance-cli` hard limit (`max_concurrency = 6`). This is the
- * VIDEO-only pool: image generation uses its own, entirely separate
- * `IMAGE_CAPACITY_KEY` pool (default 10) and never shares this capacity.
- */
-const SEEDANCE_CLI_CAPACITY = 6
-
-/** Capacity key for the video-only `seedance-cli` pool. */
-const SEEDANCE_CLI_CAPACITY_KEY = 'seedance-cli'
+/** 未传 `video_group` 时使用的固定画布（长期复用，避免每天新建画布）。 */
+export const DEFAULT_CANVAS_NAME = 'dsh-media'
 
 /** Plugin config (all optional — `Config` supplies the defaults). */
 export interface Config {
+  /**
+   * 画布 CLI 二进制路径。留空 = 自动解析：包内 `bin/` → `~/bin/`（官方安装器
+   * 位置）→ PATH 上的 `dreamina-canvas`。
+   */
   dreaminaPath?: string
+  /** 登录态隔离名（`--profile`）；留空 = CLI 默认 `default`。 */
+  dreaminaProfile?: string
   model?: string
   resolution?: string
   outputDir?: string
   privateDir?: string
   pollTimeoutMs?: number
   executionMode?: VideoExecutionMode
-  /** Run `<subcommand> -h` before every real submit (contract). */
+  /** 同时在跑的提交数（一次调用装满多少任务）。默认 10。 */
+  videoCapacity?: number
+  /** 提交前做一次廉价的能力预检（`model list`）。 */
   runHelpBeforeSubmit?: boolean
+  /**
+   * 管线默认即梦账号。空 = 不触碰登录态；否则每次 CLI 调用前确保它是活登录。
+   * 账号库与切换逻辑沿用 `shared/dreamina-account.ts`。
+   */
+  dreaminaAccount?: string
 }
 
 export const Config: z<Config> = z.object({
-  dreaminaPath: z.string().default(join(PACKAGE_ROOT, 'bin', 'dreamina.exe')),
-  model: z.string().default('seedance2.5'),
+  dreaminaPath: z.string().default(''),
+  dreaminaProfile: z.string().default(''),
+  model: z.string().default('seedance_2.5'),
   resolution: z.string().default('480p'),
   outputDir: z.string().default('outputs'),
   privateDir: z.string().default(''),
-  pollTimeoutMs: z.number().default(420000),
+  pollTimeoutMs: z.number().default(900000),
   executionMode: z.union([...VIDEO_EXECUTION_MODES]).default('production'),
-  runHelpBeforeSubmit: z.boolean().default(true),
+  videoCapacity: z.number().default(DEFAULT_VIDEO_CAPACITY),
+  runHelpBeforeSubmit: z.boolean().default(false),
+  dreaminaAccount: z.string().default(''),
 })
 
 type ResolvedConfig = Required<Config>
@@ -128,6 +125,8 @@ type ResolvedConfig = Required<Config>
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'])
 const REF_VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v'])
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'])
+
+export { PACKAGE_ROOT }
 
 /** Validate reference files: extension allowlist + existence. */
 async function validateRefFiles(kind: 'image' | 'video' | 'audio', paths: string[]): Promise<void> {
@@ -146,83 +145,7 @@ async function validateRefFiles(kind: 'image' | 'video' | 'audio', paths: string
   }
 }
 
-async function runDreamina(binary: string, args: string[], timeoutMs: number): Promise<string> {
-  try {
-    const { stdout } = await execFileAsync(binary, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true })
-    return stdout
-  } catch (error: any) {
-    const detail = error?.stderr?.trim() || error?.stdout?.trim() || error?.message || 'unknown CLI error'
-    throw new Error(String(detail).slice(0, 800))
-  }
-}
-
-function parseJson(stdout: string): any {
-  const text = stdout.trim()
-  if (text.length === 0) return undefined
-  try {
-    return JSON.parse(text)
-  } catch {
-    const start = text.indexOf('{')
-    if (start < 0) return undefined
-    try {
-      return JSON.parse(text.slice(start))
-    } catch {
-      return undefined
-    }
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/** Lightweight validity check: readable, non-empty, and a recognized container header. */
-async function isValidVideo(path: string): Promise<boolean> {
-  try {
-    const s = await stat(path)
-    if (s.size <= 0) return false
-    const { open } = await import('node:fs/promises')
-    const handle = await open(path, 'r')
-    try {
-      const buf = Buffer.alloc(16)
-      await handle.read(buf, 0, 16, 0)
-      if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return true // mp4 (ftyp)
-      if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'AVI ') return true // avi
-      if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return true // webm/mkv (ebml)
-      return false
-    } finally {
-      await handle.close()
-    }
-  } catch {
-    return false
-  }
-}
-
-/**
- * Pick the download for one task, reading ONLY that task's own directory,
- * then delegating ordering (submit_id match first, then newest valid video
- * in the isolated dir) to the pure selector.
- */
-async function pickDownloadedVideo(taskDir: string, submitId: string): Promise<string | undefined> {
-  let entries: string[]
-  try {
-    entries = await readdir(taskDir)
-  } catch {
-    return undefined
-  }
-  const candidates: Array<{ name: string; mtimeMs: number; valid: boolean }> = []
-  for (const name of entries) {
-    if (!isVideoExtName(name)) continue
-    const full = join(taskDir, name)
-    const valid = await isValidVideo(full)
-    const mtimeMs = valid ? (await stat(full)).mtimeMs : 0
-    candidates.push({ name, mtimeMs, valid })
-  }
-  const chosen = pickDownloadedVideoPure(candidates, submitId)
-  return chosen ? join(taskDir, chosen.name) : undefined
-}
-
-/** Normalize a video duration value: integer seconds, optional s/秒 suffix (upstream normalize_video_duration). */
+/** Normalize a video duration value: integer seconds, optional s/秒 suffix. */
 function normalizeVideoDuration(value: unknown): number {
   if (value === undefined || value === null) return 5
   if (typeof value === 'boolean') {
@@ -236,7 +159,7 @@ function normalizeVideoDuration(value: unknown): number {
   return Number(match[1])
 }
 
-/** Dated session-group name: YYYY_MM_DD-<base> (upstream dated_video_group contract: base 1-20 chars, one line). */
+/** Dated canvas name: YYYY_MM_DD-<base>（沿用旧 video_group 的日期前缀语义）。 */
 function datedVideoGroup(name: string): string {
   const base = name.trim()
   if (base.length === 0 || base.length > 20 || /[\r\n]/.test(base)) {
@@ -247,51 +170,24 @@ function datedVideoGroup(name: string): string {
   return `${ymd}-${base}`
 }
 
-/**
- * Extract the exact session id from `session list`/`session search` table
- * output. Mirrors the upstream regex: `session list` includes a PINNED column
- * while `session search` omits it, and names may contain spaces, so the
- * trailing timestamp anchors each row.
- */
-function parseSessionId(text: string, exactName: string): number | undefined {
-  const pattern = /^\s*(\d+)\s+(.+?)\s+(?:(?:Yes|No)\s+)?\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?\s*$/gm
-  for (const match of text.matchAll(pattern)) {
-    if (match[2].trim() === exactName) return Number(match[1])
-  }
-  return undefined
-}
-
-/** Resolve (reuse) or create the Dreamina session for a group; returns its id. */
-async function resolveDreaminaSession(binary: string, groupName: string): Promise<number> {
-  let text: string
-  try {
-    text = await runDreamina(binary, ['session', 'search', groupName], 30000)
-  } catch {
-    // no sessions found matching (or CLI search failed): proceed to create
-    text = ''
-  }
-  let id = parseSessionId(text, groupName)
-  if (id === undefined) {
-    await runDreamina(binary, ['session', 'create', groupName], 30000)
-    text = await runDreamina(binary, ['session', 'search', groupName], 30000)
-    id = parseSessionId(text, groupName)
-  }
-  if (id === undefined) {
-    throw mediaErrors.provider('Dreamina session was created but could not be resolved')
-  }
-  return id
-}
-
-/** A single task spec (prompt + ordered refs); settings are shared at call level. */
+/** A single task spec (prompt + ordered refs); unset fields fall back to call level. */
 interface TaskSpec {
   prompt: string
   images: string[]
   videos: string[]
   audios: string[]
+  /**
+   * Per-task duration in seconds. Resolution order: explicit `tasks[].duration`
+   * → the task's own prompt hint (`视频时长：8 秒`) → the call-level duration.
+   */
+  duration?: number
 }
 
-/** Build the ordered task specs: `tasks` list wins, else `video_count` copies of the base spec. */
-function buildSpecs(args: any, base: TaskSpec & { count: number }): TaskSpec[] {
+/**
+ * Build the ordered task specs: `tasks` list wins, else `video_count` copies of
+ * the base spec. Exported for unit tests (per-task duration resolution).
+ */
+export function buildSpecs(args: any, base: TaskSpec & { count: number }): TaskSpec[] {
   const rawTasks = Array.isArray(args.tasks) ? args.tasks : []
   if (rawTasks.length > 0) {
     return rawTasks.map((t: any) => {
@@ -299,15 +195,24 @@ function buildSpecs(args: any, base: TaskSpec & { count: number }): TaskSpec[] {
       if (typeof t.image === 'string' && t.image.trim().length > 0) images.push(t.image.trim())
       for (const p of t.images ?? []) if (typeof p === 'string' && p.trim().length > 0) images.push(p.trim())
       if (images.length === 0) images.push(...base.images)
+      const prompt = String(t.prompt ?? '').trim() || base.prompt
+      let duration: number | undefined
+      const rawDuration = t.duration
+      if (rawDuration !== undefined && rawDuration !== null && String(rawDuration).trim() !== '') {
+        duration = normalizeVideoDuration(rawDuration)
+      } else {
+        duration = promptPreferences(prompt).duration ?? base.duration
+      }
       return {
-        prompt: String(t.prompt ?? '').trim() || base.prompt,
+        prompt,
         images,
         videos: (t.videos ?? base.videos).filter((p: unknown) => typeof p === 'string' && p.trim().length > 0),
         audios: (t.audios ?? base.audios).filter((p: unknown) => typeof p === 'string' && p.trim().length > 0),
+        duration,
       }
     })
   }
-  return Array.from({ length: base.count }, () => base)
+  return Array.from({ length: base.count }, () => ({ ...base, duration: base.duration }))
 }
 
 /** Register the `generate_video` tool. */
@@ -316,71 +221,75 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'generate_video',
       description:
-        '统一视频生成管线（即梦 Dreamina/Seedance 本地 CLI）：不再区分单条与批量，所有调用都会分解成 N 个隔离任务（各占独立下载目录），先并发提交，再（production 模式）统一轮询并按 submit_id 精确取回各自的视频。命令集与 Codex 对齐：text2video（只传 prompt）/ image2video（单主图）/ frames2video（两张图+首尾帧语义）/ multimodal2video（图/视频/音频全能参考），可显式传 video_command 覆盖；multiframe2video 是禁用遗留命令。默认模型 seedance2.5、默认 480p、默认 16:9、默认 5 秒（比例/时长也可从 prompt 推断作兜底）。非默认 seedance2.0 系列需 video_model_selection_source=user_explicit；普通显式 2.0 归一化为 seedance2.0_vip。正式 production 提交前要求确认门：须传 video_confirmation_model / video_confirmation_resolution / video_confirmation_duration 且与最终值一致。video_execution_mode：production（提交+轮询+下载）、production_submit_only（仅提交返回 submit_id，不查询）、test_submit_only（强制非 VIP seedance2.0 + 720p，只返回 submit_id，务必去即梦后台查看，绝不自动查询下载，且必须提供 video_group）。video_count（1-10）为“同一 prompt+参考生成 N 份”；`tasks`（数组）为“不同素材/不同 prompt 的 N 个任务”（各自可用 prompt/images/videos/audios，模型/分辨率/时长/比例在调用级共享）。video_group 指定会话分组名（自动加 YYYY_MM_DD- 日期前缀，复用或新建即梦会话，同组所有任务共享同一 session）。任务状态持久化在私有运行目录，同一任务绝不重复提交。',
+        '统一视频生成管线（即梦画布 CLI dreamina-canvas）：所有调用分解为 N 个隔离任务，每个任务在画布上是一个独立节点（多产物分节点，每节点 count=1），先并发提交，再（production 模式）统一等待终态并按 resourceId 精确取回。付费链路固定为「保存节点 → node quote 报价 → node confirm 批准（--credit-ceiling）→ node run（--submit-id）→ operation wait → resource download」，报价不等于授权，同一任务绝不换新 submit-id 重放。视频公开模式只有 t2v / first_last_frame / m2v（没有 i2v）：无参考=t2v；单图锁首帧或两张有序图片=first_last_frame；单图但要保留指定比例、或图片/视频/音频混合参考=m2v。默认模型 seedance_2.5、默认 480p、默认 16:9、默认 5 秒（比例/时长也可从 prompt 推断兜底）。非默认模型需 video_model_selection_source=user_explicit（绝不从语料/示例/容量/失败回退自动换模型）。正式 production 提交前要求确认门：须传 video_confirmation_model / video_confirmation_resolution / video_confirmation_duration（多时长批次用 video_confirmation_durations），且与最终值一致。video_execution_mode：production（提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（强制最低成本模型+720p，仅提交，须提供 video_group）。video_count（1-10）为「同一 prompt+参考生成 N 份」；tasks（数组）为「不同素材/不同 prompt 的 N 个任务」。video_group 指定画布名（自动加 YYYY_MM_DD- 前缀，复用或新建画布），省略则用固定画布 dsh-media；也可用 canvas_project_id 直接指定画布。任务状态持久化在私有运行目录。',
       parameters: {
         prompt: {
           type: 'string',
           required: true,
-          description: '视频提示词，UTF-8，不能为空。全能参考模式下建议用中文裸标签引用素材（如 图片1、视频1、音频1），标签序号对应该类素材的传入顺序。',
+          description: '视频提示词，UTF-8，不能为空。有参考素材时建议用中文裸标签引用（如 图片1、视频1、音频1），标签序号对应该类素材的传入顺序（引用按 图片 → 视频 → 音频 上传登记）。',
         },
         image: {
           type: 'string',
-          description: '可选：单张参考图路径（PNG/JPEG/WebP）。旧参数，与 images 等价；传了任意参考即走全能参考模式。',
+          description: '可选：单张参考图路径（PNG/JPEG/WebP）。旧参数，与 images 等价。',
         },
         images: {
           type: 'array',
           items: { type: 'string' },
-          description: '可选：本地图片参考路径列表（PNG/JPEG/WebP），可多张。seedance2.5 总参考输入（图+视频+音频）≤ 50；其余模型最多 9 张。',
+          description: '可选：本地图片参考路径列表（PNG/JPEG/WebP）。seedance_2.5 参考总上限 50（图 0-30 / 视频 0-10 / 音频 0-10）；其余模型 9 图 / 3 视频 / 3 音频。',
         },
         videos: {
           type: 'array',
           items: { type: 'string' },
-          description: '可选：本地参考视频路径列表（mp4/mov/webm/mkv/avi/m4v）。seedance2.5 单个/总时长 2-30 秒（计入 50 个总参考上限）；其余模型最多 3 个且 2-15 秒。',
+          description: '可选：本地参考视频路径列表（mp4/mov/webm/mkv/avi/m4v）。有视频参考时走 m2v。',
         },
         audios: {
           type: 'array',
           items: { type: 'string' },
-          description: '可选：本地参考音频路径列表（mp3/wav/m4a/aac/flac/ogg）。seedance2.5 允许纯音频参考、2-30 秒（计入 50 个总参考上限）；其余模型最多 3 个且 2-15 秒，且必须同时有至少一个图片或视频参考。',
+          description: '可选：本地参考音频路径列表（mp3/wav/m4a/aac/flac/ogg）。纯音频参考仅 seedance_2.5 支持。',
         },
         duration: {
           type: 'integer',
-          description: '视频时长（秒）；默认 5，或从 prompt 推断。seedance2.5 为 4-30，其余模型为 4-15。',
+          description: '视频时长（秒）；默认 5，或从 prompt 推断。seedance_2.5 为 4-30；seedance_2.0 系列 4-15；seedance_pro_fast 5-10。',
         },
         ratio: {
           type: 'string',
-          description: '画面比例（1:1/3:4/16:9/4:3/9:16/21:9）；默认 16:9 或从 prompt 推断。image2video/frames2video 由图片推断，不设此项。',
+          description: '画面比例（21:9/16:9/4:3/1:1/3:4/9:16）；默认 16:9 或从 prompt 推断。显式传 ratio 时单图场景走 m2v 以保留该比例，否则单图走 first_last_frame（比例由首帧决定）。',
         },
         video_command: {
           type: 'string',
           enum: [...VIDEO_COMMANDS],
-          description: '可选：显式覆盖子命令（text2video/image2video/frames2video/multimodal2video）；缺省按输入自动选择。multiframe2video 是禁用遗留命令。',
+          description: '可选：显式覆盖命令（text2video/image2video/frames2video/multimodal2video）。内部映射到画布 CLI 的公开模式 t2v / first_last_frame / m2v（image2video 单图默认走 first_last_frame）。multiframe2video 是禁用遗留命令。',
         },
         video_resolution: {
           type: 'string',
-          description: '分辨率：seedance2.5 支持 480p/720p/1080p；seedance2.0_vip 支持 480p/720p/1080p/4k；其余模型仅 720p。默认 480p（test 模式固定 720p）。',
+          description: '分辨率：seedance_2.5 支持 480p/720p/1080p；seedance_2.0_vip 支持 720p/1080p/4k；seedance_2.0_fast_vip / _mini 仅 720p；wan_3.0 / happyhorse_1.1 为 720P/1080P。默认 480p（test 模式固定 720p）。',
         },
         model_version: {
           type: 'string',
-          description: '视频模型，默认 seedance2.5；可选 2.5 / 2.0 / 2.0fast / 2.0_vip / 2.0fast_vip / 2.0mini（自动补全 seedance 前缀）。普通请求显式选 2.0 系列会归一化为 seedance2.0_vip。',
+          description: '视频模型 canonical 名或别名：seedance_2.5（默认）/ seedance_2.0_vip / seedance_2.0_fast_vip / seedance_2.0_mini / seedance_pro_fast / wan_3.0 / happyhorse_1.1；也接受 2.5 / 2.0_vip / 2.0fast_vip / 1.0fast 等简写。',
         },
         video_model_selection_source: {
           type: 'string',
           enum: ['user_explicit'],
-          description: '仅当使用非默认 seedance2.0 系列模型时必填（=user_explicit），表示用户明确选择了该模型；绝不从语料/示例/容量/失败回退自动选 2.0。',
+          description: '仅当使用非默认模型（非 seedance_2.5）时必填（=user_explicit），表示用户明确选择了该模型；绝不从语料/示例/容量/失败回退自动选。',
         },
         video_execution_mode: {
           type: 'string',
           enum: [...VIDEO_EXECUTION_MODES],
-          description: '执行模式：production（默认，提交+轮询+下载）、production_submit_only（仅提交）、test_submit_only（测试通道，强制非 VIP 2.0/720p，仅返回 submit_id）。',
+          description: '执行模式：production（默认，提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（测试通道，强制最低成本模型+720p，仅提交不轮询，须提供 video_group）。',
         },
         video_count: {
           type: 'integer',
-          description: '可选：同一 prompt+参考生成 N 份（1-10，默认 1）。',
+          description: '可选：同一 prompt+参考生成 N 份（1-10，默认 1）。每个产物是独立节点。',
         },
         tasks: {
           type: 'array',
           items: { type: 'object', additionalProperties: true },
-          description: '可选：不同素材/不同 prompt 的 N 个任务 [{prompt, image?, images?, videos?, audios?}]。提供时忽略 video_count；模型/分辨率/时长/比例/确认项在调用级共享。',
+          description: '可选：不同素材/不同 prompt 的 N 个任务 [{prompt, image?, images?, videos?, audios?, duration?}]。提供时忽略 video_count；模型/分辨率/比例在调用级共享，时长可以逐任务。一次调用请按容量装满（默认 10 个/次），不要按时长拆分。',
+        },
+        tasks_path: {
+          type: 'string',
+          description: '可选：tasks 的 JSON 文件路径（UTF-8），内容为 tasks 数组或 {"tasks":[...]}（`prompt_batch run_batch` 会写出 submission-callN.json）。**优先于入参 tasks**：用它提交可做到零转录，提示词逐字节等于审阅版；确认项仍须显式传入。',
         },
         video_confirmation_model: {
           type: 'string',
@@ -392,15 +301,27 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         },
         video_confirmation_duration: {
           type: 'integer',
-          description: '确认门：正式 production 提交前必须传入已确认的时长，且须与最终时长一致。',
+          description: '确认门：正式 production 提交前必须传入已确认的时长（单一时长时使用；多时长批次改用 video_confirmation_durations）。',
+        },
+        video_confirmation_durations: {
+          type: 'string',
+          description: '确认门（多时长批次）：当 tasks[] 自带不同 duration 时必填，逗号分隔的时长集合，须与最终集合完全一致（如 "12,15,15"）。',
+        },
+        video_credit_ceiling: {
+          type: 'integer',
+          description: '可选：本次每个任务允许消耗的积分上限（整数）。不传时以服务端 `node quote` 的报价本身作为上限；报价超过该值时不会提交。',
         },
         video_group: {
           type: 'string',
-          description: '可选：会话分组名（1-20 字符单行），自动加 YYYY_MM_DD- 日期前缀，复用或新建即梦会话（同组所有任务共享同一 session）；test_submit_only 必须提供。',
+          description: '可选：画布名（1-20 字符单行），自动加 YYYY_MM_DD- 日期前缀；复用同名画布或新建。省略时使用固定画布 dsh-media。test_submit_only 必须提供。',
+        },
+        canvas_project_id: {
+          type: 'string',
+          description: '可选：直接指定画布 projectId（UUID），跳过按名解析。与 video_group 二选一，二者都传时以本项为准。',
         },
         output: {
           type: 'string',
-          description: '可选输出路径（绝对路径，或相对会话工作目录的路径）。指定后产出视频会被重命名到该路径并可点击打开；省略则用 CLI 生成的文件名。',
+          description: '可选输出路径（绝对路径，或相对会话工作目录的路径）。仅在单任务时生效；多任务时产物落在输出目录下并带任务前缀。',
         },
       },
       output: {
@@ -416,7 +337,9 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             status: { type: 'string' },
             count: { type: 'number' },
             video_group: { type: 'string' },
-            video_session_id: { type: 'number' },
+            canvas_project_id: { type: 'string' },
+            canvas_web_url: { type: 'string' },
+            node_id: { type: 'string' },
             results: {
               type: 'array',
               items: { type: 'object', additionalProperties: true },
@@ -426,13 +349,13 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         render(_args: unknown, value: any) {
           if (Array.isArray(value.results)) {
             const ok = value.results.filter((r: any) => r.status === 'success' || r.status === 'submitted').length
-            const group = value.video_group !== undefined ? `, group=${value.video_group}` : ''
+            const group = value.video_group !== undefined ? `, canvas=${value.video_group}` : ''
             return [{ type: 'text', text: `video batch: ${ok}/${value.count ?? value.results.length} (${value.status})${group}` }]
           }
           if (value.done && value.path !== undefined) {
             return [{ type: 'text', text: `generated video: ${value.path}` }]
           }
-          return [{ type: 'text', text: `video task submitted; submit_id=${value.submit_id ?? 'unknown'} (${value.execution_mode ?? 'production'}). Check progress in the Dreamina dashboard.` }]
+          return [{ type: 'text', text: `video task submitted; submit_id=${value.submit_id ?? 'unknown'} (${value.execution_mode ?? 'production'}). Check progress on the canvas.` }]
         },
       },
       async execute(args: any, exec: any) {
@@ -449,33 +372,23 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const resolution = resolveVideoResolution(mode, args.video_resolution, config.resolution)
         const duration = normalizeVideoDuration(args.duration ?? prefs.duration)
         const ratio = String(args.ratio ?? prefs.ratio ?? '16:9')
+        // 单图场景的关键判据：调用方是否**显式**要比例（决定 m2v 还是 first_last_frame）。
+        const explicitRatio = args.ratio !== undefined || prefs.ratio !== undefined
 
         if (!isSupportedVideoModel(model)) {
           throw mediaErrors.input(`不支持的视频模型 ${model}，可选：${[...SUPPORTED_VIDEO_MODELS].join(' / ')}`)
         }
         if (requiresExplicitSelectionSource(model, mode) && String(args.video_model_selection_source ?? '').trim() !== 'user_explicit') {
-          throw mediaErrors.input('seedance2.0 系列模型要求 video_model_selection_source=user_explicit（必须是用户明确选择，绝不从语料/示例/容量/失败回退自动选 2.0）')
+          throw mediaErrors.input('非默认视频模型要求 video_model_selection_source=user_explicit（必须是用户明确选择，绝不从语料/示例/容量/失败回退自动选）')
         }
 
         const limits = limitsFor(model)
         if (!Number.isFinite(duration) || duration < limits.durationMin || duration > limits.durationMax) {
           throw mediaErrors.input(`（${model}）时长必须在 ${limits.durationMin}-${limits.durationMax} 秒之间，当前 ${duration} 秒。`)
         }
-        if (!limits.resolutions.includes(resolution)) {
+        if (!limits.resolutions.some((r) => resolutionEquals(r, resolution))) {
           throw mediaErrors.input(`（${model}）不支持分辨率 ${resolution}，可选：${limits.resolutions.join(' / ')}。`)
         }
-
-        // ---- confirmation gate (production / production_submit_only; test skips) ----
-        const gateErr = confirmationGateError(
-          mode,
-          { model, resolution, duration },
-          {
-            model: String(args.video_confirmation_model ?? '').trim() || undefined,
-            resolution: String(args.video_confirmation_resolution ?? '').trim() || undefined,
-            duration: args.video_confirmation_duration,
-          },
-        )
-        if (gateErr) throw mediaErrors.input(gateErr)
 
         // ---- task decomposition (unified: N tasks always) ----
         const baseImages: string[] = []
@@ -483,7 +396,22 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         for (const p of args.images ?? []) if (typeof p === 'string' && p.trim().length > 0) baseImages.push(p.trim())
         const baseVideos = (args.videos ?? []).filter((p: unknown) => typeof p === 'string' && p.trim().length > 0)
         const baseAudios = (args.audios ?? []).filter((p: unknown) => typeof p === 'string' && p.trim().length > 0)
-        const rawTasks = Array.isArray(args.tasks) ? args.tasks : []
+        // Zero-transcription submission: `tasks_path` wins over inline `tasks`.
+        let rawTasks = Array.isArray(args.tasks) ? args.tasks : []
+        if (typeof args.tasks_path === 'string' && args.tasks_path.trim().length > 0) {
+          const tasksFile = args.tasks_path.trim()
+          let tasksRaw: string
+          try {
+            tasksRaw = await readFile(tasksFile, 'utf8')
+          } catch (error: any) {
+            throw mediaErrors.input(`tasks_path is not readable: ${tasksFile} (${String(error?.message ?? error)})`)
+          }
+          try {
+            rawTasks = parseTasksPayload(tasksRaw)
+          } catch (error: any) {
+            throw mediaErrors.input(`invalid tasks_path payload (${tasksFile}): ${String(error?.message ?? error)}`)
+          }
+        }
         let count: number
         if (rawTasks.length > 0) {
           count = rawTasks.length
@@ -502,97 +430,131 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           audios: baseAudios,
           count,
         }
-        const specs = buildSpecs(args, base)
+        const specArgs = rawTasks === args.tasks ? args : { ...args, tasks: rawTasks }
+        const specs = buildSpecs(specArgs, base)
 
-        // validate refs + per-command input counts + limits per spec
-        const specCommands: VideoCommand[] = specs.map((spec) => selectVideoCommand({ prompt: spec.prompt, images: spec.images.length, videos: spec.videos.length, audios: spec.audios.length, video_command: args.video_command }))
+        // validate refs + per-task limits
         for (let i = 0; i < specs.length; i += 1) {
           const spec = specs[i]
-          const command = specCommands[i]
+          const specDuration = spec.duration ?? duration
+          if (!Number.isFinite(specDuration) || specDuration < limits.durationMin || specDuration > limits.durationMax) {
+            throw mediaErrors.input(`（${model}）第 ${i + 1} 个任务的时长必须在 ${limits.durationMin}-${limits.durationMax} 秒之间，当前 ${specDuration} 秒。`)
+          }
           const totalRefs = spec.images.length + spec.videos.length + spec.audios.length
           if (totalRefs > 0) {
             await validateRefFiles('image', spec.images)
             await validateRefFiles('video', spec.videos)
             await validateRefFiles('audio', spec.audios)
             if (spec.images.length === 0 && spec.videos.length === 0 && spec.audios.length > 0 && !limits.audioOnlyAllowed) {
-              throw mediaErrors.input(`纯音频参考仅支持 seedance2.5 全能参考模式（当前模型 ${model}）。请指定 model_version=2.5，或补充图片/视频参考。`)
+              throw mediaErrors.input(`纯音频参考仅支持 seedance_2.5 多模态模式（当前模型 ${model}）。请指定 model_version=2.5，或补充图片/视频参考。`)
             }
-            if (limits.total !== undefined && totalRefs > limits.total) {
-              throw mediaErrors.input(`全能参考模式（${model}）参考输入总计最多 ${limits.total} 个，当前 ${totalRefs} 个。`)
+            if (totalRefs > limits.total) {
+              throw mediaErrors.input(`（${model}）参考输入总计最多 ${limits.total} 个，当前 ${totalRefs} 个。`)
             }
+            if (spec.videos.length > 0 || spec.audios.length > 0) {
+              if (!limits.supportsMultimodal) {
+                throw mediaErrors.input(`（${model}）不支持多模态参考（视频/音频），请改用 seedance_2.5 等支持 m2v 的模型。`)
+              }
+            }
+            if (spec.images.length > 2 && !limits.supportsMultimodal) {
+              throw mediaErrors.input(`（${model}）最多支持两帧图片（首帧/首尾帧），当前 ${spec.images.length} 张。`)
+            }
+            if (spec.images.length > 2 && spec.images.length > limits.total) {
+              throw mediaErrors.input(`（${model}）图片参考最多 ${limits.total} 张，当前 ${spec.images.length} 张。`)
+            }
+          }
+          const command = String(args.video_command ?? '')
+          if (command === 'frames2video' && spec.images.length !== 2) {
+            throw mediaErrors.input('frames2video 需要恰好两张图（首帧 + 尾帧）')
           }
           if (command === 'image2video' && spec.images.length !== 1) {
             throw mediaErrors.input('image2video 需要恰好一张主图（--image）')
-          }
-          if (command === 'frames2video' && spec.images.length !== 2) {
-            throw mediaErrors.input('frames2video 需要恰好两张图（--first/--last）')
           }
           if ((command === 'image2video' || command === 'frames2video') && (spec.videos.length > 0 || spec.audios.length > 0)) {
             throw mediaErrors.input(`${command} 不支持视频/音频参考`)
           }
         }
 
+        // ---- per-task durations + confirmation gate ----
+        const specDurations = specs.map((spec) => spec.duration ?? duration)
+        const uniqueDurations = [...new Set(specDurations)].sort((a, b) => a - b)
+        const gateErr = confirmationGateErrorForDurations(
+          mode,
+          { model, resolution, durations: uniqueDurations },
+          {
+            model: String(args.video_confirmation_model ?? '').trim() || undefined,
+            resolution: String(args.video_confirmation_resolution ?? '').trim() || undefined,
+            duration: args.video_confirmation_duration,
+            durations: args.video_confirmation_durations,
+          },
+        )
+        if (gateErr) throw mediaErrors.input(gateErr)
+
+        const creditCeiling = args.video_credit_ceiling === undefined ? undefined : Number(args.video_credit_ceiling)
+        if (creditCeiling !== undefined && (!Number.isInteger(creditCeiling) || creditCeiling < 0)) {
+          throw mediaErrors.input('video_credit_ceiling must be a non-negative integer')
+        }
+
+        const capacity = Math.max(1, Math.floor(Number(config.videoCapacity) || DEFAULT_VIDEO_CAPACITY))
         const workspaceRoot: string = exec.agent?.session?.header?.cwd ?? process.cwd()
         const privateRoot = resolvePrivateRoot(workspaceRoot, config.privateDir)
         const store = new TaskStore(join(privateRoot, 'jobs'))
+        const accountGate = createAccountGate(privateRoot, config.dreaminaAccount, async (info) => {
+          await appendSafeLog(privateRoot, 'dreamina-account', { action: 'auto-switch', ...info })
+        })
+        // Fail here — before any paid submit — when the configured account is broken.
+        await accountGate.ensure()
 
-        // ---- group (reuse ONE dated session for all tasks in the call) ----
-        let sessionId: number | undefined
+        const binary = await resolveCanvasBinary(config.dreaminaPath)
+        const cli = createCanvasCli({
+          binary,
+          profile: config.dreaminaProfile,
+          ensureAccount: () => accountGate.ensure(),
+          timeoutMs: 300_000,
+        })
+
+        // ---- canvas resolution (reuse a same-named canvas, never touch `--use`) ----
+        const explicitProject = String(args.canvas_project_id ?? '').trim()
+        let project: { projectId: string; name?: string; webUrl?: string; created: boolean }
         let resolvedGroupName: string | undefined
-        if (args.video_group !== undefined && String(args.video_group).trim().length > 0) {
-          resolvedGroupName = datedVideoGroup(String(args.video_group))
-          sessionId = await resolveDreaminaSession(config.dreaminaPath, resolvedGroupName)
-        } else if (mode === 'test_submit_only') {
-          throw mediaErrors.input('test_submit_only requires video_group to verify session routing')
+        if (explicitProject.length > 0) {
+          project = { projectId: explicitProject, created: false }
+        } else {
+          if (mode === 'test_submit_only' && String(args.video_group ?? '').trim().length === 0) {
+            throw mediaErrors.input('test_submit_only requires video_group to verify canvas routing')
+          }
+          resolvedGroupName = String(args.video_group ?? '').trim().length > 0 ? datedVideoGroup(String(args.video_group)) : DEFAULT_CANVAS_NAME
+          project = await resolveCanvasProject(cli, resolvedGroupName)
+          if (resolvedGroupName === DEFAULT_CANVAS_NAME) resolvedGroupName = undefined
         }
-        const sessionArgs = sessionId === undefined ? [] : [`--session=${sessionId}`]
-        const groupFields = resolvedGroupName === undefined ? {} : { video_group: resolvedGroupName, video_session_id: sessionId }
-
-        const buildArgsFor = (command: VideoCommand, spec: TaskSpec): string[] => {
-          const head = ['--prompt', spec.prompt, '--model_version', model, '--video_resolution', resolution, '--duration', String(duration), ...sessionArgs, '--poll', '0']
-          if (command === 'text2video') return ['text2video', ...head, '--ratio', ratio]
-          if (command === 'image2video') return ['image2video', '--image', spec.images[0], ...head]
-          if (command === 'frames2video') return ['frames2video', '--first', spec.images[0], '--last', spec.images[1], ...head]
-          const refs: string[] = []
-          for (const p of spec.images) refs.push('--image', p)
-          for (const p of spec.videos) refs.push('--video', p)
-          for (const p of spec.audios) refs.push('--audio', p)
-          return ['multimodal2video', ...refs, ...head, '--ratio', ratio]
-        }
-        const submitOne = async (t: { taskId: string; submitSpec: TaskSpec; command: VideoCommand }): Promise<string> => {
-          // video-only concurrency gate: the upstream seedance-cli hard limit is
-          // max_concurrency = 6. Images lease from their own pool instead
-          // (`IMAGE_CAPACITY_KEY`) under the same locks/ root.
-          const release = await acquireSlot(join(privateRoot, 'locks'), SEEDANCE_CLI_CAPACITY_KEY, SEEDANCE_CLI_CAPACITY, { taskId: t.taskId, timeoutMs: 180_000 })
+        // 能力预检（可选）：一次廉价 `model list` 证明二进制与登录可用。
+        if (config.runHelpBeforeSubmit) {
           try {
-            const submitOut = await runDreamina(config.dreaminaPath, buildArgsFor(t.command, t.submitSpec), 240_000)
-            const parsed = parseJson(submitOut)
-            if (parsed === undefined || typeof parsed.submit_id !== 'string' || parsed.submit_id.length === 0) {
-              throw mediaErrors.provider(`dreamina submit returned no submit_id: ${String(submitOut).slice(0, 300)}`)
-            }
-            if (parsed.gen_status === 'fail') {
-              throw mediaErrors.provider(`dreamina task failed: ${String(parsed.fail_reason ?? 'unknown reason')}`)
-            }
-            return parsed.submit_id as string
-          } finally {
-            await release()
+            await cli.run(['model', 'list', '--type', 'video'], { timeoutMs: 60_000 })
+          } catch (error: any) {
+            await appendSafeLog(privateRoot, 'generate_video', { event: 'model_list_check_failed', detail: String(error?.message ?? error).slice(0, 200) })
           }
         }
 
-        // ---- unified: create + submit EVERY task concurrently (isolated output dirs) ----
+        // ---- per-task isolation: its own dir, its own persisted identity ----
         const batchId = `video-${newTaskId()}`
-        const tasks: Array<{ taskId: string; spec: TaskSpec; submitSpec: TaskSpec; command: VideoCommand; dir: string }> = []
+        const tasks: CanvasVideoTask[] = []
+        const taskDirs: string[] = []
+        const submitIds: string[] = []
+        const taskIds: string[] = []
         for (let i = 0; i < specs.length; i += 1) {
           const spec = specs[i]
           const taskId = newTaskId()
           const dir = await store.taskDir(batchId, taskId)
           await store.create(batchId, taskId, 'video', {
-            prompt: redactPrompt(spec.prompt), mode, model, resolution, duration, ratio,
+            prompt: redactPrompt(spec.prompt), mode, model, resolution, duration: spec.duration ?? duration, ratio,
             images: spec.images.map((p) => p), videos: spec.videos.map((p) => p), audios: spec.audios.map((p) => p),
+            canvasProjectId: project.projectId,
           })
-          await store.transition(batchId, taskId, 'running', { model, provider: 'dreamina' })
+          const submitId = randomUUID()
+          await store.transition(batchId, taskId, 'running', { model, provider: 'dreamina-canvas', submitId, nextAction: mode === 'production' ? 'none' : 'query_later' })
           await mkdir(join(dir, 'outputs'), { recursive: true })
-          // normalize reference images (EXIF orientation + ≤1920 px) into the task's private inputs dir
+          // 参考图规范化（EXIF 方向 + ≤1920px）后再上传，避免把超大/歪的图传上画布
           const submitImages: string[] = []
           if (spec.images.length > 0) {
             const inputDir = join(dir, 'inputs')
@@ -601,152 +563,115 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               submitImages.push((await normalizeProviderImage(img, inputDir, 1920)).path)
             }
           }
-          const submitSpec: TaskSpec = { ...spec, images: submitImages }
-          tasks.push({ taskId, spec, submitSpec, command: specCommands[i], dir })
+          taskIds.push(taskId)
+          taskDirs.push(join(dir, 'outputs'))
+          submitIds.push(submitId)
+          tasks.push({
+            taskId,
+            title: `${resolvedGroupName ?? 'dsh-media'}-${i + 1}`,
+            prompt: spec.prompt,
+            images: submitImages,
+            videos: spec.videos,
+            audios: spec.audios,
+            duration: spec.duration ?? duration,
+            video_command: args.video_command,
+            firstLastHint: FIRST_LAST_PATTERN.test(spec.prompt),
+            explicitRatio,
+          })
         }
 
-        // best-effort user_credit probe + subcommand help check before any real submit
-        if (config.runHelpBeforeSubmit) {
-          try {
-            await runDreamina(config.dreaminaPath, [specCommands[0], '-h'], 15000)
-          } catch (error: any) {
-            await appendSafeLog(privateRoot, 'generate_video', { taskId: tasks[0]?.taskId, event: 'help_check_failed', detail: String(error?.message ?? error).slice(0, 200) })
-          }
-          try {
-            await runDreamina(config.dreaminaPath, ['user_credit'], 20000)
-          } catch {
-            await appendSafeLog(privateRoot, 'generate_video', { taskId: tasks[0]?.taskId, event: 'user_credit_unavailable' })
-          }
-        }
-
-        const submitted = await Promise.allSettled(
-          tasks.map((t) => submitOne(t)),
+        // ---- 容量闸门：一次调用装满容量个并发提交 ----
+        const results = await runCanvasVideoBatch(
+          {
+            cli,
+            projectId: project.projectId,
+            model,
+            resolution,
+            ratio,
+            pollTimeoutMs: config.pollTimeoutMs,
+            pollIntervalMs: 5000,
+            creditCeiling,
+            submitOnly: mode !== 'production',
+            concurrency: capacity,
+            log: (event, payload) => appendSafeLog(privateRoot, 'generate_video', { batchId, event, ...payload }),
+            signal: exec.signal,
+          },
+          tasks,
+          taskDirs,
+          submitIds,
         )
 
-        const taskStates: Array<{
-          taskId: string
-          spec: TaskSpec
-          dir: string
-          submitId?: string
-          failed?: string
-          done: boolean
-          path?: string
-        }> = tasks.map((t, index) => {
-          const s = submitted[index]
-          return {
-            ...t,
-            failed: s.status === 'rejected' ? String((s as any).reason?.message ?? (s as any).reason).slice(0, 300) : undefined,
-            submitId: s.status === 'fulfilled' ? (s as any).value : undefined,
-            done: false,
-          }
-        })
-
-        for (const t of taskStates) {
-          if (t.failed) {
-            await store.saveResult(batchId, t.taskId, { status: 'failed', message: t.failed })
-            await store.transition(batchId, t.taskId, 'failed', { failureMessage: t.failed })
-            continue
-          }
-          await store.saveResult(batchId, t.taskId, { status: 'submitted', submitId: t.submitId, model, mode })
-          await store.transition(batchId, t.taskId, 'running', { submitId: t.submitId, provider: 'dreamina', model, nextAction: mode === 'production' ? 'none' : 'query_later' })
-        }
-
-        await appendSafeLog(privateRoot, 'generate_video', { taskId: tasks[0]?.taskId, event: 'submitted', count, group: resolvedGroupName, status: 'submitted' })
-
-        // submit-only modes never poll or download
-        if (mode !== 'production') {
-          for (const t of taskStates) {
-            if (t.failed) continue
-            if (mode === 'test_submit_only') {
-              await store.transition(batchId, t.taskId, 'success', { submitId: t.submitId, outputPath: undefined, nextAction: 'user_check_backend' })
-            } else {
-              await store.transition(batchId, t.taskId, 'success', { submitId: t.submitId, nextAction: 'query_later' })
-            }
-          }
-          if (count === 1) {
-            return { submit_id: taskStates[0].submitId, done: false, execution_mode: mode, model, ...groupFields }
-          }
-          const results = taskStates.map((t) =>
-            t.failed ? { status: 'failed', error: t.failed, model, execution_mode: mode } : { submit_id: t.submitId, status: 'submitted', model, execution_mode: mode },
-          )
-          const statuses = new Set(results.map((r) => r.status))
-          const aggregate = statuses.size === 1 && statuses.has('submitted') ? 'submitted' : 'partial'
-          return { status: aggregate, count, results, done: false, execution_mode: mode, model, ...groupFields }
-        }
-
-        // ---- production: unified poll of every task, each into its OWN output dir ----
-        const deadline = Date.now() + config.pollTimeoutMs
+        // ---- 交付：把产物挪到可点击的位置，并更新持久状态 ----
         const deliverRoot = join(workspaceRoot, config.outputDir)
         await mkdir(deliverRoot, { recursive: true })
-        while (Date.now() < deadline) {
-          if (exec.signal?.aborted) {
-            for (const t of taskStates) {
-              if (!t.done && !t.failed) await store.transition(batchId, t.taskId, 'cancelled', { nextAction: 'query_later' })
-            }
-            throw mediaErrors.cancelled('generate_video aborted')
-          }
-          let allTerminal = true
-          for (const t of taskStates) {
-            if (t.done || t.failed) continue
-            const taskDir = join(t.dir, 'outputs')
-            const queried = parseJson(await runDreamina(config.dreaminaPath, ['query_result', `--submit_id=${t.submitId}`, `--download_dir=${taskDir}`], 90000))
-            if (queried?.gen_status === 'fail') {
-              await store.transition(batchId, t.taskId, 'failed', { failureMessage: String(queried.fail_reason ?? 'unknown') })
-              t.failed = String(queried.fail_reason ?? 'unknown')
-              continue
-            }
-            if (queried?.gen_status === 'success') {
-              const video = await pickDownloadedVideo(taskDir, t.submitId as string)
-              if (video !== undefined) {
-                let finalPath = video
-                const requested = args.output?.trim()
-                if (count === 1 && requested !== undefined && requested.length > 0) {
-                  finalPath = isAbsolute(requested) ? requested : join(workspaceRoot, requested)
-                } else {
-                  // keep deliverables accessible while polling stays isolated
-                  finalPath = join(deliverRoot, `${t.taskId.slice(0, 8)}-${basename(video)}`)
-                }
-                if (finalPath !== video) {
-                  await mkdir(dirname(finalPath), { recursive: true })
-                  await rename(video, finalPath)
-                }
-                await store.saveResult(batchId, t.taskId, { status: 'success', submitId: t.submitId, outputPath: finalPath, model })
-                await store.transition(batchId, t.taskId, 'success', { submitId: t.submitId, outputPath: finalPath, model })
-                t.done = true
-                t.path = finalPath
-                continue
-              }
-              allTerminal = false
+        const requested = typeof args.output === 'string' ? args.output.trim() : ''
+        for (let i = 0; i < results.length; i += 1) {
+          const result = results[i]
+          const taskId = taskIds[i]
+          if (result.status === 'success' && result.path) {
+            let finalPath = result.path
+            if (count === 1 && requested.length > 0) {
+              finalPath = isAbsolute(requested) ? requested : join(workspaceRoot, requested)
             } else {
-              allTerminal = false
+              finalPath = join(deliverRoot, `${taskId.slice(0, 8)}-${basename(result.path)}`)
             }
+            if (finalPath !== result.path) {
+              await mkdir(dirname(finalPath), { recursive: true })
+              await rename(result.path, finalPath)
+            }
+            result.path = finalPath
+            await store.saveResult(batchId, taskId, { status: 'success', submitId: result.submitId, outputPath: finalPath, model })
+            await store.transition(batchId, taskId, 'success', { submitId: result.submitId, outputPath: finalPath, model, nodeId: result.nodeId, resourceId: result.resourceId })
+            continue
           }
-          if (allTerminal) break
-          await sleep(5000)
+          if (result.status === 'failed') {
+            await store.saveResult(batchId, taskId, { status: 'failed', submitId: result.submitId, message: result.error })
+            await store.transition(batchId, taskId, 'failed', { submitId: result.submitId, failureMessage: result.error, nodeId: result.nodeId })
+            continue
+          }
+          await store.saveResult(batchId, taskId, { status: result.status, submitId: result.submitId, nodeId: result.nodeId })
+          await store.transition(batchId, taskId, 'needs_review', {
+            submitId: result.submitId,
+            nodeId: result.nodeId,
+            nextAction: mode === 'production' ? 'query_later' : 'none',
+          })
         }
-        // any still-not-terminal task -> needs_review
-        for (const t of taskStates) {
-          if (t.done || t.failed) continue
-          await store.transition(batchId, t.taskId, 'needs_review', { nextAction: 'query_later', submitId: t.submitId })
-        }
+
+        await appendSafeLog(privateRoot, 'generate_video', {
+          batchId,
+          event: 'finished',
+          count,
+          canvas: project.projectId,
+          status: results.every((r) => r.status === 'success') ? 'success' : results.some((r) => r.status === 'failed') ? 'partial' : 'submitted',
+        })
+
+        const canvasFields: Record<string, unknown> = { canvas_project_id: project.projectId }
+        if (project.webUrl) canvasFields.canvas_web_url = project.webUrl
+        if (resolvedGroupName) canvasFields.video_group = resolvedGroupName
 
         if (count === 1) {
-          const only = taskStates[0]
-          if (only.done && only.path !== undefined) return { path: only.path, submit_id: only.submitId, done: true, execution_mode: mode, model, ...groupFields }
-          if (only.failed) throw mediaErrors.provider(`dreamina task failed: ${only.failed}`)
-          return { submit_id: only.submitId, done: false, execution_mode: mode, model, ...groupFields }
+          const only = results[0]
+          if (only.status === 'success' && only.path) {
+            return { path: only.path, submit_id: only.submitId, done: true, execution_mode: mode, model, node_id: only.nodeId, ...canvasFields }
+          }
+          if (only.status === 'failed') throw mediaErrors.provider(`dreamina-canvas task failed: ${only.error ?? 'unknown reason'}`)
+          return { submit_id: only.submitId, done: false, execution_mode: mode, model, node_id: only.nodeId, ...canvasFields }
         }
 
-        const results = taskStates.map((t, index) =>
-          t.done && t.path !== undefined
-            ? { index: index + 1, submit_id: t.submitId, status: 'success', path: t.path, model, execution_mode: mode }
-            : t.failed
-              ? { index: index + 1, status: 'failed', error: t.failed, model, execution_mode: mode }
-              : { index: index + 1, submit_id: t.submitId, status: 'needs_review', model, execution_mode: mode },
-        )
-        const statuses = new Set(results.map((r) => r.status))
+        const mapped = results.map((result, index) => ({
+          index: index + 1,
+          submit_id: result.submitId,
+          node_id: result.nodeId,
+          status: result.status,
+          ...(result.path ? { path: result.path } : {}),
+          ...(result.error ? { error: result.error } : {}),
+          ...(result.advice ? { advice: result.advice } : {}),
+          model,
+          execution_mode: mode,
+        }))
+        const statuses = new Set(mapped.map((r) => r.status))
         const aggregate = statuses.size === 1 && statuses.has('success') ? 'success' : statuses.size === 1 && statuses.has('failed') ? 'failed' : 'partial'
-        return { status: aggregate, count, results, done: false, execution_mode: mode, model, ...groupFields }
+        return { status: aggregate, count, results: mapped, done: false, execution_mode: mode, model, ...canvasFields }
       },
       presentCall(args: any) {
         const requested = args?.output?.trim()

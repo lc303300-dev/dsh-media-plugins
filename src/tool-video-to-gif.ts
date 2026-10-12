@@ -12,7 +12,7 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { join, isAbsolute, dirname } from 'node:path'
 import { mkdir, readdir, stat, writeFile } from 'node:fs/promises'
-import { videoToGif, resolveFfmpeg, type GifMode, type DitherMode, type DenoiseLevel } from './shared/gif-core.ts'
+import { videoToGif, resolveFfmpeg, sanitizeGifStem, type GifMode, type DitherMode, type DenoiseLevel } from './shared/gif-core.ts'
 import { resolvePrivateRoot, ensureDir } from './shared/private-runtime.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -85,7 +85,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           enum: ['quality', 'strict'],
           description: 'quality（默认）：全超限时停在最小宽度返回最小产物；strict：低于最小宽度继续降（320/240）。',
         },
-        min_width: { type: 'integer', description: 'quality 模式的最低尝试宽度（默认 360）。' },
+        min_width: { type: 'integer', description: 'quality 模式的最低尝试宽度（默认 360）；strict 模式忽略此项。' },
         dither: {
           type: 'string',
           enum: ['bayer', 'sierra2_4a', 'floyd_steinberg', 'none'],
@@ -114,6 +114,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             fps: { type: 'number' },
             attempts: { type: 'number' },
             within_budget: { type: 'boolean' },
+            optimized: { type: 'boolean' },
             results: { type: 'array' },
             report_path: { type: 'string' },
             message: { type: 'string' },
@@ -165,10 +166,22 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         await ensureDir(reportDir)
         const rows: string[][] = [['input', 'status', 'reason', 'width', 'fps', 'size_bytes', 'within_budget']]
         const results: any[] = []
+        // Batch runs write every artifact into one directory, so each input gets
+        // its own name stem; otherwise inputs hitting the same stage overwrite
+        // each other while the report still claims success for both.
+        const usedStems = new Set<string>()
+        const uniqueStem = (videoPath: string): string => {
+          const base = sanitizeGifStem(videoPath)
+          let stem = base
+          let n = 2
+          while (usedStems.has(stem.toLowerCase())) stem = `${base}-${n++}`
+          usedStems.add(stem.toLowerCase())
+          return stem
+        }
 
         for (const target of targets) {
           try {
-            const result = await videoToGif(target.video, outDir, baseOptions)
+            const result = await videoToGif(target.video, outDir, { ...baseOptions, fileStem: uniqueStem(target.video) })
             let finalPath = result.path
             if (target.isSingle && args.output && String(args.output).trim().length > 0) {
               const requested = String(args.output).trim()
@@ -202,7 +215,21 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         if (targets.length === 1 && targets[0].isSingle) {
           const single = results[0]
           if (!single.ok) return { ok: false, message: single.message, report_path: reportPath }
-          return { ...single, report_path: reportPath, message: `gif ready: ${single.path} (${Math.round(single.size_bytes / 1024)}KB, ${single.width}px@${single.fps}fps, ${single.attempts} attempt(s))` }
+          // Return the declared fields explicitly: the output schema is
+          // additionalProperties:false, so spreading the raw result would fail
+          // validation on its extra keys (input/optimized).
+          return {
+            ok: true,
+            path: single.path,
+            size_bytes: single.size_bytes,
+            width: single.width,
+            fps: single.fps,
+            attempts: single.attempts,
+            within_budget: single.within_budget,
+            optimized: single.optimized,
+            report_path: reportPath,
+            message: `gif ready: ${single.path} (${Math.round(single.size_bytes / 1024)}KB, ${single.width}px@${single.fps}fps, ${single.attempts} attempt(s))`,
+          }
         }
         const okCount = results.filter((r) => r.ok).length
         return {

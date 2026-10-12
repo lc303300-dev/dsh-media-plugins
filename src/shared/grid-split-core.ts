@@ -25,6 +25,7 @@
 import sharp from 'sharp'
 import { basename, dirname, extname, isAbsolute, join } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
+import { escapeReviewHtml, reviewPickHtml, reviewToolbarHtml, reviewUiScriptHtml, reviewUiStyleHtml } from './review-ui.ts'
 
 export type SplitMethod = 'morphological_lines' | 'profile_peaks' | 'fallback_even'
 
@@ -675,8 +676,12 @@ export async function splitGridSheets(
   }
 }
 
-/** Self-contained review page: original thumbnail + 3×3 panel grid, all
- *  images embedded as data URIs so the file opens anywhere. */
+/** Self-contained review page: the panels only, all embedded as data URIs so
+ *  the file opens anywhere. The pre-split sheet is deliberately NOT rendered —
+ *  the page lists the cut result, and repeating the whole 九宫格 next to its
+ *  nine panels is exactly the duplicate the user asked to drop (the source path
+ *  is still printed above the grid). Every panel carries a checkbox so the
+ *  wanted ones can be copied out by name in one click. */
 async function buildReviewPage(
   sheet: string,
   panels: SplitPanel[],
@@ -693,11 +698,12 @@ async function buildReviewPage(
     const buf = await sharp(p, { failOn: 'none' }).rotate().resize({ width: edge, height: edge, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer()
     return `data:image/jpeg;base64,${buf.toString('base64')}`
   }
-  const sheetThumb = await thumb(sheet, 720)
   const cells: string[] = []
   for (const p of panels) {
     const t = await thumb(p.path, 360)
-    cells.push(`<td><img src="${t}" alt="${p.id}"><div class="slot">${p.id} · ${p.width}×${p.height} · 白占比 ${(p.whiteRatio * 100).toFixed(0)}%</div></td>`)
+    cells.push(
+      `<td class="rv-card">${reviewPickHtml({ name: basename(p.path), path: p.path, tag: `${p.width}×${p.height}` })}<img src="${t}" alt="${p.id}"><div class="slot">${p.id} · ${p.width}×${p.height} · 白占比 ${(p.whiteRatio * 100).toFixed(0)}%</div></td>`,
+    )
   }
   const warnHtml = warnings.length
     ? `<p style="color:#b06000">⚠ ${warnings.map((w) => ` ${w}`).join('；')}</p>`
@@ -706,16 +712,19 @@ async function buildReviewPage(
     ? '等分均分（未检测到格线）'
     : `横格线(px): ${hLines.join(', ')}；纵格线(px): ${vLines.join(', ')}`
   const html = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>拆格审阅 ${base}</title>
+${reviewUiStyleHtml()}
 <style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse;margin:12px 0}td{border:1px solid #ccc;padding:6px;text-align:center;vertical-align:top}img{max-width:320px;width:100%;height:auto;display:block}.slot{font-size:12px;color:#555;margin-top:4px}h3{margin-bottom:4px}</style>
-</head><body>
+</head><body class="rv-flat-page">
 <h1>拆格审阅：${base}</h1>
-<p>方法：${method} · 原图 ${fullW}×${fullH} · ${lineInfo}</p>
+<p>源图：<code>${escapeReviewHtml(sheet)}</code>（${fullW}×${fullH}）· 方法：${method} · ${lineInfo}</p>
 ${warnHtml}
-<h3>原图</h3><img src="${sheetThumb}" style="max-width:640px">
-<h3>九宫格面板（r行c列：行1=上/全景行，行3=下/近景行；列1=左，列3=右）</h3>
+<h3>拆分后的面板（r行c列：行1=上/全景行，行3=下/近景行；列1=左，列3=右）</h3>
+<p style="font-size:12.5px;color:#555">本页只列拆分后的小图，拆前的整张图不重复展示。勾选想要的面板 → 点“复制勾选名称”，把名称贴回对话即可（面板文件已落盘在 <code>${outputDir}</code>）。</p>
 <table>${cells.slice(0, 3).join('')}</table>
 <table>${cells.slice(3, 6).join('')}</table>
 <table>${cells.slice(6, 9).join('')}</table>
+${reviewToolbarHtml({ hint: '勾选后复制名称/路径', flat: true })}
+${reviewUiScriptHtml()}
 </body></html>`
   const pagePath = join(outputDir, `${base}-review.html`)
   await writeFile(pagePath, html, 'utf8')

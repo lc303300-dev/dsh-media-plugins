@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, rmSync, statSync, existsSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import sharp from 'sharp'
@@ -142,6 +142,23 @@ test('a sheet with no detectable gutter falls back to an even split', async (t) 
   assert.equal(r.method, 'fallback_even')
   assert.equal(r.panels.length, 9)
   assert.ok(r.warnings.some((w) => w.includes('等比分割')))
+})
+
+test('the split review page lists only the panels, never the pre-split sheet', async (t) => {
+  const dir = tmpRoot(t)
+  const sheet = join(dir, 'sheet.png')
+  await sharp(await makeSheet()).toFile(sheet)
+  const r = await splitGridSheet(sheet, join(dir, 'out'), {})
+  assert.ok(r.review_page, 'the split writes a review page')
+  const html = readFileSync(r.review_page, 'utf8')
+
+  assert.match(html, /源图：<code>/, 'the source path is still reported as text')
+  assert.doesNotMatch(html, /原图（勾选 = 选整张）/, 'the pre-split sheet image is gone')
+  const names = (html.match(/data-rv-name="[^"]+"/g) ?? []).map((s) => s.slice(14, -1))
+  assert.equal(names.length, 9, 'only the nine panels are pickable')
+  assert.ok(names.every((n) => /-r\d+c\d+\.png$/.test(n)), 'every pick is a cut panel file')
+  assert.equal((html.match(/data:image\/jpeg;base64,/g) ?? []).length, 9, 'only the nine panels are embedded')
+  assert.match(html, /data-rv-act="copy-name"/)
 })
 
 test('batched groups write every panel flat into one folder per group', async (t) => {

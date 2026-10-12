@@ -21,6 +21,7 @@ export default defineConfig({
     'tool-grid-split': 'src/tool-grid-split.ts',
     'tool-status': 'src/tool-status.ts',
     'tool-cost': 'src/tool-cost.ts',
+    'tool-dreamina-account': 'src/tool-dreamina-account.ts',
     'notify': 'src/notify.ts',
   },
   format: ['esm'],

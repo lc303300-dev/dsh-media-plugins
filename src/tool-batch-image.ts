@@ -28,10 +28,13 @@ import {
   waitWithHardStop,
   SHUTDOWN_DRAIN_MS,
   type BatchManifest,
+  type ContactSheetLanding,
 } from './shared/batch-core.ts'
+import { parseGridSpec, splitGridPanels } from './shared/grid-detect.ts'
 import { DEFAULT_IMAGE_CONCURRENCY, runImageRouter, type RouterConfig } from './shared/adapters.ts'
 import { DEFAULT_IMAGE_REQUEST_TIMEOUT_MS } from './shared/media-client.ts'
 import { appendSafeLog, ensureDir, resolvePrivateRoot, sha256Text } from './shared/private-runtime.ts'
+import { createAccountGate } from './shared/dreamina-account.ts'
 
 /** Bundle root: the built tool file lives in dist/, so resolve from the package root. */
 const PACKAGE_ROOT = packageRootOf(import.meta.url)
@@ -46,11 +49,20 @@ export interface Config {
   comflyBaseURL?: string
   comflyApiKeyEnv?: string
   dreaminaPath?: string
+  /** 画布 CLI（`dreamina-canvas`）路径；留空 = 自动解析（包内 bin → ~/bin → PATH）。 */
+  dreaminaCanvasPath?: string
+  /** 画布登录态隔离名（`--profile`）。 */
+  dreaminaCanvasProfile?: string
   proxyUrl?: string
   maxConcurrency?: number
   providerTimeoutMs?: number
   taskTimeoutMs?: number
   enabled?: string[]
+  /**
+   * Dreamina account the pipeline keeps active. Empty = never touch the login
+   * state; otherwise the Dreamina route ensures it before calling the CLI.
+   */
+  dreaminaAccount?: string
 }
 
 export const Config: z<Config> = z.object({
@@ -58,12 +70,15 @@ export const Config: z<Config> = z.object({
   outputDir: z.string().default('outputs'),
   comflyBaseURL: z.string().default('https://ai.comfly.org/v1'),
   comflyApiKeyEnv: z.string().default('COMFLY_API_KEY'),
-  dreaminaPath: z.string().default(join(PACKAGE_ROOT, 'bin', 'dreamina.exe')),
+  dreaminaPath: z.string().default(''),
+  dreaminaCanvasPath: z.string().default(''),
+  dreaminaCanvasProfile: z.string().default(''),
   proxyUrl: z.string().default(''),
   maxConcurrency: z.number().default(DEFAULT_IMAGE_CONCURRENCY),
   providerTimeoutMs: z.number().default(DEFAULT_IMAGE_REQUEST_TIMEOUT_MS),
   taskTimeoutMs: z.number().default(DEFAULT_IMAGE_REQUEST_TIMEOUT_MS),
   enabled: z.array(z.string()).default([]),
+  dreaminaAccount: z.string().default(''),
 })
 
 type ResolvedConfig = Required<Config>
@@ -118,6 +133,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     comflyBaseURL: config.comflyBaseURL,
     comflyApiKeyEnv: config.comflyApiKeyEnv,
     dreaminaPath: config.dreaminaPath,
+    dreaminaCanvasPath: config.dreaminaCanvasPath,
+    dreaminaCanvasProfile: config.dreaminaCanvasProfile,
     proxyUrl: config.proxyUrl,
     maxConcurrency: config.maxConcurrency,
     providerTimeoutMs: config.providerTimeoutMs,
@@ -216,7 +233,14 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               insertTask.run(plan.jobKey, `${plan.jobKey}-${t.groupId}-${t.slot}`, t.groupId, t.slot, t.prompt, t.ratio, t.resolution ?? null, t.imageProvider ?? null, 'pending')
             }
             // detached scheduler loop: runs in the host process, writes state only
-            const routerConfig = { ...baseRouterConfig, credentials: await resolveCredentials() }
+            const accountGate = createAccountGate(privateRoot, config.dreaminaAccount, async (info) => {
+              await appendSafeLog(privateRoot, 'dreamina-account', { action: 'auto-switch', tool: 'batch_image', ...info })
+            })
+            const routerConfig = {
+              ...baseRouterConfig,
+              credentials: await resolveCredentials(),
+              ensureDreaminaAccount: () => accountGate.ensure(),
+            }
             runScheduler(db, plan.jobKey, manifest, manifestBase, plan.deadlineAtMs, privateRoot, routerConfig, config.outputDir, workspaceRoot).catch((error: any) => {
               db.prepare("UPDATE jobs SET status = 'failed', finished_at = ? WHERE job_key = ?").run(new Date().toISOString(), plan.jobKey)
               void appendSafeLog(privateRoot, 'batch_image', { jobKey: plan.jobKey, event: 'scheduler_crashed', detail: String(error?.message ?? error).slice(0, 300) })
@@ -249,7 +273,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
 
           if (command === 'contact_sheet') {
             const manifest = JSON.parse(job.manifest_json) as BatchManifest
-            const sheetPath = await writeReviewPage(
+            const review = await writeReviewPage(
               db,
               args.job_key,
               manifest,
@@ -257,7 +281,13 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               config.outputDir,
               workspaceRoot,
             )
-            return { ok: true, message: `contact sheet: ${sheetPath}`, contact_sheet_path: sheetPath, summary: { landed: job.landed, abandoned: job.abandoned, status: job.status } }
+            const splitNote = review.sheets > 0 ? `；${review.sheets} 张多宫格母图已拆分为 ${review.panels} 张面板（可在审阅页逐张勾选）` : ''
+            return {
+              ok: true,
+              message: `contact sheet: ${review.path}${splitNote}`,
+              contact_sheet_path: review.path,
+              summary: { landed: job.landed, abandoned: job.abandoned, status: job.status, split_sheets: review.sheets, split_panels: review.panels },
+            }
           }
           return { ok: false, message: `unknown command: ${command}` }
         } finally {
@@ -433,8 +463,14 @@ async function runSchedulerWith(
     // embedded as data URIs and the layout is responsive, so exactly one
     // self-contained page per task is always available for human review.
     try {
-      const sheetPath = await writeReviewPage(db, jobKey, manifest, manifestBase, outputDir, workspaceRoot)
-      void appendSafeLog(privateRoot, 'batch_image', { jobKey, event: 'review_page', path: sheetPath })
+      const review = await writeReviewPage(db, jobKey, manifest, manifestBase, outputDir, workspaceRoot)
+      void appendSafeLog(privateRoot, 'batch_image', {
+        jobKey,
+        event: 'review_page',
+        path: review.path,
+        split_sheets: review.sheets,
+        split_panels: review.panels,
+      })
     } catch (error: any) {
       void appendSafeLog(privateRoot, 'batch_image', { jobKey, event: 'review_page_failed', error: String(error?.message ?? error).slice(0, 300) })
     }
@@ -448,15 +484,24 @@ async function runSchedulerWith(
  *
  * Shared by the explicit `contact_sheet` command and the automatic post-settle
  * step, so a review page always exists once a batch job finishes.
+ *
+ * Before rendering, every landed candidate is checked for being a multi-panel
+ * sheet (四宫格 / 九宫格 / 六宫格 …): a sheet is cut into its panels, the panels
+ * are written next to the job (`<jobKey>/_panels/<group>-<slot>-rNcM.png`) and
+ * the review page lists them as individually pickable entries. Detection is
+ * conservative and best-effort — a candidate that is not a sheet, or whose
+ * geometry cannot be trusted, stays a single entry.
+ *
+ * Exported for the offline review-page tests (see `tests/batch-review-page.test.mjs`).
  */
-async function writeReviewPage(
+export async function writeReviewPage(
   db: DatabaseSync,
   jobKey: string,
   manifest: BatchManifest,
   manifestBase: string,
   outputDir: string,
   workspaceRoot: string,
-): Promise<string> {
+): Promise<ReviewPageResult> {
   const landed = db
     .prepare("SELECT group_id AS groupId, slot, output_path AS path FROM tasks WHERE job_key = ? AND status = 'success'")
     .all(jobKey) as Array<{ groupId: string; slot: number; path: string }>
@@ -471,8 +516,55 @@ async function writeReviewPage(
   const outDir = join(workspaceRoot, outputDir)
   await ensureDir(outDir)
   const sheetPath = join(outDir, `contact-${jobKey}.html`)
-  await writeFile(sheetPath, await buildContactSheetHtml(plan, groups, landed), 'utf8')
-  return sheetPath
+  const gridByGroup = new Map<string, { rows: number; cols: number } | null>()
+  for (const group of manifest.groups) gridByGroup.set(group.id, parseGridSpec(group.grid))
+  const { items, sheets, panels } = await attachGridPanels(landed, join(outDir, jobKey, '_panels'), gridByGroup)
+  await writeFile(sheetPath, await buildContactSheetHtml(plan, groups, items), 'utf8')
+  return { path: sheetPath, sheets, panels }
+}
+
+interface ReviewPageResult {
+  path: string
+  /** Landed candidates recognized as multi-panel sheets. */
+  sheets: number
+  /** Panels cut out of those sheets. */
+  panels: number
+}
+
+/**
+ * Recognize multi-panel sheets among the landed candidates and cut them.
+ * A group that declares `grid` in the manifest is split even when no gutter can
+ * be detected (borderless sheets). Bounded concurrency (4) keeps a
+ * 75-candidate job from spawning 75 sharp pipelines at once; every failure
+ * degrades to "keep the original image".
+ */
+async function attachGridPanels(
+  landed: Array<{ groupId: string; slot: number; path: string }>,
+  panelDir: string,
+  gridByGroup: Map<string, { rows: number; cols: number } | null>,
+): Promise<{ items: ContactSheetLanding[]; sheets: number; panels: number }> {
+  const items: ContactSheetLanding[] = landed.map((item) => ({ ...item }))
+  let cursor = 0
+  let sheets = 0
+  let panels = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = cursor
+      cursor += 1
+      if (index >= items.length) return
+      const item = items[index]
+      const layout = gridByGroup.get(item.groupId) ?? null
+      const outcome = await splitGridPanels(item.path, panelDir, { minPanels: 4, layout })
+      if (!outcome || outcome.panels.length < 2) continue
+      item.grid = { rows: outcome.grid.rows, cols: outcome.grid.cols }
+      item.panels = outcome.panels.map((panel) => ({ id: panel.id, path: panel.path }))
+      item.gridNote = `${[outcome.message, ...outcome.warnings].filter(Boolean).join('｜')}，已拆分为 ${outcome.panels.length} 张独立面板（勾选想要的那一格即可；拆前的整张图不在此页重复展示，文件仍在成品目录）`
+      sheets += 1
+      panels += outcome.panels.length
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, Math.max(1, items.length)) }, worker))
+  return { items, sheets, panels }
 }
 
 export { apply }

@@ -41,7 +41,7 @@ whenToUse: 用户要从文本、图片、视频或音频生成/测试视频，�
 2. **准备预览**：`prepare_previews` 生成最长边 1024px 预览并记录映射；**不要直接检查原始大图**。每段可多图：额外参考图用 `set_visuals` 的 `items[].images` 绑定（顺序即 `--image` 顺序）。
 3. **▶ 逐段检索语料并逐条列出命中（不可跳过，代码强制）**：写任何一段之前，先对该段用 `prompt_revision search_corpus` 检索（≤10 条，只提取可迁移的镜头结构/导演方法，**不复制案例**）——该调用返回一张**一次性检索凭证 `search_id`**；随后用 `prompt_revision authoring_gate` 传 `search_id`、`current_prompt`（该段草稿）、`media={images:该段参考图数, videos, audios}`、`segment=该段 material 的绝对路径`。**只有 `authoring_gate` 返回 `ok=true` 才可继续写该段**；凭证在通过时被消费并绑定到该段，**同一张凭证不可复用——N 段就必须 N 次检索**（`set_prompts` 会逐段核对已消费凭证，缺凭证的段直接拒写）。检索后**逐条向用户列出该段命中的语料**（编号/标题/得分/可迁移结构）；语料的模型/版本只作 provenance，**绝不据此选生成模型**。每段开始前先输出 `▶ 步骤`。
 4. **▶ 编写提示词（逐素材）**：**先加载 `video-director-prompt` 技能**，按其 `references` 路由使用导演知识：`directing-methods.md`（每次必读）、`prompt-structure.md`、`community-techniques.md`、`structure-guide.md`，并对照其"交付前检查清单"。**用中文裸标签（图片1、视频1、音频1…）严格绑定传入顺序，禁用 `@图片1` 等 chip 形式与 `参考图片N` 前缀**；用户未指定音频时追加 `不生成音乐，仅生成音效。`。用 `set_prompts`（[{material, prompt}]）写入——它按 material 合并、自动规范化标签，并对**缺少 `图片N` 绑定的段、以及没有自己那张已消费检索凭证的段整次拒绝**。
-5. **▶ 生成审阅页**：`finalize_review` 生成 `review/index.html`（逐段列出全部参考图 + 中文提示词），把路径交给用户**逐项确认**素材绑定；未经确认不得提交。
+5. **▶ 生成审阅页**：`finalize_review` 生成 `review/index.html`（逐段列出全部参考图 + 中文提示词），把路径交给用户**逐项确认**素材绑定；未经确认不得提交。审阅页现在**每张参考图都带复选框**（底部粘性工具栏显示"已选 N / 共 M"，**复制勾选名称** 得到换行分隔的文件名，**复制勾选路径** 得到完整路径），用户勾选后一键复制、贴回对话即可精确指出要换哪张图，不必手抄文件名。
 6. **▶ 提交**：确认后 `run_batch` 生成提交计划（含 asset_manifest 标签绑定），交给统一 `generate_video`（不同素材用 `tasks` 数组、每段 `tasks[].images` 绑定该段全部参考图；同一素材多份用 `video_count`；不同时长按时长分组提交）。正式 production 提交前把已确认的模型/分辨率/时长作为 `video_confirmation_model` / `video_confirmation_resolution` / `video_confirmation_duration` 传入且须与最终值一致。
 
 ## 四、单条模式（素材 ≤1 且用户没要求逐条审阅）

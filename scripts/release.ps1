@@ -102,22 +102,33 @@ if (-not $SkipSkillSync) {
     } else {
         $synced = 0
         foreach ($dir in Get-ChildItem (Join-Path $root 'skills') -Directory) {
-            $src = Join-Path $dir.FullName 'SKILL.md'
+            $srcSkill = Join-Path $dir.FullName 'SKILL.md'
+            if (-not (Test-Path $srcSkill)) { continue }
             $dstDir = Join-Path $dshSkillsRoot $dir.Name
-            $dst = Join-Path $dstDir 'SKILL.md'
-            if (Test-Path $src) {
-                $changed = (-not (Test-Path $dst)) -or ((Get-FileHash $src -Algorithm SHA256).Hash -ne (Get-FileHash $dst -Algorithm SHA256).Hash)
-                if ($changed) {
-                    if ($DryRun) { Info "  [dry] 同步 $($dir.Name)/SKILL.md" }
-                    else {
-                        New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
-                        Copy-Item $src $dst -Force
-                        $synced++
-                    }
+
+            # 目录级比较：技能包里每个文件（含 references/ 等）都要在目标存在且哈希一致。
+            # 只比 SKILL.md 会让 references/ 的改动静默丢失（模板文件改了但技能读到旧版）。
+            $changed = -not (Test-Path $dstDir)
+            if (-not $changed) {
+                foreach ($file in Get-ChildItem $dir.FullName -Recurse -File) {
+                    $rel = $file.FullName.Substring($dir.FullName.Length).TrimStart('\', '/')
+                    $dst = Join-Path $dstDir $rel
+                    if (-not (Test-Path $dst)) { $changed = $true; break }
+                    if ((Get-FileHash $file.FullName -Algorithm SHA256).Hash -ne (Get-FileHash $dst -Algorithm SHA256).Hash) { $changed = $true; break }
+                }
+            }
+
+            if ($changed) {
+                if ($DryRun) { Info "  [dry] 同步 $($dir.Name)/（整个技能目录，含 references）" }
+                else {
+                    New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
+                    # 复制目录内容（非目录本身，避免嵌套）；只覆盖同名文件，不删除目标端多余文件
+                    Get-ChildItem -LiteralPath $dir.FullName -Force | Copy-Item -Destination $dstDir -Recurse -Force
+                    $synced++
                 }
             }
         }
-        if (-not $DryRun) { Info "已同步 $synced 个技能" }
+        if (-not $DryRun) { Info "已同步 $synced 个技能（整目录，含 references）" }
     }
 }
 

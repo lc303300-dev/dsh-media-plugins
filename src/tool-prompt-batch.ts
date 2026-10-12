@@ -22,9 +22,30 @@ import { searchCorpus } from './shared/corpus-core.ts'
 import { buildReviewHtml, buildReviewItems } from './shared/prompt-batch-core.ts'
 import { normalizeReferenceLabels, classifyVideoPromptCompleteness } from './shared/video-pipeline.ts'
 import { parseLedger, segmentEvidence } from './shared/corpus-ledger.ts'
+import { DEFAULT_VIDEO_CAPACITY, promptDurationLabel } from './shared/video-policy.ts'
+import sharp from 'sharp'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Small JPEG data URI for the review page. The sandboxed viewer blocks
+ * `file://` and relative `<img src>`, so thumbnails are embedded (the same
+ * contract batch_image's contact sheet follows).
+ */
+async function previewDataUri(previewPath: string): Promise<string | undefined> {
+  if (!previewPath) return undefined
+  try {
+    const buf = await sharp(previewPath, { failOn: 'none' })
+      .rotate()
+      .resize({ width: 480, height: 480, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 78 })
+      .toBuffer()
+    return `data:image/jpeg;base64,${buf.toString('base64')}`
+  } catch {
+    return undefined
+  }
 }
 
 /** Stable batch id: YYYYMMDD-HHMM-<name>. */
@@ -67,7 +88,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'prompt_batch',
       description:
-'批次创作工作台（Codex_DT 的 DSH 重建，导演线的多素材批次能力，不是独立线路）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1024px 预览、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径/photo_type/surface/mode/resolution）、set_visuals 逐素材写入拍摄信息（photo_type/visual/motion_plan/images，images 支持每段多图）、逐素材写入可执行中文提示词（set_prompts 按 material 合并、自动把 @图片N/参考图片N 规范为裸标签 图片N；**每段必须先用 prompt_revision search_corpus 取得一次性检索凭证并经 authoring_gate（segment=该段 material）消费，缺凭证的段与缺 图片N 裸标签绑定的段都会被整次拒绝写入**）、生成 review/index.html 逐段列出全部参考图供用户逐项确认、确认后生成提交计划（run_batch，含 asset_manifest 标签绑定，每段 tasks[].images 绑定全部参考图）、语料匹配写回 manifest（update_forge_matches）。set_prompts 默认不读取任何业务 Skill（只有用户显式启用 Skill 模式时才读其 references 对照组织方式，范例不改变素材契约、不覆盖用户指令）。最终执行只调用统一媒体工具，不直接调用供应商。',
+'批次创作工作台（Codex_DT 的 DSH 重建，导演线的多素材批次能力，不是独立线路）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1024px 预览、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径/photo_type/surface/mode/resolution）、set_visuals 逐素材写入拍摄信息（photo_type/visual/motion_plan/duration/images，duration 为 4-30 秒的逐段时长，images 支持每段多图）、逐素材写入可执行中文提示词（set_prompts 按 material 合并、自动把 @图片N/参考图片N 规范为裸标签 图片N；**每段必须先用 prompt_revision search_corpus 取得一次性检索凭证并经 authoring_gate（segment=该段 material）消费，缺凭证的段与缺 图片N 裸标签绑定的段都会被整次拒绝写入**）、生成 review/index.html 逐段列出全部参考图供用户逐项确认、确认后生成提交计划（run_batch，含 asset_manifest 标签绑定，每段 tasks[].images 绑定全部参考图、tasks[].duration 绑定逐段时长；**按管线容量（默认 10）装满调用、绝不按时长拆分**）、语料匹配写回 manifest（update_forge_matches）。set_prompts 默认不读取任何业务 Skill（只有用户显式启用 Skill 模式时才读其 references 对照组织方式，范例不改变素材契约、不覆盖用户指令）。最终执行只调用统一媒体工具，不直接调用供应商。',
       parameters: {
         command: {
           type: 'string',
@@ -111,6 +132,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             matches: { type: 'array' },
             plan: { type: 'array' },
             submission: { type: 'object', additionalProperties: true },
+            submission_paths: { type: 'array' },
             summary: { type: 'object', additionalProperties: true },
             diagnostics: { type: 'array' },
           },
@@ -232,50 +254,75 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           }
           case 'run_batch': {
             // submission plan only; actual paid calls go through the unified generate_video tool
+            const fallbackDuration = Number(manifest.duration ?? 5)
             const plan = (manifest.materials ?? []).map((m: any) => {
               const prompt = (manifest.prompts ?? []).find((p: any) => p.material === m.path)?.prompt ?? ''
               const images = [m.path, ...(Array.isArray(m.images) ? m.images : [])].filter(Boolean)
-              return { material: m.path, images, hash: m.hash, photo_type: m.photo_type, visual: m.visual, motion_plan: m.motion_plan, prompt, ready: Boolean(prompt.trim()) }
+              // per-segment duration: explicit material.duration → the prompt's own
+              // EXPLICIT declaration (视频时长：N 秒) → the batch-level duration.
+              // Never the bare-number form: a storyboard timeline ("2.5-5秒") would
+              // otherwise silently submit a 5-second video for a 10-second batch.
+              const duration = Number.isInteger(m.duration) ? Number(m.duration) : (promptDurationLabel(prompt) ?? fallbackDuration)
+              return { material: m.path, images, hash: m.hash, photo_type: m.photo_type, visual: m.visual, motion_plan: m.motion_plan, prompt, duration, ready: Boolean(prompt.trim()) }
             })
             const ready = plan.filter((item: any) => item.ready).length
             if (!args.confirm) return { ok: false, message: `run_batch requires confirm=true; ${ready}/${plan.length} ready`, plan }
             const missing = plan.filter((item: any) => !item.ready)
             if (missing.length > 0) return { ok: false, message: `${missing.length} material(s) lack a confirmed prompt`, plan }
+            // 管线容量：一次 generate_video 调用装满 capacity 个任务，每个任务自带 duration
+            // —— **绝不按时长拆分批次**（用户约定 2026-10-06）。
+            const capacity = Math.max(1, Math.floor(DEFAULT_VIDEO_CAPACITY))
+            const uniqueDurations = [...new Set(plan.map((item: any) => Number(item.duration)))].sort((a, b) => a - b)
+            const toTask = (item: any): Record<string, unknown> => ({
+              images: item.images,
+              prompt: item.prompt,
+              duration: item.duration,
+              asset_manifest: {
+                assets: item.images.map((img: string, i: number) => ({
+                  modality: 'image',
+                  index: i + 1,
+                  tag: `图片${i + 1}`,
+                  source: img,
+                  transport_role: 'reference_image',
+                  primary_role: i === 0 ? 'first_frame_reference' : 'reference_image',
+                })),
+              },
+            })
             const shared = {
-              duration: manifest.duration,
               ratio: manifest.ratio,
               model_version: manifest.model,
               video_resolution: manifest.video_resolution ?? '480p',
               video_confirmation_model: manifest.model,
               video_confirmation_resolution: manifest.video_resolution ?? '480p',
-              video_confirmation_duration: manifest.duration,
+              // one distinct duration → legacy single-value gate; N durations → the
+              // exact set (generate_video hard-gates on video_confirmation_durations)
+              ...(uniqueDurations.length === 1
+                ? { video_confirmation_duration: uniqueDurations[0] }
+                : { video_confirmation_durations: uniqueDurations.join(',') }),
               surface: manifest.surface ?? 'jimeng-zh',
               mode: manifest.mode ?? 'first-frame',
               model_selection: manifest.model_selection,
             }
-            // 统一管线：一次 generate_video 调用，tasks 数组逐素材，设置项在调用级共享
-            const submission: Record<string, unknown> = {
-              ...shared,
-              tasks: plan.map((item: any) => ({
-                images: item.images,
-                prompt: item.prompt,
-                asset_manifest: {
-                  assets: item.images.map((img: string, i: number) => ({
-                    modality: 'image',
-                    index: i + 1,
-                    tag: `图片${i + 1}`,
-                    source: img,
-                    transport_role: 'reference_image',
-                    primary_role: i === 0 ? 'first_frame_reference' : 'reference_image',
-                  })),
-                },
-              })),
+            const calls: Array<{ call: number; tasks: Array<Record<string, unknown>> }> = []
+            for (let i = 0; i < plan.length; i += capacity) {
+              calls.push({ call: calls.length + 1, tasks: plan.slice(i, i + capacity).map(toTask) })
+            }
+            const submission: Record<string, unknown> = { ...shared, calls }
+            // Zero-transcription handoff: one file per call, fed to generate_video via
+            // `tasks_path`, so the reviewed prompt text is submitted byte for byte and
+            // can never drift from what the user approved in the review page.
+            const submissionPaths: string[] = []
+            for (let i = 0; i < calls.length; i += 1) {
+              const callPath = join(dir, `submission-call${i + 1}.json`)
+              await atomicWriteJson(callPath, { ...shared, batch_id: batchId, call: i + 1, total_calls: calls.length, tasks: calls[i].tasks })
+              submissionPaths.push(callPath)
             }
             return {
               ok: true,
-              message: `submission plan ready (${plan.length} task(s)): call generate_video ONCE with the shared settings below (tasks + duration/ratio/model_version/video_resolution + video_confirmation_*)`,
+              message: `submission plan ready (${plan.length} task(s), durations ${uniqueDurations.join('/')}s) in ${calls.length} generate_video call(s) of ≤${capacity} task(s): submit with tasks_path="${submissionPaths[0]}" — zero transcription, fill each call to capacity, never split by duration`,
               submission,
-              plan: submission.tasks,
+              submission_paths: submissionPaths,
+              plan,
             }
           }
           case 'update_forge_matches': {
@@ -318,6 +365,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               visual: v.visual !== undefined ? v.visual : undefined,
               motion_plan: v.motion_plan !== undefined ? v.motion_plan : undefined,
               images: Array.isArray(v.images) ? v.images.map((p: unknown) => String(p)).filter(Boolean) : undefined,
+              duration: v.duration !== undefined ? Number(v.duration) : undefined,
             }))
             if (items.length === 0) return { ok: false, message: 'items is required: [{material, photo_type?, visual?, motion_plan?, images?}]' }
             for (const item of items) {
@@ -326,6 +374,12 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               if (item.photo_type !== undefined) m.photo_type = item.photo_type
               if (item.visual !== undefined) m.visual = item.visual
               if (item.motion_plan !== undefined) m.motion_plan = item.motion_plan
+              if (item.duration !== undefined) {
+                if (!Number.isInteger(item.duration) || item.duration < 4 || item.duration > 30) {
+                  return { ok: false, message: `invalid duration for ${item.material}: 必须是 4-30 的整数秒` }
+                }
+                m.duration = item.duration
+              }
               if (item.images !== undefined) {
                 m.images = item.images.map((p: string) => (isAbsolute(p) ? p : join(workspaceRoot, p)))
               }
@@ -412,13 +466,39 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             }
           }
           case 'finalize_review': {
-            const previews = (await readJsonSafe(join(dir, 'previews.json'))) ?? []
-            const reviewDir = await ensureDir(join(dir, 'review'))
+            const previews = ((await readJsonSafe(join(dir, 'previews.json'))) ?? []) as Array<{ material: string; preview: string; width?: number; height?: number }>
+            const previewByPath = new Map<string, string>()
+            for (const p of previews) if (p?.material && p?.preview) previewByPath.set(String(p.material), String(p.preview))
+            // Backfill: references bound by `set_visuals` AFTER `prepare_previews` (or any
+            // preview missing from disk) get their preview generated here, so the review
+            // page can never render "—" for a bound reference image. Order-independent.
+            const previewsDir = await ensureDir(join(dir, 'previews'))
+            const fileExists = async (p: string): Promise<boolean> => stat(p).then((s) => s.isFile()).catch(() => false)
+            for (const m of manifest.materials ?? []) {
+              const refs = [m.path, ...(Array.isArray(m.images) ? m.images : [])].filter(Boolean)
+              for (const ref of refs) {
+                const known = previewByPath.get(ref)
+                if (known && (await fileExists(known))) continue
+                const prev = await makePreview(ref, previewsDir, 1024)
+                previews.push({ material: ref, preview: prev.path, width: prev.width, height: prev.height })
+                previewByPath.set(ref, prev.path)
+              }
+            }
+            await atomicWriteJson(join(dir, 'previews.json'), previews)
             const items = buildReviewItems(manifest, previews)
+            // Embed every reference thumbnail as a data URI — the sandboxed viewer blocks
+            // file:// and relative <img src> (same contract as batch_image's contact sheet).
+            for (const item of items) {
+              for (const img of item.images) {
+                img.dataUri = await previewDataUri(img.preview)
+              }
+            }
+            const reviewDir = await ensureDir(join(dir, 'review'))
             const html = buildReviewHtml(manifest, items)
             await writeFile(join(reviewDir, 'index.html'), html, 'utf8')
             await atomicWriteJson(join(dir, 'review.json'), items)
-            return { ok: true, message: `review page ready: ${join(reviewDir, 'index.html')}`, batch_id: batchId, review_path: join(reviewDir, 'index.html') }
+            const embedded = items.reduce((n, it) => n + it.images.length, 0)
+            return { ok: true, message: `review page ready (${embedded} reference image(s) embedded, one per 图片N slot): ${join(reviewDir, 'index.html')}`, batch_id: batchId, review_path: join(reviewDir, 'index.html') }
           }
           case 'get_manifest':
             return { ok: true, message: `manifest for ${batchId}`, manifest }

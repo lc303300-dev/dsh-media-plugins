@@ -30,10 +30,19 @@
     - id: Ws_tool-video-gen
       name: dsh-media-plugins/Ws_tool-video-gen
       config:
-        # 生产通道默认：seedance2.5 / 480p（契约要求）。
-        model: 'seedance2.5'
+        # 生产通道默认：seedance_2.5 / 480p（即梦画布 CLI canonical 名）。
+        model: 'seedance_2.5'
         resolution: '480p'
         executionMode: 'production'
+        # 画布 CLI 路径留空 = 自动解析：包内 bin/ → ~/bin/dreamina-canvas.exe（官方安装器
+        # 位置）→ PATH。官方更新器管版本，所以不要在这里钉死某个绝对路径。
+        # dreaminaPath: ''
+        # 登录态隔离名（--profile）；留空 = CLI 默认 default。
+        # dreaminaProfile: ''
+        # 视频并发容量（一次 generate_video 调用同时提交多少个任务）。批次的划分只看容量，
+        # 绝不按时长拆分：每个任务用 tasks[].duration 携带自己的时长。
+        # 画布 CLI 侧每个任务是一条独立节点提交（保存→报价→批准→运行），超出的任务排队。
+        videoCapacity: 10
 
     - id: Ws_tool-skill-registry
       name: dsh-media-plugins/Ws_tool-skill-registry
@@ -76,6 +85,15 @@
 
     - id: Ws_tool-status
       name: dsh-media-plugins/Ws_tool-status
+
+    # 即梦账号切换：新旧两个 CLI 各持一份独立登录态，都在
+    # HKCU\Software\BytedAuthClient\keychain 下（DPAPI 值）——
+    #   dreamina                              = 旧 CLI（只剩余额查询）
+    #   dreamina_canvas_oauth_v2_<hash>       = 即梦画布 CLI（生成线路在用）
+    # 用 dreamina_account 保存/切换账号时会同时切换两边；设为管线默认后，
+    # generate_video / generate_image / batch_image 在调用 CLI 前会自动确保默认账号激活。
+    - id: Ws_tool-dreamina-account
+      name: dsh-media-plugins/Ws_tool-dreamina-account
 
     - id: Ws_tool-cost
       name: dsh-media-plugins/Ws_tool-cost

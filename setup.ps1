@@ -12,24 +12,30 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-$DREAMINA_URL = "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljwZthlaukjlkulzlp/dreamina_cli_beta/dreamina_cli_windows_amd64.exe"
 $DSH_HOME = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME ".dsh" }
 $credFile = Join-Path $DSH_HOME ".credentials.yaml"
 $settingsFile = Join-Path $DSH_HOME "settings.yaml"
-$binDir = Join-Path $PSScriptRoot "bin"
-$dreamina = Join-Path $binDir "dreamina.exe"
 
 Write-Host "== dsh-media-plugins setup ==" -ForegroundColor Cyan
 
-# 1. 下载 dreamina.exe
+# 1. 确保即梦画布 CLI（dreamina-canvas）可用
+#    旧 `dreamina` CLI 自 2026-11 起停止维护，仓库已完全迁移到画布 CLI，不再随包分发旧二进制。
 Write-Host ""
-Write-Host "[1/5] 下载 Dreamina CLI (dreamina.exe)..." -ForegroundColor Yellow
-New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-if (-not (Test-Path $dreamina)) {
-    Invoke-WebRequest -UseBasicParsing -Uri $DREAMINA_URL -OutFile $dreamina
-    Write-Host "  已下载到 $dreamina" -ForegroundColor Green
+Write-Host "[1/5] 检查即梦画布 CLI (dreamina-canvas)..." -ForegroundColor Yellow
+$canvasCmd = $null
+try { $canvasCmd = (Get-Command dreamina-canvas.exe -CommandType Application -ErrorAction Stop).Source } catch {}
+if (-not $canvasCmd) {
+    $fallback = Join-Path $HOME "bin\dreamina-canvas.exe"
+    if (Test-Path $fallback) { $canvasCmd = $fallback }
+}
+if ($canvasCmd) {
+    Write-Host "  已安装: $canvasCmd" -ForegroundColor Green
 } else {
-    Write-Host "  已存在，跳过: $dreamina" -ForegroundColor Green
+    Write-Host "  未检测到 dreamina-canvas，运行官方安装器…" -ForegroundColor Yellow
+    irm https://jimeng.jianying.com/canvas-cli/install.ps1 | iex
+    try { $canvasCmd = (Get-Command dreamina-canvas.exe -CommandType Application -ErrorAction Stop).Source } catch {}
+    if (-not $canvasCmd) { $canvasCmd = Join-Path $HOME "bin\dreamina-canvas.exe" }
+    Write-Host "  安装后位置: $canvasCmd" -ForegroundColor Green
 }
 
 # 2. 引导输入两个 Key，写入 .credentials.yaml
@@ -103,15 +109,15 @@ llm-pi-ai:
 }
 }
 
-# 4. 引导 Dreamina 登录
+# 4. 引导即梦画布 CLI 登录
 Write-Host ""
-Write-Host "[4/5] Dreamina 登录（生视频，OAuth 需浏览器授权）" -ForegroundColor Yellow
-Write-Host "  即将运行 $dreamina login" -ForegroundColor Gray
-Write-Host "  终端会打印 verification_uri 与 user_code，请在浏览器打开并授权。" -ForegroundColor Gray
+Write-Host "[4/5] 即梦登录（生成线路，OAuth 设备授权）" -ForegroundColor Yellow
+Write-Host "  即将运行: $canvasCmd auth login" -ForegroundColor Gray
+Write-Host "  终端/浏览器会给出授权入口，请在已登录即梦账号的浏览器里完成授权。" -ForegroundColor Gray
 Write-Host "  即梦创作平台（会员/积分充值）：https://jimeng.jianying.com" -ForegroundColor Gray
 $doLogin = Read-Host "  现在登录？（y/n，回车=y）"
 if ($doLogin -eq '' -or $doLogin -eq 'y') {
-    & $dreamina login
+    & $canvasCmd auth login
 }
 
 # 5. 安装业务技能到 $DSH_HOME/skills（DSH 技能发现根，重启后生效）

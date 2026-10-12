@@ -9,6 +9,8 @@ import {
   isVideoExtName,
   pickDownloadedVideo,
   confirmationGateError,
+  confirmationGateErrorForDurations,
+  parseDurationSet,
   promptCompletenessBoundaryIssue,
   classifyVideoPromptCompleteness,
   completenessRequiresCorpus,
@@ -167,4 +169,43 @@ test('classifyVideoPromptCompleteness: bare 图片N label passes (BUG-09 regress
   const full = classifyVideoPromptCompleteness('镜头以低空航拍掠过城市，沿街面平视穿行，0-8秒分三段，绑定图片1 与图片4', { images: 4, videos: 0, audios: 0 })
   assert.equal(full.verdict, 'complete')
   assert.equal(full.reasons.length, 0)
+})
+
+test('confirmationGateErrorForDurations: one distinct duration keeps the legacy single-value contract', () => {
+  const resolved = { model: 'seedance2.5', resolution: '480p', durations: [8, 8, 8] }
+  assert.equal(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '480p', duration: 8 }), null)
+  // legacy 5s/5秒 forms still accepted in the single-duration path
+  assert.equal(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '480p', duration: '8秒' }), null)
+  assert.match(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '480p', duration: 12 }), /duration/)
+  assert.ok(confirmationGateErrorForDurations('production', resolved, {}))
+  // test channel never needs confirmation
+  assert.equal(confirmationGateErrorForDurations('test_submit_only', { model: 'seedance2.5', resolution: '480p', durations: [4, 15] }, {}), null)
+})
+
+test('confirmationGateErrorForDurations: mixed per-task durations require the exact declared set', () => {
+  const resolved = { model: 'seedance2.5', resolution: '480p', durations: [12, 15, 15, 4] }
+  // missing set → rejected, and the message names the required literal
+  const missing = confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '480p', duration: 15 })
+  assert.match(missing, /video_confirmation_durations/)
+  assert.match(missing, /4\/12\/15/)
+  // incomplete / wrong set → rejected
+  assert.match(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '480p', durations: '12,15' }), /does not match/)
+  assert.match(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '480p', durations: '15,4,12,15,4,9' }), /does not match/)
+  assert.match(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '480p', durations: 'junk' }), /not a valid duration list/)
+  // exact set — order and duplicates irrelevant → passes
+  assert.equal(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '480p', durations: '15,4,12' }), null)
+  assert.equal(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '480p', durations: [12, 4, 15] }), null)
+  // model / resolution mismatch still rejected in the multi-duration path
+  assert.match(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.0_vip', resolution: '480p', durations: '4,12,15' }), /model/)
+  assert.match(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '720p', durations: '4,12,15' }), /resolution/)
+})
+
+test('parseDurationSet: accepts commas/spaces/slashes/suffixes, rejects junk', () => {
+  assert.deepEqual(parseDurationSet('12,15,15'), [12, 15])
+  assert.deepEqual(parseDurationSet('15 12 4'), [4, 12, 15])
+  assert.deepEqual(parseDurationSet(['5', '10s', '15秒']), [5, 10, 15])
+  assert.deepEqual(parseDurationSet('12/15、4，8'), [4, 8, 12, 15])
+  assert.equal(parseDurationSet('abc'), null)
+  assert.equal(parseDurationSet(''), null)
+  assert.equal(parseDurationSet('12,xx'), null)
 })

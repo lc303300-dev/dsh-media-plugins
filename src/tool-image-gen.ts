@@ -58,6 +58,7 @@ import {
   redactPrompt,
   resolvePrivateRoot,
 } from './shared/private-runtime.ts'
+import { createAccountGate } from './shared/dreamina-account.ts'
 
 /** Bundle root: the built tool file lives in dist/, so resolve from the package root. */
 const PACKAGE_ROOT = packageRootOf(import.meta.url)
@@ -73,6 +74,10 @@ export interface Config {
   comflyBaseURL?: string
   comflyApiKeyEnv?: string
   dreaminaPath?: string
+  /** 画布 CLI（`dreamina-canvas`）路径；留空 = 自动解析（包内 bin → ~/bin → PATH）。 */
+  dreaminaCanvasPath?: string
+  /** 画布登录态隔离名（`--profile`）。 */
+  dreaminaCanvasProfile?: string
   proxyUrl?: string
   outputDir?: string
   privateDir?: string
@@ -81,12 +86,19 @@ export interface Config {
   taskTimeoutMs?: number
   /** Adapter ids to enable; empty means all in contract order. */
   enabled?: string[]
+  /**
+   * Dreamina account the pipeline keeps active. Empty = never touch the login
+   * state; otherwise the Dreamina route ensures it before calling the CLI.
+   */
+  dreaminaAccount?: string
 }
 
 export const Config: z<Config> = z.object({
   comflyBaseURL: z.string().default('https://ai.comfly.org/v1'),
   comflyApiKeyEnv: z.string().default('COMFLY_API_KEY'),
-  dreaminaPath: z.string().default(join(PACKAGE_ROOT, 'bin', 'dreamina.exe')),
+  dreaminaPath: z.string().default(''),
+  dreaminaCanvasPath: z.string().default(''),
+  dreaminaCanvasProfile: z.string().default(''),
   proxyUrl: z.string().default(''),
   outputDir: z.string().default('outputs'),
   privateDir: z.string().default(''),
@@ -94,6 +106,7 @@ export const Config: z<Config> = z.object({
   providerTimeoutMs: z.number().default(DEFAULT_IMAGE_REQUEST_TIMEOUT_MS),
   taskTimeoutMs: z.number().default(DEFAULT_IMAGE_REQUEST_TIMEOUT_MS),
   enabled: z.array(z.string()).default([]),
+  dreaminaAccount: z.string().default(''),
 })
 
 type ResolvedConfig = Required<Config>
@@ -210,10 +223,16 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           }
         }
 
+        const accountGate = createAccountGate(privateRoot, config.dreaminaAccount, async (info) => {
+          await appendSafeLog(privateRoot, 'dreamina-account', { action: 'auto-switch', tool: 'generate_image', ...info })
+        })
+
         const routerConfig: RouterConfig = {
           comflyBaseURL: config.comflyBaseURL,
           comflyApiKeyEnv: config.comflyApiKeyEnv,
           dreaminaPath: config.dreaminaPath,
+          dreaminaCanvasPath: config.dreaminaCanvasPath,
+          dreaminaCanvasProfile: config.dreaminaCanvasProfile,
           proxyUrl: config.proxyUrl,
           maxConcurrency: config.maxConcurrency,
           providerTimeoutMs: config.providerTimeoutMs,
@@ -221,6 +240,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           outputDir: config.outputDir,
           enabled: config.enabled,
           credentials,
+          ensureDreaminaAccount: () => accountGate.ensure(),
         }
 
         const request = { prompt: redactPrompt(prompt), ratio, size, resolution: args.image_resolution ?? null, imageProvider: args.image_provider ?? null, images: args.image ?? [] }

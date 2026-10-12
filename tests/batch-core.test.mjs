@@ -53,6 +53,14 @@ test('manifest validation rejects bad input', () => {
   assert.throws(() => validateManifest({ ...baseManifest, completion_grace_seconds: 121 }), /completion_grace_seconds/, 'grace may never exceed 120 s')
 })
 
+test('manifest validation accepts a declared multi-panel grid and rejects junk', () => {
+  assert.doesNotThrow(() => validateManifest({ groups: [{ id: 'a', prompt: 'p', candidates: 1, image_ratio: '1:1', grid: '3x3' }] }))
+  assert.doesNotThrow(() => validateManifest({ groups: [{ id: 'a', prompt: 'p', candidates: 1, image_ratio: '1:1', grid: '2×2' }] }), 'the × separator is accepted')
+  assert.throws(() => validateManifest({ groups: [{ id: 'a', prompt: 'p', candidates: 1, image_ratio: '1:1', grid: 'banana' }] }), /grid/)
+  assert.throws(() => validateManifest({ groups: [{ id: 'a', prompt: 'p', candidates: 1, image_ratio: '1:1', grid: '1x1' }] }), /grid/, 'a single panel is not a grid')
+  assert.throws(() => validateManifest({ groups: [{ id: 'a', prompt: 'p', candidates: 1, image_ratio: '1:1', grid: '5x5' }] }), /grid/, 'beyond 4x4 is not supported')
+})
+
 test('stable job key: same content, same key; order-insensitive; resolution/provider included', () => {
   const m1 = { groups: [{ id: 'a', prompt: 'p', candidates: 2, image_ratio: '1:1' }, { id: 'b', prompt: 'q', candidates: 3, image_ratio: '16:9' }], concurrency: 4 }
   const m2 = { groups: [{ id: 'b', prompt: 'q', candidates: 3, image_ratio: '16:9' }, { id: 'a', prompt: 'p', candidates: 2, image_ratio: '1:1' }], concurrency: 4 }

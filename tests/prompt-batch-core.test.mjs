@@ -6,7 +6,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { previewSrc, buildReviewItems, buildReviewHtml } from '../src/shared/prompt-batch-core.ts'
+import { previewSrc, buildReviewItems, buildReviewHtml, reviewImageNames } from '../src/shared/prompt-batch-core.ts'
 
 test('previewSrc maps an absolute preview path to ../previews/<basename>', () => {
   assert.equal(previewSrc('D:\\priv\\batches\\20260826-1000-batch\\previews\\input-01-preview.png'), '../previews/input-01-preview.png')
@@ -52,4 +52,59 @@ test('buildReviewItems: multi-image material renders primary + extras in --image
   assert.ok(html.includes('图片2'))
   assert.ok(html.includes('图片3'))
   assert.ok(html.includes('../previews/b-preview.png'))
+})
+
+test('buildReviewHtml: an embedded data URI wins over the relative preview path', () => {
+  const manifest = {
+    batch_id: 'b', duration: 5, ratio: '16:9', model: 'seedance2.5',
+    materials: [{ path: 'D:/a.png', hash: 'h', images: ['D:/b.png'] }],
+    prompts: [{ material: 'D:/a.png', prompt: '绑定图片1 与图片2' }],
+  }
+  const items = buildReviewItems(manifest, [
+    { material: 'D:/a.png', preview: 'D:/p/a-preview.png' },
+    { material: 'D:/b.png', preview: 'D:/p/b-preview.png' },
+  ])
+  items[0].images[0].dataUri = 'data:image/jpeg;base64,AAA'
+  items[0].images[1].dataUri = 'data:image/jpeg;base64,BBB'
+  const html = buildReviewHtml(manifest, items)
+  assert.ok(html.includes('data:image/jpeg;base64,AAA'), 'primary image embedded')
+  assert.ok(html.includes('data:image/jpeg;base64,BBB'), 'extra reference embedded too')
+  assert.ok(!html.includes('../previews/'), 'no external preview paths once every image is embedded')
+})
+
+test('buildReviewHtml: a bound reference without a preview renders "—" (never a broken img)', () => {
+  const manifest = {
+    batch_id: 'b', duration: 5, ratio: '16:9', model: 'seedance2.5',
+    materials: [{ path: 'D:/a.png', hash: 'h', images: ['D:/b.png'] }],
+    prompts: [{ material: 'D:/a.png', prompt: '绑定图片1 与图片2' }],
+  }
+  const items = buildReviewItems(manifest, [{ material: 'D:/a.png', preview: 'D:/p/a-preview.png' }])
+  const html = buildReviewHtml(manifest, items)
+  assert.equal(items[0].images[1].preview, '')
+  assert.ok(html.includes('图片2'))
+  assert.ok(!html.includes('<img src=""'), 'no empty-src img tag')
+})
+
+test('buildReviewHtml: each reference image is pickable and carries its file name', () => {
+  const manifest = {
+    batch_id: 'b', duration: 5, ratio: '16:9', model: 'seedance2.5',
+    materials: [{ path: 'D:/m/shot-a.png', hash: 'h', images: ['D:/m/shot-b.png'] }],
+    prompts: [{ material: 'D:/m/shot-a.png', prompt: '绑定图片1 与图片2' }],
+  }
+  const items = buildReviewItems(manifest, [
+    { material: 'D:/m/shot-a.png', preview: 'D:/p/a-preview.png' },
+    { material: 'D:/m/shot-b.png', preview: 'D:/p/b-preview.png' },
+  ])
+  const html = buildReviewHtml(manifest, items)
+  assert.ok(html.includes('data-rv-name="shot-a.png"'), 'primary image is pickable by file name')
+  assert.ok(html.includes('data-rv-name="shot-b.png"'), 'extra reference is pickable too')
+  assert.ok(html.includes('data-rv-act="copy-name"'), 'the copy bar is rendered')
+  assert.ok(html.includes('data-rv-path="D:/m/shot-b.png"'), 'the absolute path is the copy-path payload')
+})
+
+test('reviewImageNames disambiguates equal file names from different folders', () => {
+  assert.deepEqual(reviewImageNames(['D:/a/x.png', 'D:/b/y.png']), ['x.png', 'y.png'])
+  assert.deepEqual(reviewImageNames(['D:/a/x.png', 'D:/b/x.png']), ['a/x.png', 'b/x.png'])
+  assert.deepEqual(reviewImageNames(['D:\\a\\x.png', 'D:\\b\\x.png']), ['a/x.png', 'b/x.png'])
+  assert.deepEqual(reviewImageNames([]), [])
 })

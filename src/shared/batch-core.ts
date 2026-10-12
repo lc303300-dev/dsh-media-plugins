@@ -19,8 +19,11 @@
  */
 
 import { createHash } from 'node:crypto'
+import { basename } from 'node:path'
 import sharp from 'sharp'
 import { IMAGE_SECONDS_PER_CANDIDATE } from './media-client.ts'
+import { reviewPickHtml, reviewToolbarHtml, reviewUiScriptHtml, reviewUiStyleHtml } from './review-ui.ts'
+import { parseGridSpec, rowsColsLabel } from './grid-detect.ts'
 import {
   SUPPORTED_RATIOS,
   RATIO_SIZES,
@@ -40,6 +43,13 @@ export interface BatchGroup {
   reference_images?: string[]
   /** Explicit material/style reference for contact-sheet slot 0 (recommended with multiple references). */
   original_image?: string
+  /**
+   * Declared multi-panel layout of this group's output, e.g. `"3x3"` (九宫格) or
+   * `"2x2"` (四宫格). The review page splits each landed candidate into panels;
+   * a declaration also covers borderless sheets where no gutter can be
+   * detected, in which case the panels are cut evenly.
+   */
+  grid?: string
 }
 
 export interface BatchManifest {
@@ -139,6 +149,9 @@ export function validateManifest(raw: unknown): BatchManifest {
     if (g.original_image !== undefined && (typeof g.original_image !== 'string' || g.original_image.trim().length === 0)) {
       throw new Error(`group ${g.id}: original_image must be a path string`)
     }
+    if (g.grid !== undefined && !parseGridSpec(g.grid)) {
+      throw new Error(`group ${g.id}: grid must be a layout like "3x3" / "2x2" (rows and cols 1..4, at least 2 panels), got ${JSON.stringify(g.grid)}`)
+    }
     total += g.candidates
   }
   const concurrency = m.concurrency ?? 10
@@ -210,6 +223,26 @@ export function computeDeadline(manifest: BatchManifest, now = Date.now()): Batc
   }
 }
 
+/** One extracted panel of a multi-panel sheet, as embedded in the review page. */
+export interface ContactSheetPanel {
+  id: string
+  path: string
+}
+
+/** One landed candidate, optionally carrying the panels it was split into. */
+export interface ContactSheetLanding {
+  groupId: string
+  slot: number
+  path: string
+  width?: number
+  height?: number
+  /** Set when the produced image was recognized as a multi-panel sheet. */
+  grid?: { rows: number; cols: number }
+  panels?: ContactSheetPanel[]
+  /** Why the sheet was not split (kept as a note); optional. */
+  gridNote?: string
+}
+
 /**
  * Review-page HTML for a batch job.
  *
@@ -218,13 +251,19 @@ export function computeDeadline(manifest: BatchManifest, now = Date.now()): Batc
  * as a broken image), and the layout is a CSS grid so the page never needs
  * horizontal scrolling. Built automatically once a job settles — see
  * `tool-batch-image.ts`.
+ *
+ * Every image carries a checkbox: the user ticks the shots they want and copies
+ * their names/paths in one click instead of retyping file names. A candidate
+ * that was recognized as a multi-panel sheet (四宫格/九宫格/…) renders its
+ * panels as individual pickable entries, so a single panel can be selected
+ * without splitting the file by hand.
  */
 export async function buildContactSheetHtml(
   plan: BatchPlan,
   groups: Array<Pick<BatchGroup, 'id' | 'candidates' | 'image_ratio' | 'original_image'>>,
-  landed: Array<{ groupId: string; slot: number; path: string; width?: number; height?: number }>,
+  landed: ContactSheetLanding[],
 ): Promise<string> {
-  const byGroup = new Map<string, Map<number, (typeof landed)[number]>>()
+  const byGroup = new Map<string, Map<number, ContactSheetLanding>>()
   for (const item of landed) {
     if (!byGroup.has(item.groupId)) byGroup.set(item.groupId, new Map())
     byGroup.get(item.groupId)!.set(item.slot, item)
@@ -232,7 +271,8 @@ export async function buildContactSheetHtml(
 
   const cache = new Map<string, string>()
   const embed = async (p: string, edge: number): Promise<string> => {
-    const hit = cache.get(p)
+    const key = `${p}@${edge}`
+    const hit = cache.get(key)
     if (hit !== undefined) return hit
     let uri = ''
     try {
@@ -245,15 +285,15 @@ export async function buildContactSheetHtml(
     } catch {
       uri = ''
     }
-    cache.set(p, uri)
+    cache.set(key, uri)
     return uri
   }
 
-  const figure = (uri: string, label: string, placeholder = ''): string => {
+  const shot = (uri: string, label: string, alt: string, pick: string, cls = ''): string => {
     const caption = `<figcaption>${escapeHtml(label)}</figcaption>`
     return uri
-      ? `<figure><img src="${uri}" alt="${escapeHtml(label)}">${caption}</figure>`
-      : `<figure class="miss"><div class="ph">${escapeHtml(placeholder || '无法读取')}</div>${caption}</figure>`
+      ? `<figure class="rv-card${cls ? ` ${cls}` : ''}">${pick}<img src="${uri}" alt="${escapeHtml(alt)}">${caption}</figure>`
+      : `<figure class="miss${cls ? ` ${cls}` : ''}">${pick}<div class="ph">无法读取</div>${caption}</figure>`
   }
 
   // NOTE: a group's original/reference image is deliberately NOT rendered. A
@@ -262,23 +302,62 @@ export async function buildContactSheetHtml(
   //
   // Every slot is embedded CONCURRENTLY: decoding a 4K PNG down to a 900 px
   // JPEG costs ~100 ms, so the previous serial loop made a 16-image page spend
-  // ~1.6 s in the post-settle step (parallel: ~0.5 s, identical output).
-  const slotPlans: Array<{ group: (typeof groups)[number]; slot: number; item?: (typeof landed)[number] }> = []
+  // ~1.6 s in the post-settle step (parallel: ~0.5 s, identical output). Panels
+  // are smaller (420 px), so a 9-panel sheet costs a third of one full-size
+  // embed each — and when a candidate WAS split, only its panels are embedded:
+  // the sheet itself is deliberately not rendered, because showing the whole
+  // 九宫格 next to its nine panels is exactly the duplicate the user asked to
+  // drop (the split file still exists on disk next to the panels).
+  const slotPlans: Array<{ group: (typeof groups)[number]; slot: number; item?: ContactSheetLanding }> = []
   for (const group of groups) {
     const items = byGroup.get(group.id) ?? new Map()
     for (let slot = 1; slot <= group.candidates; slot += 1) {
       slotPlans.push({ group, slot, item: items.get(slot) })
     }
   }
-  const uris = await Promise.all(slotPlans.map((plan) => (plan.item ? embed(plan.item.path, 900) : Promise.resolve(''))))
+  const uris = await Promise.all(
+    slotPlans.map((plan) => (plan.item && (plan.item.panels?.length ?? 0) === 0 ? embed(plan.item.path, 900) : Promise.resolve(''))),
+  )
+  const panelUris = new Map<string, string>()
+  await Promise.all(
+    slotPlans
+      .flatMap((plan) => plan.item?.panels ?? [])
+      .map(async (panel) => {
+        panelUris.set(panel.path, await embed(panel.path, 420))
+      }),
+  )
+
   const figuresByGroup = new Map<string, string[]>()
   slotPlans.forEach((plan, index) => {
     const figures = figuresByGroup.get(plan.group.id) ?? []
-    figures.push(
-      plan.item
-        ? figure(uris[index] ?? '', `${plan.group.id} · #${plan.slot} ✓`)
-        : figure('', `${plan.group.id} · #${plan.slot}`, '∅ 未落地'),
-    )
+    if (plan.item) {
+      const item = plan.item
+      const label = `${plan.group.id} · #${plan.slot} ✓`
+      const sheetName = basename(item.path)
+      const panels = item.panels ?? []
+      if (panels.length === 0) {
+        figures.push(shot(uris[index] ?? '', label, sheetName, reviewPickHtml({ name: sheetName, path: item.path })))
+      } else {
+        const rows = item.grid?.rows ?? 1
+        const cols = item.grid?.cols ?? panels.length
+        const cells = panels
+          .map((panel) =>
+            shot(
+              panelUris.get(panel.path) ?? '',
+              panel.id,
+              basename(panel.path),
+              reviewPickHtml({ name: basename(panel.path), path: panel.path, tag: panel.id }),
+            ),
+          )
+          .join('')
+        const note = item.gridNote ?? `检测到 ${rowsColsLabel(rows, cols)}，已拆分为 ${panels.length} 张独立面板（勾选想要的那一格即可）`
+        figures.push(`<article class="rv-group"><p class="rv-note">${escapeHtml(note)}</p><div class="rv-panels">${cells}</div></article>`)
+      }
+    } else {
+      figures.push(
+        `<figure class="rv-card miss"><div class="ph">∅ 未落地</div><figcaption>${escapeHtml(`${plan.group.id} · #${plan.slot}`)}</figcaption></figure>`,
+      )
+    }
     figuresByGroup.set(plan.group.id, figures)
   })
   const sections: string[] = groups.map(
@@ -287,9 +366,13 @@ export async function buildContactSheetHtml(
   )
 
   const abandoned = plan.total - landed.length
+  const splitSheets = landed.filter((item) => (item.panels?.length ?? 0) > 0).length
+  const splitPanels = landed.reduce((n, item) => n + (item.panels?.length ?? 0), 0)
+  const splitNote = splitSheets > 0 ? ` · 多宫格母图 ${splitSheets} 张已拆分为 ${splitPanels} 张面板` : ''
   return `<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>批量审阅页 ${escapeHtml(plan.jobKey)}</title>
+${reviewUiStyleHtml()}
 <style>
 *{box-sizing:border-box}
 body{margin:0;padding:16px;background:#0f1013;color:#e9e9ec;font-family:system-ui,"Microsoft YaHei",sans-serif}
@@ -302,11 +385,18 @@ figure{margin:0;background:#191b1f;border:1px solid #2a2d33;border-radius:10px;o
 figure img{display:block;width:100%;height:auto}
 figcaption{padding:6px 10px;font-size:12.5px;color:#c6cad0;border-top:1px solid #2a2d33}
 figure.miss .ph{padding:48px 10px;text-align:center;color:#ff8f8f;font-size:13px}
+figure .ph{padding:48px 10px;text-align:center;color:#ff8f8f;font-size:13px}
+.rv-group{grid-column:1/-1;background:#191b1f;border:1px solid #2a2d33;border-radius:10px;overflow:hidden}
+.rv-group .rv-card{background:transparent;border:0;border-radius:0}
+.rv-note{margin:0;padding:8px 10px;font-size:12px;color:#ffd08a;background:rgba(255,193,94,.06);border-top:1px solid #2a2d33}
+.rv-panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;padding:8px 10px 10px;border-top:1px solid #2a2d33}
 </style></head><body>
 <h1>批量审阅页 ${escapeHtml(plan.jobKey)}</h1>
-<p class="hint">total ${plan.total} · landed ${landed.length} · 未落地 ${abandoned} · concurrency ${plan.concurrency} · deadline ${plan.deadlineSeconds}s｜图片已内嵌，窗口自适应</p>
-<p class="hint">到点即收摊：只收集已落地的成功图，未落地的槽位不会自动重试。要不要补跑由你决定 —— 确认后换一个新的组 id 重新排队即可（同一 manifest 会被 job key 拒绝）。</p>
+<p class="hint">total ${plan.total} · landed ${landed.length} · 未落地 ${abandoned} · concurrency ${plan.concurrency} · deadline ${plan.deadlineSeconds}s${escapeHtml(splitNote)}｜图片已内嵌，窗口自适应</p>
+<p class="hint">到点即收摊：只收集已落地的成功图，未落地的槽位不会自动重试。要不要补跑由你决定 —— 确认后换一个新的组 id 重新排队即可（同一 manifest 会被 job key 拒绝）。勾选想要的图 → 点“复制勾选名称”，把名称贴回对话即可。</p>
 ${sections.join('\n')}
+${reviewToolbarHtml({ hint: '勾选后复制名称/路径' })}
+${reviewUiScriptHtml()}
 </body></html>`
 }
 

@@ -6,9 +6,18 @@
  * @module dsh-media-plugins/shared/prompt-batch-core
  */
 
+import { reviewPickHtml, reviewToolbarHtml, reviewUiScriptHtml, reviewUiStyleHtml } from './review-ui.ts'
+
 export interface ReviewImage {
   path: string
   preview: string
+  /**
+   * Embedded thumbnail (`data:image/jpeg;base64,…`). Preferred over `preview`:
+   * the sandboxed viewer blocks `file://` and relative `<img src>` (same
+   * contract as batch_image's contact sheet), so a relative path shows as a
+   * broken image.
+   */
+  dataUri?: string
 }
 
 export interface ReviewItem {
@@ -47,25 +56,53 @@ export function previewSrc(previewPath: string): string {
 }
 
 /**
+ * Copy-friendly names for a set of image paths: the file name, prefixed with its
+ * parent folder only when the bare name is ambiguous inside this batch (two
+ * `a.png` from different folders must not copy out as the same string).
+ */
+export function reviewImageNames(paths: Array<string | undefined>): string[] {
+  const normalized = paths.map((p) => String(p ?? '').replace(/\\/g, '/'))
+  const bases = normalized.map((p) => p.split('/').pop() ?? '')
+  const counts = new Map<string, number>()
+  for (const b of bases) counts.set(b, (counts.get(b) ?? 0) + 1)
+  return normalized.map((p, i) => {
+    const parts = p.split('/').filter(Boolean)
+    if ((counts.get(bases[i]) ?? 0) > 1 && parts.length >= 2) return `${parts[parts.length - 2]}/${bases[i]}`
+    return bases[i]
+  })
+}
+
+/**
  * Build review/index.html: every segment renders ALL of its reference images
  * (primary + extras, in `--image` order) labelled 图片1..图片N, followed by
  * the Chinese prompt. Relative preview paths point at `../previews/`.
+ *
+ * Every image carries a checkbox with its copy-friendly name, so a binding can
+ * be confirmed (and quoted back) without retyping file names.
  */
 export function buildReviewHtml(manifest: ManifestLike, items: ReviewItem[]): string {
+  const allPaths: string[] = []
+  for (const it of items) {
+    const imgs = it.images && it.images.length > 0 ? it.images : [{ path: it.material, preview: it.preview }]
+    for (const img of imgs) allPaths.push(img.path)
+  }
+  const names = reviewImageNames(allPaths)
+  let cursor = 0
   const rows = items
     .map((it) => {
       const imgs = it.images && it.images.length > 0 ? it.images : [{ path: it.material, preview: it.preview }]
       const cells = imgs
         .map((img, i) => {
-          const src = previewSrc(img.preview)
-          const imgTag = src ? `<img src="${src}" width="240" alt="图片${i + 1}" title="${escapeHtml(img.path)}">` : '—'
-          return `<figure style="display:inline-block;margin:0 10px 6px 0"><figcaption style="font-size:12px;color:#888">图片${i + 1}</figcaption>${imgTag}</figure>`
+          const src = img.dataUri && img.dataUri.length > 0 ? img.dataUri : previewSrc(img.preview)
+          const imgTag = src ? `<img src="${src}" width="240" loading="lazy" alt="图片${i + 1}" title="${escapeHtml(img.path)}">` : '—'
+          const pick = reviewPickHtml({ name: names[cursor++] ?? '', path: img.path, tag: `图片${i + 1}` })
+          return `<figure class="rv-card" style="margin:0 10px 6px 0">${pick}${imgTag}<figcaption style="font-size:12px;color:#777">图片${i + 1}</figcaption></figure>`
         })
         .join('')
       return `<tr><td>#${it.index}</td><td>${cells}</td><td style="max-width:480px">${escapeHtml(it.prompt)}</td></tr>`
     })
     .join('\n')
-  return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>批次审阅 ${manifest.batch_id}</title><style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse}td{border:1px solid #ccc;padding:10px;vertical-align:top}</style></head><body><h1>审阅批次 ${manifest.batch_id}</h1><p>时长 ${manifest.duration}s · 比例 ${manifest.ratio} · 模型 ${manifest.model}</p><table><thead><tr><th>#</th><th>素材预览</th><th>中文提示词</th></tr></thead><tbody>${rows}</tbody></table></body></html>`
+  return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>批次审阅 ${manifest.batch_id}</title>${reviewUiStyleHtml()}<style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse}td{border:1px solid #ccc;padding:10px;vertical-align:top}figure{display:inline-block}</style></head><body class="rv-flat-page"><h1>审阅批次 ${manifest.batch_id}</h1><p>时长 ${manifest.duration}s · 比例 ${manifest.ratio} · 模型 ${manifest.model}</p><p style="font-size:12.5px;color:#555">勾选要绑定的素材 → 点“复制勾选名称”，把名称贴回对话即可核对绑定。</p><table><thead><tr><th>#</th><th>素材预览</th><th>中文提示词</th></tr></thead><tbody>${rows}</tbody></table>${reviewToolbarHtml({ hint: '勾选后复制名称/路径', flat: true })}${reviewUiScriptHtml()}</body></html>`
 }
 
 /**

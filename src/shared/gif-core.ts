@@ -37,6 +37,27 @@ export const STRICT_EXTRA_STAGES: Array<{ width: number; fps: number }> = [
   { width: 240, fps: 3 },
 ]
 
+/**
+ * Turn a video path (or any label) into a filesystem-safe file-name stem.
+ * Batch runs share one output directory, so every artifact is named after its
+ * input: without this, two inputs producing the same (width, fps) stage would
+ * silently overwrite each other. Unicode (e.g. Chinese) is preserved.
+ */
+export function sanitizeGifStem(input: string, options: { stripExtension?: boolean } = {}): string {
+  const base = String(input ?? '')
+    .split(/[\\/]/)
+    .pop()!
+  const withoutExt = options.stripExtension === false ? base : base.replace(/\.[^.]*$/, '')
+  const cleaned = withoutExt
+    .replace(/[\\/:*?"<>|]/g, '_')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/^[._]+/, '')
+    .replace(/[._]+$/, '')
+  return cleaned.slice(0, 48) || 'video'
+}
+
 export type GifMode = 'quality' | 'strict'
 export type DitherMode = 'bayer' | 'sierra2_4a' | 'floyd_steinberg' | 'none'
 export type DenoiseLevel = 'off' | 'light' | 'medium'
@@ -49,8 +70,14 @@ export interface GifOptions {
   maxSizeMB?: number
   /** 'quality' stops at minWidth; 'strict' keeps shrinking below it. */
   mode?: GifMode
-  /** Lowest width the quality mode will try (default 360). */
+  /** Lowest width the quality mode will try (default 360); ignored in `strict` mode. */
   minWidth?: number
+  /**
+   * File-name stem for the produced artifacts (default: derived from the input
+   * path). Callers converting several inputs into one directory should pass a
+   * unique stem per input so outputs cannot overwrite each other.
+   */
+  fileStem?: string
   dither?: DitherMode
   /** bayer_scale 0-5 (only when dither=bayer). */
   bayerScale?: number
@@ -135,15 +162,17 @@ function denoiseExpression(level: DenoiseLevel): string | undefined {
   return level === 'light' ? 'hqdn3d=1.5:1.5:4:4' : 'hqdn3d=3:3:6:6'
 }
 
-/** Build the stage plan honoring custom stages / fixed params / mode. */
+/** Build the stage plan honoring custom stages / fixed params / mode / minWidth. */
 export function stagePlan(options: GifOptions): Array<{ width: number; fps: number }> {
   if (options.stages && options.stages.length > 0) return options.stages
   if (options.width !== undefined || options.fps !== undefined) {
     return [{ width: options.width ?? 720, fps: options.fps ?? 10 }]
   }
-  const plan = [...QUALITY_STAGES]
-  if (options.mode === 'strict') plan.push(...STRICT_EXTRA_STAGES)
-  return plan
+  if (options.mode === 'strict') return [...QUALITY_STAGES, ...STRICT_EXTRA_STAGES]
+  const floor = options.minWidth && options.minWidth > 0 ? options.minWidth : QUALITY_STAGES[QUALITY_STAGES.length - 1].width
+  const plan = QUALITY_STAGES.filter((stage) => stage.width >= floor)
+  // A floor above the top stage must still yield a usable plan (the top stage).
+  return plan.length > 0 ? plan : [QUALITY_STAGES[0]]
 }
 
 /** Convert a video to GIF with staged quality search under the size budget. */
@@ -167,12 +196,17 @@ export async function videoToGif(
   const durationArg = options.maxDurationSec && options.maxDurationSec > 0 ? ['-t', String(options.maxDurationSec)] : []
   const scaleFlags = `flags=lanczos${options.antiMoire ? '+accurate_rnd' : ''}`
   const denoiseFilter = denoiseExpression(denoise)
+  // Names are derived from the input so several inputs sharing one output
+  // directory cannot overwrite each other's artifacts.
+  const stem = options.fileStem && options.fileStem.trim().length > 0
+    ? sanitizeGifStem(options.fileStem, { stripExtension: false })
+    : sanitizeGifStem(videoPath)
 
   for (const stage of stages) {
     const width = stage.width
     const fps = stage.fps
-    const palette = join(outDir, `palette-${width}-${fps}.png`)
-    const gif = join(outDir, `out-${width}-${fps}.gif`)
+    const palette = join(outDir, `palette-${stem}-${width}-${fps}.png`)
+    const gif = join(outDir, `out-${stem}-${width}-${fps}.gif`)
     try {
       const pre = [denoiseFilter, `fps=${fps},scale=${width}:-1:${scaleFlags}`].filter(Boolean).join(',')
       const palettegen = `${pre},palettegen=stats_mode=${statsMode}${options.colorCount && options.colorCount > 0 ? `:max_colors=${options.colorCount}` : ''}`
@@ -187,7 +221,7 @@ export async function videoToGif(
       // optional gifsicle post-optimization
       if (options.gifsiclePath && (options.lossy ?? -1) >= 0) {
         try {
-          const optimizedFile = join(outDir, `opt-${width}-${fps}.gif`)
+          const optimizedFile = join(outDir, `opt-${stem}-${width}-${fps}.gif`)
           await execFileAsync(options.gifsiclePath, ['-O3', '--careful', `--lossy=${options.lossy}`, '-o', optimizedFile, gif], { timeout: 120000, windowsHide: true })
           await unlink(gif).catch(() => undefined)
           finalFile = optimizedFile

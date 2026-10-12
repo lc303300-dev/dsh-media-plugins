@@ -32,7 +32,9 @@ export const ROUTING_LIST_FIELDS = ['aliases', 'user_intents', 'subjects', 'styl
 const TERMINAL_METADATA = /^\s*(?:Exit code|Wall time|Output|Script completed|Script error)\s*:/im
 const WINDOWS_ABSOLUTE_PATH = /(?:^|[\s'"`(])(?:[a-z]:\\|\\\\)[^\r\n]*/i
 const SECRET_PATTERN = /(?:api[_ -]?key|authorization|bearer|cookie|secret|token)\s*[:=]\s*[^\s<>{}\[\]]+/i
-const FORBIDDEN_EXECUTION = /(?:seedance-cli|dreamina\.exe|agy\.exe|media_router\.service|--model_version|--poll\b|query_result|user_credit)/i
+// 业务 Skill 不得写入执行层细节：旧 CLI（dreamina.exe / user_credit / query_result）与
+// 新画布 CLI（dreamina-canvas / credit-ceiling / creditConfirmationToken）的痕迹都要拦。
+const FORBIDDEN_EXECUTION = /(?:seedance-cli|dreamina\.exe|dreamina-canvas|dreamina_canvas|canvas-cli|agy\.exe|media_router\.service|--model_version|--poll\b|query_result|user_credit|credit-ceiling|creditConfirmationToken)/i
 const TEXT2VIDEO = /\btext2video\b/i
 
 /** Count-rule roles whose count must not scale with duration. */

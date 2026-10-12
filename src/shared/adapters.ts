@@ -27,7 +27,7 @@
  */
 
 import { execFile } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import { access, readdir, rename, stat } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -35,6 +35,19 @@ import sharp from 'sharp'
 import { MediaError, mediaErrors, type AttemptRecord } from './failure.ts'
 import { IMAGE_RATIOS } from './ratios.ts'
 import { openAiImageResult, downloadImageTo, stageImageBytes, HttpStatusError, DEFAULT_IMAGE_REQUEST_TIMEOUT_MS } from './media-client.ts'
+import {
+  buildImageNodeArgs,
+  createCanvasCli,
+  parseCanvasCreditToken,
+  parseCanvasNodeHandle,
+  parseCanvasOperation,
+  parseCanvasQuote,
+  parseCanvasRunAcceptance,
+  resolveCanvasBinary,
+  resolveCanvasProject,
+  type CanvasNodeRef,
+} from './dreamina-canvas.ts'
+import { downloadCanvasResource, uploadCanvasResource } from './video-canvas-pipeline.ts'
 import {
   acquireSlot,
   appendSafeLog,
@@ -205,7 +218,12 @@ export const DEFAULT_IMAGE_CONCURRENCY = 10
 export interface RouterConfig {
   comflyBaseURL: string
   comflyApiKeyEnv: string
+  /** 旧 `dreamina` CLI 路径（仅兼容保留；画布线路不再使用它）。 */
   dreaminaPath: string
+  /** 画布 CLI（`dreamina-canvas`）路径；留空 = 自动解析（包内 bin → ~/bin → PATH）。 */
+  dreaminaCanvasPath?: string
+  /** 画布登录态隔离名（`--profile`）。 */
+  dreaminaCanvasProfile?: string
   proxyUrl: string
   maxConcurrency: number
   providerTimeoutMs: number
@@ -214,6 +232,12 @@ export interface RouterConfig {
   enabled: string[]
   /** Injected credentials (env -> value), resolved by the tool via ctx.credentials. */
   credentials?: Record<string, string>
+  /**
+   * Dreamina account pinning hook. When the image tool has a configured/default
+   * Dreamina account, the Dreamina adapter calls this before invoking the CLI so
+   * the shared registry login matches (`shared/dreamina-account.ts`).
+   */
+  ensureDreaminaAccount?: () => Promise<unknown>
 }
 
 export interface AdapterInput {
@@ -362,50 +386,126 @@ async function measurePixelSize(path: string): Promise<string | undefined> {
   return undefined
 }
 
+/** 画布 CLI 的图片模型（canonical）。旧适配器的 `4.0` 在画布 CLI 写作 `seedream_*`。 */
+export const DREAMINA_IMAGE_MODEL = 'seedream_4.5'
+
+/** 图片产物的画布名：长期复用一块画布，避免每次生成都新建。 */
+export const DREAMINA_IMAGE_CANVAS = 'dsh-image'
+
 /**
- * Dreamina image adapter (best effort; last fallback). It leases a slot from
- * the same shared image pool as the HTTP routes — the video pipeline's
- * `seedance-cli` capacity is separate and is never shared with images.
+ * seedream 4.x 只提供 2K/4K：1K 请求按 2K 执行（只升不降，绝不静默缩水到更低档）。
+ */
+export function dreaminaCanvasImageResolution(requested?: string): string {
+  const value = String(requested ?? '2K').trim().toUpperCase()
+  return value.startsWith('4') ? '4K' : '2K'
+}
+
+/**
+ * Dreamina 图片适配器（最后兜底线路），走画布 CLI 的节点式生成：
+ *
+ *   resource upload → node create image（保存）→ node quote → node confirm
+ *     → node run → operation wait → resource download
+ *
+ * 付费纪律与视频线路一致：报价不等于授权，因此以服务端报价本身作为
+ * `--credit-ceiling` 批准，绝不会在未报价的情况下提交。容量仍租用共享图片池
+ * （`IMAGE_CAPACITY_KEY`），与视频的 `seedance-cli` 池互不影响。
  */
 function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
   const id = 'dreamina-image'
-  const model = '4.0'
+  const model = DREAMINA_IMAGE_MODEL
   return {
     id,
     model,
     capacityKey: IMAGE_CAPACITY_KEY,
     async checkReady() {
       try {
-        await execFileAsync(cfg.dreaminaPath, ['--help'], { timeout: 10000, windowsHide: true })
-        return { ready: true }
-      } catch {
-        return { ready: false, reason: `dreamina binary not usable: ${cfg.dreaminaPath}` }
+        const binary = await resolveCanvasBinary(cfg.dreaminaCanvasPath)
+        const cli = createCanvasCli({ binary })
+        const result = await cli.run(['version'], { timeoutMs: 10_000 })
+        if (result.classification.outcome === 'ok') return { ready: true }
+        return { ready: false, reason: `dreamina-canvas not usable: ${result.classification.message}` }
+      } catch (error: any) {
+        return { ready: false, reason: `dreamina-canvas binary not usable: ${String(error?.message ?? error).slice(0, 200)}` }
       }
     },
     async execute(input) {
-      const outDir = await ensureDir(join(input.privateRoot, 'jobs', '_router', 'outputs'))
-      const resolution = (input.resolution ?? '1K').toLowerCase()
-      const base = input.images.length > 0
-        ? ['image2image', `--prompt=${input.prompt}`, `--model_version=${model}`, ...input.images.map((p) => `--image=${p}`)]
-        : ['text2image', `--prompt=${input.prompt}`, `--model_version=${model}`]
-      const args = [...base, `--ratio=${input.ratio}`, `--resolution_type=${resolution}`]
-      // The CLI cannot be aborted mid-run, so its timeout must be the time left
-      // in the candidate's box, never a fresh full budget.
-      const cliBudgetMs = Math.max(1000, Math.min(input.budgetMs, input.deadlineAtMs - Date.now()))
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), cliBudgetMs)
-      try {
-        await execFileAsync(cfg.dreaminaPath, args, { timeout: cliBudgetMs, windowsHide: true })
-      } catch (error: any) {
-        if (controller.signal.aborted) throw mediaErrors.providerTimeout(`dreamina image timed out after ${Math.round(cliBudgetMs / 1000)}s`)
-        throw mediaErrors.provider(`dreamina image failed: ${String(error?.stderr ?? error?.message ?? error).slice(0, 300)}`)
-      } finally {
-        clearTimeout(timer)
+      // Account pinning first: a wrong login must fail as an account problem,
+      // not as an opaque provider failure.
+      if (cfg.ensureDreaminaAccount) {
+        try {
+          await cfg.ensureDreaminaAccount()
+        } catch (error: any) {
+          throw mediaErrors.auth(`dreamina account unavailable: ${String(error?.message ?? error).slice(0, 300)}`)
+        }
       }
-      // find the newest image the CLI produced
-      const files = (await readdir(outDir)).filter((f) => /\.(png|jpe?g|webp)$/i.test(f)).map((f) => join(outDir, f))
-      if (files.length === 0) throw mediaErrors.provider('dreamina image produced no output file')
-      return { outputPath: files.sort((a, b) => b.length - a.length)[0] }
+      // 每一步都按「整条候选剩余时间」动态收敛，绝不使用全新的整段预算。
+      const remaining = () => Math.max(1000, input.deadlineAtMs - Date.now())
+      const binary = await resolveCanvasBinary(cfg.dreaminaCanvasPath)
+      const cli = createCanvasCli({ binary, profile: cfg.dreaminaCanvasProfile, timeoutMs: remaining() })
+      const project = await resolveCanvasProject(cli, DREAMINA_IMAGE_CANVAS)
+      const outDir = await ensureDir(join(input.privateRoot, 'jobs', '_router', 'outputs'))
+
+      // 参考素材必须先登记到画布；引用只认 `res:<小写规范 UUID>`。
+      const refs: CanvasNodeRef[] = []
+      for (const image of input.images) {
+        refs.push({ kind: 'res', id: (await uploadCanvasResource(cli, project.projectId, 'image', image)).resourceId })
+      }
+
+      const created = await cli.runOrThrow(
+        buildImageNodeArgs({
+          projectId: project.projectId,
+          title: `dsh-image-${Date.now().toString(36)}`,
+          mode: refs.length > 0 ? 'i2i' : 't2i',
+          prompt: input.prompt,
+          model,
+          ratio: input.ratio,
+          resolution: dreaminaCanvasImageResolution(input.resolution),
+          count: 1,
+          refs,
+          run: false,
+        }),
+        { timeoutMs: remaining(), label: 'node create image' },
+      )
+      const handle = parseCanvasNodeHandle(created.envelope)
+      if (!handle) throw mediaErrors.provider(`dreamina-canvas node create image 未返回 nodeId: ${created.raw.slice(0, 300)}`)
+
+      const quoted = await cli.runOrThrow(['node', 'quote', '--project-id', project.projectId, '--node-id', handle.nodeId], {
+        timeoutMs: remaining(),
+        label: 'node quote',
+      })
+      const ceiling = parseCanvasQuote(quoted.envelope).totalMaxCredits
+      const confirmed = await cli.runOrThrow(
+        ['node', 'confirm', '--project-id', project.projectId, '--node-id', handle.nodeId, '--credit-ceiling', String(ceiling)],
+        { timeoutMs: remaining(), label: 'node confirm' },
+      )
+      const token = parseCanvasCreditToken(confirmed.envelope).token
+      if (!token) throw mediaErrors.provider('dreamina-canvas node confirm 未返回 creditConfirmationToken')
+
+      const submitId = randomUUID()
+      const ran = await cli.runOrThrow(
+        ['node', 'run', '--project-id', project.projectId, '--node-id', handle.nodeId, '--submit-id', submitId, '--credit-token', token],
+        { timeoutMs: remaining(), label: 'node run' },
+      )
+      const accepted = parseCanvasRunAcceptance(ran.envelope)[0]
+      if (!accepted) throw mediaErrors.provider(`dreamina-canvas node run 未返回受理回执: ${ran.raw.slice(0, 300)}`)
+
+      const waitSeconds = Math.max(30, Math.round(remaining() / 1000))
+      const waited = await cli.run(
+        ['operation', 'wait', accepted.submitId, '--project-id', project.projectId, '--timeout', `${waitSeconds}s`, '--interval', '5s'],
+        { timeoutMs: remaining() },
+      )
+      const operation = parseCanvasOperation(waited.envelope)
+      if (waited.classification.outcome !== 'ok' || operation?.state !== 'succeeded') {
+        throw mediaErrors.provider(
+          `dreamina-canvas image ${operation?.state ?? waited.classification.outcome}: ${waited.classification.message}`,
+        )
+      }
+      const resourceId =
+        operation.resources.map((r) => r.resourceId).find((value) => value.length > 0) ?? accepted.resourceIds[0]
+      if (!resourceId) throw mediaErrors.provider('dreamina-canvas image succeeded but returned no resourceId')
+      const downloaded = await downloadCanvasResource(cli, project.projectId, resourceId, outDir)
+      if (!downloaded) throw mediaErrors.provider('dreamina-canvas image download failed')
+      return { outputPath: downloaded }
     },
   }
 }

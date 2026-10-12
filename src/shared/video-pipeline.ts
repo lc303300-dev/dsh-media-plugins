@@ -12,6 +12,32 @@
 
 export const VIDEO_FILE_EXTENSIONS = ['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v'] as const
 
+/**
+ * Parse a zero-transcription tasks payload written by `prompt_batch run_batch`
+ * (`submission-callN.json`). Accepts either a bare array or `{ tasks: [...] }`.
+ * Submitting straight from this file removes the manual re-typing step that can
+ * silently drift from the reviewed prompt (transcription-drift bug, 2026-10-06).
+ */
+export function parseTasksPayload(raw: string): Array<Record<string, unknown>> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error: any) {
+    throw new Error(`tasks file is not valid JSON: ${String(error?.message ?? error)}`)
+  }
+  const tasks = Array.isArray(parsed) ? parsed : (parsed as any)?.tasks
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    throw new Error('tasks file must contain a non-empty array, or an object with a non-empty "tasks" array')
+  }
+  for (const [i, task] of tasks.entries()) {
+    if (!task || typeof task !== 'object' || Array.isArray(task)) throw new Error(`tasks[${i}] must be an object`)
+    if (typeof (task as any).prompt !== 'string' || (task as any).prompt.trim().length === 0) {
+      throw new Error(`tasks[${i}].prompt must be a non-empty string`)
+    }
+  }
+  return tasks as Array<Record<string, unknown>>
+}
+
 /** Terminal-execution metadata that must never be treated as a prompt (Codex service.validate_prompt_completeness). */
 export const PROMPT_TERMINAL_METADATA = /^\s*(?:Exit code|Wall time|Output|Script completed|Script error)\s*:/im
 
@@ -76,6 +102,64 @@ export function confirmationGateError(
   if (confirmed.model !== resolved.model) return `confirmed video model ${confirmed.model} does not match the final request ${resolved.model}`
   if (confirmed.resolution !== resolved.resolution) return `confirmed video resolution ${confirmed.resolution} does not match the final request ${resolved.resolution}`
   if (cDur !== resolved.duration) return `confirmed video duration ${cDur} does not match the final request ${resolved.duration}`
+  return null
+}
+
+/**
+ * Parse a duration set: `12,15`, `12 15`, `15s/12秒`, `[12,15]` → sorted unique
+ * integers. Returns null when any token is not a valid duration.
+ */
+export function parseDurationSet(value: unknown): number[] | null {
+  const raw = Array.isArray(value) ? value.join(',') : String(value ?? '')
+  const tokens = raw
+    .split(/[,\s/、，|]+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+  if (tokens.length === 0) return null
+  const out: number[] = []
+  for (const token of tokens) {
+    const match = /^(\d{1,2})\s*(?:s(?:ec(?:onds?)?)?|秒)?$/i.exec(token)
+    if (!match) return null
+    out.push(Number(match[1]))
+  }
+  return [...new Set(out)].sort((a, b) => a - b)
+}
+
+/**
+ * Confirmation gate for multi-task calls where `tasks[].duration` may differ.
+ *
+ * A batch is filled to capacity (one call, many tasks) instead of being split by
+ * duration, so the resolved duration is a SET rather than a single value:
+ * - exactly one distinct duration → behaves identically to
+ *   `confirmationGateError` (backwards compatible);
+ * - N distinct durations → the caller must additionally declare the exact set
+ *   via `video_confirmation_durations` (e.g. `"12,15,15"`), so a batch can never
+ *   be submitted with per-task durations that were not confirmed.
+ */
+export function confirmationGateErrorForDurations(
+  mode: string,
+  resolved: { model: string; resolution: string; durations: number[] },
+  confirmed: { model?: string; resolution?: string; duration?: unknown; durations?: unknown },
+): string | null {
+  if (mode === 'test_submit_only') return null
+  const unique = [...new Set(resolved.durations.map((d) => Number(d)))].filter((d) => Number.isFinite(d)).sort((a, b) => a - b)
+  if (unique.length === 0) return 'resolved video durations must not be empty'
+  if (unique.length === 1) {
+    return confirmationGateError(mode, { model: resolved.model, resolution: resolved.resolution, duration: unique[0] }, confirmed)
+  }
+  if (!confirmed.model || !confirmed.resolution) {
+    return 'formal video submission requires confirmation of model, resolution, and duration (pass video_confirmation_model / video_confirmation_resolution / video_confirmation_durations)'
+  }
+  if (confirmed.durations === undefined || confirmed.durations === null || String(confirmed.durations).trim() === '') {
+    return `this call submits tasks with ${unique.length} different durations (${unique.join('/')}s): pass video_confirmation_durations="${unique.join(',')}" to confirm the exact duration set`
+  }
+  const parsed = parseDurationSet(confirmed.durations)
+  if (parsed === null) return `confirmed video durations "${String(confirmed.durations)}" is not a valid duration list`
+  if (parsed.length !== unique.length || parsed.some((d, i) => d !== unique[i])) {
+    return `confirmed video durations ${parsed.join('/')} does not match the final request ${unique.join('/')}`
+  }
+  if (confirmed.model !== resolved.model) return `confirmed video model ${confirmed.model} does not match the final request ${resolved.model}`
+  if (confirmed.resolution !== resolved.resolution) return `confirmed video resolution ${confirmed.resolution} does not match the final request ${resolved.resolution}`
   return null
 }
 

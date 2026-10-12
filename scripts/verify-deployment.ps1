@@ -21,29 +21,40 @@ Require-Path (Join-Path $RepositoryRoot "dist\index.js") "bundle entry"
 if ($isSourceCheckout) {
     Require-Path (Join-Path $RepositoryRoot "tsdown.config.ts") "build config"
 }
-foreach ($tool in @("tool-image-gen", "tool-video-gen", "tool-batch-image", "tool-prompt-batch", "tool-status", "tool-video-to-gif", "tool-skill-registry", "tool-project", "tool-curator", "tool-revision", "tool-image-skill-curator", "tool-image-skill-pipeline")) {
+foreach ($tool in @("tool-image-gen", "tool-video-gen", "tool-batch-image", "tool-prompt-batch", "tool-status", "tool-dreamina-account", "tool-video-to-gif", "tool-skill-registry", "tool-project", "tool-curator", "tool-revision", "tool-image-skill-curator", "tool-image-skill-pipeline")) {
     Require-Path (Join-Path $RepositoryRoot "dist\$tool.js") "built tool bundle $tool"
 }
 # 共享域 bundle（tsdown 从 dist/ 抽出的共享 chunk；单消费者内联的模块以源码存在性校验）
-foreach ($core in @("adapters", "corpus-core", "curator-core", "failure", "gif-core", "image-ops", "image-skill-core", "private-runtime", "project-core", "registry-core", "revision-core")) {
+foreach ($core in @("adapters", "corpus-core", "curator-core", "dreamina-account", "failure", "gif-core", "image-ops", "image-skill-core", "private-runtime", "project-core", "registry-core", "revision-core")) {
     Require-Path (Join-Path $RepositoryRoot "dist\$core.js") "built shared bundle $core"
 }
 if ($isSourceCheckout) {
-    foreach ($coreSource in @("adapters", "batch-core", "corpus-core", "corpus-ledger", "curator-core", "prompt-batch-core", "failure", "gif-core", "image-ops", "image-skill-core", "media-client", "private-runtime", "project-core", "registry-core", "revision-core", "video-policy")) {
+    foreach ($coreSource in @("adapters", "batch-core", "corpus-core", "corpus-ledger", "curator-core", "dreamina-account", "dreamina-canvas", "dreamina-keychain", "prompt-batch-core", "failure", "gif-core", "image-ops", "image-skill-core", "media-client", "private-runtime", "project-core", "registry-core", "revision-core", "video-canvas-pipeline", "video-policy")) {
         Require-Path (Join-Path $RepositoryRoot "src\shared\$coreSource.ts") "shared core source $coreSource"
     }
 } else {
     Write-Host "  [info] 非源码检出（无 src/），跳过 src/*.ts 与 tsdown.config.ts 校验" -ForegroundColor DarkGray
 }
 # 技能
-foreach ($skill in @("default-image-generation", "default-video-generation", "batch-image-generation", "video-prompt-orchestrator", "video-director-prompt", "video-skill-router", "codex-cs-skill-curator", "video-to-gif", "image-skill-router", "image-skill-curator")) {
+foreach ($skill in @("default-image-generation", "default-video-generation", "batch-image-generation", "video-prompt-orchestrator", "video-director-prompt", "video-skill-router", "codex-cs-skill-curator", "video-to-gif", "image-skill-router", "image-skill-curator", "image-repaint-cleanup")) {
     Require-Path (Join-Path $RepositoryRoot "skills\$skill\SKILL.md") "skill $skill"
 }
 Require-Path (Join-Path $RepositoryRoot "refs\forge-index.jsonl") "seedance-forge corpus"
 Require-Path (Join-Path $RepositoryRoot "refs\image-skill-library\scene-storyboard-grid\intake-receipt.json") "image-skill library package"
 # 运行时二进制 / 工具
 $binDir = Join-Path $RepositoryRoot "bin"
-Require-Path (Join-Path $binDir "dreamina.exe") "Dreamina CLI binary" "Leaf"
+# 生成线路现在依赖即梦画布 CLI（dreamina-canvas）：优先看配置/包内/~bin/PATH。
+$canvasCandidates = @(
+    (Join-Path $binDir "dreamina-canvas.exe"),
+    (Join-Path $HOME "bin\dreamina-canvas.exe")
+)
+$canvasFound = $null
+foreach ($candidate in $canvasCandidates) { if (Test-Path $candidate) { $canvasFound = $candidate; break } }
+if (-not $canvasFound) {
+    try { $cmd = Get-Command dreamina-canvas -ErrorAction Stop; $canvasFound = $cmd.Source } catch { }
+}
+if ($canvasFound) { Write-Host "  OK   dreamina-canvas: $canvasFound" }
+else { $errors.Add("dreamina-canvas not found (install: irm https://jimeng.jianying.com/canvas-cli/install.ps1 | iex)") }
 $ffmpegFound = $false
 try { $null = Get-Command ffmpeg -ErrorAction Stop; $ffmpegFound = $true } catch {
     if (Test-Path "C:\Program Files\oopz\ffmpeg.exe") { $ffmpegFound = $true }
