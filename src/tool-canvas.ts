@@ -98,6 +98,26 @@ type ResolvedConfig = Required<Config>
  * 下划线转连字符是官方 flag 的书写规则；`false`/`null`/`undefined` 一律省略
  * （CLI 的布尔开关只认"出现即真"）。
  */
+/**
+ * 递归剔除 `undefined` 键。
+ *
+ * DSH 对工具返回值做无损 JSON 校验：`required_action` / `request_id` /
+ * `credit_confirmation` 这类字段在成功路径上天然缺席，直接放进返回对象就会让
+ * 整个调用被拒（"value is not lossless JSON"）。
+ */
+function jsonSafe<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((entry) => jsonSafe(entry)) as unknown as T
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry === undefined) continue
+      out[key] = jsonSafe(entry)
+    }
+    return out as T
+  }
+  return value
+}
+
 export function toCliFlags(args: Record<string, unknown> | undefined): string[] {
   const out: string[] = []
   for (const [rawKey, value] of Object.entries(args ?? {})) {
@@ -286,7 +306,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
         // 失败但没有结构化错误时，给一小段原始输出便于排障（不含凭证）。
         if (!ok && payload.message === undefined) payload.message = result.raw.slice(0, 300)
-        return payload
+        return jsonSafe(payload)
       },
     }),
   )

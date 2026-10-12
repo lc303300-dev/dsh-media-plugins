@@ -42,6 +42,7 @@ import { createAccountGate } from './shared/dreamina-account.ts'
 import { normalizeProviderImage } from './shared/image-ops.ts'
 import { createCanvasCli, resolveCanvasBinary, resolveCanvasProject } from './shared/dreamina-canvas.ts'
 import { DEFAULT_CANVAS_OPEN_COOLDOWN_MS, openCanvasInBrowser } from './shared/canvas-browser.ts'
+import { jsonSafe } from './shared/json-safe.ts'
 import {
   runCanvasVideoBatch,
   type CanvasVideoTask,
@@ -688,10 +689,10 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         if (count === 1) {
           const only = results[0]
           if (only.status === 'success' && only.path) {
-            return { path: only.path, submit_id: only.submitId, done: true, execution_mode: mode, model, node_id: only.nodeId, ...canvasFields }
+            return jsonSafe({ path: only.path, submit_id: only.submitId, done: true, execution_mode: mode, model, node_id: only.nodeId, ...canvasFields })
           }
           if (only.status === 'failed') throw mediaErrors.provider(`dreamina-canvas task failed: ${only.error ?? 'unknown reason'}`)
-          return { submit_id: only.submitId, done: false, execution_mode: mode, model, node_id: only.nodeId, ...canvasFields }
+          return jsonSafe({ submit_id: only.submitId, done: false, execution_mode: mode, model, node_id: only.nodeId, ...canvasFields })
         }
 
         const mapped = results.map((result, index) => ({
@@ -702,12 +703,14 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           ...(result.path ? { path: result.path } : {}),
           ...(result.error ? { error: result.error } : {}),
           ...(result.advice ? { advice: result.advice } : {}),
+          ...(result.sha256 ? { sha256: result.sha256 } : {}),
+          ...(result.bytes !== undefined ? { bytes: result.bytes } : {}),
           model,
           execution_mode: mode,
         }))
         const statuses = new Set(mapped.map((r) => r.status))
         const aggregate = statuses.size === 1 && statuses.has('success') ? 'success' : statuses.size === 1 && statuses.has('failed') ? 'failed' : 'partial'
-        return { status: aggregate, count, results: mapped, done: false, execution_mode: mode, model, ...canvasFields }
+        return jsonSafe({ status: aggregate, count, results: mapped, done: false, execution_mode: mode, model, ...canvasFields })
       },
       presentCall(args: any) {
         const requested = args?.output?.trim()
