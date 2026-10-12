@@ -38,13 +38,58 @@ export const CANVAS_OPEN_STATE_FILE = 'canvas-opened.json'
  * 的默认浏览器；显式配置 `browserPath` 时优先用它（例如固定用某个已登录即梦的
  * 浏览器配置）。
  */
-export function browserLaunchSpec(url: string, options: { platform?: string; browserPath?: string } = {}): BrowserLaunchSpec {
+export function browserLaunchSpec(
+  url: string,
+  options: { platform?: string; browserPath?: string; profileDir?: string } = {},
+): BrowserLaunchSpec {
   const platform = options.platform ?? process.platform
   const browser = String(options.browserPath ?? '').trim()
-  if (browser.length > 0) return { command: browser, args: [url] }
+  const profile = String(options.profileDir ?? '').trim()
+  if (browser.length > 0) {
+    // 固定 `--user-data-dir` = 固定登录态：Cookies/会话留在该目录里，用户登录一次即可长期复用。
+    // 同一 user-data-dir 的浏览器已在运行时，新命令会把 URL 交给已有实例（开新标签页），
+    // 不会再起一个窗口 —— 所以这里不需要额外的进程复用逻辑。
+    const args = profile.length > 0 ? [`--user-data-dir=${profile}`, url] : [url]
+    return { command: browser, args }
+  }
   if (platform === 'win32') return { command: 'cmd', args: ['/c', 'start', '', url] }
   if (platform === 'darwin') return { command: 'open', args: [url] }
   return { command: 'xdg-open', args: [url] }
+}
+
+/**
+ * 解析用于打开画布的浏览器可执行文件。
+ *
+ * 必须落到**一个具体浏览器**：只有指定了浏览器，才能同时固定它的 `--user-data-dir`，
+ * 从而让即梦的登录态长期保留。未显式配置时按 Chrome → Edge 的顺序探测。
+ */
+export async function resolveBrowserBinary(configured?: string): Promise<string | undefined> {
+  const explicit = String(configured ?? '').trim()
+  if (explicit.length > 0) return explicit
+  const { access } = await import('node:fs/promises')
+  const programFiles = process.env['ProgramFiles'] ?? 'C:\\Program Files'
+  const programFilesX86 = process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)'
+  const localAppData = process.env['LOCALAPPDATA'] ?? ''
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          join(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          localAppData.length > 0 ? join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe') : '',
+          join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+          join(programFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+        ]
+      : ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/google-chrome', '/usr/bin/chromium']
+  for (const candidate of candidates) {
+    if (candidate.length === 0) continue
+    try {
+      await access(candidate)
+      return candidate
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return undefined
 }
 
 /** 只允许 https 链接进入启动器。 */
@@ -74,6 +119,8 @@ export interface OpenCanvasOptions {
   projectId: string
   cooldownMs?: number
   browserPath?: string
+  /** 固定浏览器配置目录（`--user-data-dir`）：登录态存在这里，登录一次长期复用。 */
+  profileDir?: string
   /** 注入的当前时间（单测用）。 */
   now?: number
   /** 注入的启动器（单测用，避免真的开浏览器）。 */
@@ -125,7 +172,7 @@ export async function openCanvasInBrowser(webUrl: string, options: OpenCanvasOpt
     return { opened: false, reason: 'cooldown' }
   }
 
-  const spec = browserLaunchSpec(webUrl, { browserPath: options.browserPath })
+  const spec = browserLaunchSpec(webUrl, { browserPath: options.browserPath, profileDir: options.profileDir })
   try {
     await (options.launch ?? defaultLaunch)(spec)
   } catch {

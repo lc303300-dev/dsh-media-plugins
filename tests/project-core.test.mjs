@@ -205,6 +205,22 @@ test('prompt rejects pipe storyboard headings', () => {
   assert.equal(good.prompts[0].confirmed, false)
 })
 
+test('timestamp / second-range storyboard headings stay legal (official samples use them)', () => {
+  // 官方范例 06 用 `[00.0-03.0秒|标题]`，范例 04 用 `0-1.5秒:`，范例 01/02 用 `0-3秒:`。
+  // 这些写法一度被当成"已淘汰"，2026-10 按用户指示撤回；此回归测试防止再次收紧。
+  const p = namedMaterialsState()
+  const legal = [
+    '[00.0-03.0秒|穿过拥挤酒馆]\nAura从人群后方冲出。图片2',
+    '[00:00-00:05] 镜头1：夜店女王登场。图片2',
+    '0-1.5秒:咖啡店玻璃门近景，人物推开玻璃门。图片2',
+    '0.0-4.0 秒，第一段，参考图片2。依据图片2建立空间。',
+  ]
+  for (const text of legal) {
+    const ok = addPrompt(p, text, 'skill_v1')
+    assert.equal(ok.prompts[0].version, 1, text)
+  }
+})
+
 test('validatePromptContent is re-checked at confirmation and payload build', () => {
   let p = namedMaterialsState()
   p = addPrompt(p, '完全依据图片2建立空间。', 'skill_v1')

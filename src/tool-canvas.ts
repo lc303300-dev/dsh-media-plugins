@@ -35,7 +35,7 @@ import {
   resolveCanvasBinary,
   type CanvasRunResult,
 } from './shared/dreamina-canvas.ts'
-import { openCanvasInBrowser } from './shared/canvas-browser.ts'
+import { openCanvasInBrowser, resolveBrowserBinary } from './shared/canvas-browser.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-canvas'
@@ -74,6 +74,8 @@ export interface Config {
   /** 需要时把画布 webUrl 打开到浏览器。 */
   openCanvasInBrowser?: boolean
   canvasBrowserPath?: string
+  /** 固定浏览器配置目录（`--user-data-dir`，即梦登录态存在这里）；留空 = `<private>/browser-profile`。 */
+  canvasBrowserProfileDir?: string
   canvasOpenCooldownMs?: number
 }
 
@@ -86,6 +88,7 @@ export const Config: z<Config> = z.object({
   timeoutMs: z.number().default(300000),
   openCanvasInBrowser: z.boolean().default(true),
   canvasBrowserPath: z.string().default(''),
+  canvasBrowserProfileDir: z.string().default(''),
   canvasOpenCooldownMs: z.number().default(10 * 60 * 1000),
 })
 
@@ -293,13 +296,27 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             ? `https://jimeng.jianying.com/ai-tool/ai-canvas/${projectId}`
             : undefined)
         if (config.openCanvasInBrowser && typeof webUrl === 'string' && typeof projectId === 'string' && projectId.length > 0) {
+          // 固定浏览器 + 固定 `--user-data-dir`：即梦登录态持久化在该目录，登录一次长期复用；
+          // 该 profile 已在运行时，URL 会交给已有窗口开新标签页，不会重复开窗。
+          const browserPath = await resolveBrowserBinary(config.canvasBrowserPath)
+          const profileDir =
+            config.canvasBrowserProfileDir.trim().length > 0
+              ? config.canvasBrowserProfileDir.trim()
+              : join(privateRoot, 'browser-profile')
           const opened = await openCanvasInBrowser(webUrl, {
             privateRoot,
             projectId,
             cooldownMs: config.canvasOpenCooldownMs,
-            browserPath: config.canvasBrowserPath,
+            browserPath,
+            profileDir,
           })
-          await appendSafeLog(privateRoot, 'dreamina-canvas-tool', { event: 'canvas-open', projectId, ...opened })
+          await appendSafeLog(privateRoot, 'dreamina-canvas-tool', {
+            event: 'canvas-open',
+            projectId,
+            browserPath: browserPath ?? '',
+            profileDir,
+            ...opened,
+          })
         }
 
         const payload: Record<string, unknown> = {

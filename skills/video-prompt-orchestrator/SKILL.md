@@ -40,7 +40,7 @@ whenToUse: 用户要从文本、图片、视频或音频生成/测试视频，�
 1. **建隔离批次**：`prompt_batch` 的 `new_batch`（带短描述名）或 `init_batch`，传 duration、ratio、model、user_requirements、materials（路径顺序即素材编号）。对话附件先 `import_images`；新对话多附件场景先只导入并初始化，首轮不生成。
 2. **准备预览**：`prepare_previews` 生成最长边 1024px 预览并记录映射；**不要直接检查原始大图**。每段可多图：额外参考图用 `set_visuals` 的 `items[].images` 绑定（顺序即 `--image` 顺序）。
 3. **▶ 逐段检索语料并逐条列出命中（不可跳过，代码强制）**：写任何一段之前，先对该段用 `prompt_revision search_corpus` 检索（≤10 条，只提取可迁移的镜头结构/导演方法，**不复制案例**）——该调用返回一张**一次性检索凭证 `search_id`**；随后用 `prompt_revision authoring_gate` 传 `search_id`、`current_prompt`（该段草稿）、`media={images:该段参考图数, videos, audios}`、`segment=该段 material 的绝对路径`。**只有 `authoring_gate` 返回 `ok=true` 才可继续写该段**；凭证在通过时被消费并绑定到该段，**同一张凭证不可复用——N 段就必须 N 次检索**（`set_prompts` 会逐段核对已消费凭证，缺凭证的段直接拒写）。检索后**逐条向用户列出该段命中的语料**（编号/标题/得分/可迁移结构）；语料的模型/版本只作 provenance，**绝不据此选生成模型**。每段开始前先输出 `▶ 步骤`。
-4. **▶ 编写提示词（逐素材）**：**先加载 `video-director-prompt` 技能**，按其 `references` 路由使用导演知识：`directing-methods.md`（每次必读）、`prompt-structure.md`、`community-techniques.md`、`structure-guide.md`，并对照其"交付前检查清单"。**用中文裸标签（图片1、视频1、音频1…）严格绑定传入顺序，禁用 `@图片1` 等 chip 形式与 `参考图片N` 前缀**；用户未指定音频时追加 `不生成音乐，仅生成音效。`。用 `set_prompts`（[{material, prompt}]）写入——它按 material 合并、自动规范化标签，并对**缺少 `图片N` 绑定的段、以及没有自己那张已消费检索凭证的段整次拒绝**。
+4. **▶ 编写提示词（逐素材）**：**先加载 `video-director-prompt` 技能**，按其 `references` 路由使用导演知识：**`jimeng-standard-template.md`（即梦标准提示词模板＝结构与标签的唯一真源，必读）**、`directing-methods.md`（每次必读）、`prompt-structure.md`、`community-techniques.md`、`structure-guide.md`，并对照其"交付前检查"。**按即梦模板集选模板（T1 `镜头N` 编号式 / T2 时间轴式 / T3 单一镜头内部时间轴 / T4 一镜到底式 / T5 视频驱动），同一层只用一种分段手段；仅管道符拼接标题被代码层拒绝**（`0.0-4.0 秒｜第一段｜图片2`）。**用中文裸标签（图片1、视频1、音频1…）严格绑定传入顺序——官方范本里的 `图片27`、`图片31(2)` 等原始编号与中文数字必须先按传入顺序重编号，禁用 `@图片1` 等 chip 形式与 `参考图片N` 前缀**；用户未指定音频时追加 `不生成音乐，仅生成音效。`。用 `set_prompts`（[{material, prompt}]）写入——它按 material 合并、自动规范化标签，并对**缺少 `图片N` 绑定的段、以及没有自己那张已消费检索凭证的段整次拒绝**。
 5. **▶ 生成审阅页**：`finalize_review` 生成 `review/index.html`（逐段列出全部参考图 + 中文提示词），把路径交给用户**逐项确认**素材绑定；未经确认不得提交。审阅页现在**每张参考图都带复选框**（底部粘性工具栏显示"已选 N / 共 M"，**复制勾选名称** 得到换行分隔的文件名，**复制勾选路径** 得到完整路径），用户勾选后一键复制、贴回对话即可精确指出要换哪张图，不必手抄文件名。
 6. **▶ 提交**：确认后 `run_batch` 生成提交计划（含 asset_manifest 标签绑定），交给统一 `generate_video`（不同素材用 `tasks` 数组、每段 `tasks[].images` 绑定该段全部参考图；同一素材多份用 `video_count`；不同时长按时长分组提交）。正式 production 提交前把已确认的模型/分辨率/时长作为 `video_confirmation_model` / `video_confirmation_resolution` / `video_confirmation_duration` 传入且须与最终值一致。
 
@@ -49,9 +49,9 @@ whenToUse: 用户要从文本、图片、视频或音频生成/测试视频，�
 > **强制透明步骤输出**：走本路径时必须向用户显式展示创作过程——每开始一个步骤先输出 `▶ 步骤 N：<名称>`，检索语料的步骤完成后再**逐条列出命中的语料**（编号、标题、得分、可迁移结构；来源模型/版本只作 provenance）。
 
 1. **▶ 步骤 1：读取输入**。先读用户有序媒体、请求的时长/比例/风格/运镜/音频偏好/约束。
-2. **▶ 步骤 2：加载导演知识**。**加载 `video-director-prompt` 技能**作为平台无关创作层；按需用其 `directing-methods.md`、`prompt-structure.md`、`community-techniques.md`、`structure-guide.md`。
+2. **▶ 步骤 2：加载导演知识**。**加载 `video-director-prompt` 技能**作为平台无关创作层；**必读其 `jimeng-standard-template.md`（即梦标准提示词模板＝结构与标签唯一真源）**，按需用其 `directing-methods.md`、`prompt-structure.md`、`community-techniques.md`、`structure-guide.md`。
 3. **▶ 步骤 3：检索语料并逐条列出命中（不可跳过，代码强制）**。一律先用 `prompt_revision search_corpus` 检索（≤10 条，只提取可迁移的镜头结构/导演方法，**不复制案例**），取得返回的**一次性凭证 `search_id`**；随后用 `prompt_revision authoring_gate` 传 `search_id`、`current_prompt`、`media={images,videos,audios}`（单条模式可省略 `segment`，凭证按提示词哈希绑定）——**只有当 `authoring_gate` 返回 `ok=true` 才可继续创作**，凭证一经消费即作废，自报命中数不再被接受。拿到结果后**逐条向用户展示命中语料**：`编号（id）`、`标题`、`得分`、`可迁移结构`；`source_model`/版本只作 provenance。
-4. **▶ 步骤 4：写提示词**。写一段简洁、可独立执行的中文视频提示词，保留用户的主体/身份/构图/时长/比例/运镜偏好，**用裸标签（图片1、视频1、音频1…）严格绑定传入顺序**。
+4. **▶ 步骤 4：写提示词**。写一段简洁、可独立执行的中文视频提示词，保留用户的主体/身份/构图/时长/比例/运镜偏好，**按即梦标准模板组织：用 `镜头N`（或 `镜头1-2` 合并段）连续多镜头分段，整段应覆盖主体动作、素材绑定、景别·机位、主导运镜（个别镜可省略，次序灵活）；用裸标签（图片1、视频1、音频1…）严格绑定传入顺序，官方原形编号先重编号**。
 5. **▶ 步骤 5：应用参考绑定/清理规则**。每个引用分配明确职责（仅身份/仅服饰/仅首帧/仅运镜…），说明什么**不要**从该源转移；删除模型名、分辨率、参考模式、API/上传/工具调用措辞、系统规则套话；正需求只写一次，负面/约束只放一次。
 6. **▶ 步骤 6：音频默认**。**用户未指定音频时，追加 `不生成音乐，仅生成音效。`**（仅创作路径；已定稿提示词不得追加）。
 7. **▶ 步骤 7：提交**。调用 `default-video-generation` 用优化后的提示词 + 原始有序媒体。

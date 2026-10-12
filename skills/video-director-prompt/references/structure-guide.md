@@ -1,157 +1,103 @@
-# Seedance 2.0 Prompt Structure Guide
+# 即梦提示词模板速查（一屏）
 
-Canonical reference derived from 2,366 real Seedance 2.0 prompts. Use this to write prompts that match proven patterns.
+> 完整规范（每个模板的适用情况、要点、素材角色表、编号映射、自检）见
+> [即梦提示词模板集](jimeng-standard-template.md)——**唯一真源**。
+> 本文件只放骨架与选型，**不要为查结构再去翻任何范例原文**。
 
----
+## 选模板（先做这一步）
 
-## Skeleton Template
+| 情况 | 模板 |
+|---|---|
+| 有分镜，逐镜推进 | **T1 `镜头N` 编号式** |
+| 有分镜，要精确控制每段时长/节奏 | **T2 时间轴式** |
+| 一个镜头拍完，镜头内有连续变化（延时/渐变/变形） | **T3 单一镜头 · 内部时间轴** |
+| 一个镜头拍完，运动不中断，不需要时间轴 | **T4 单镜头连续（一镜到底式）** |
+| 有参考视频，要迁移它的运镜/动作 | **T5 视频驱动** |
+
+同一层**只用一种**分段手段（不要既写 `镜头N` 又写 `[00.0-03.0秒|…]`）。
+
+## T1 · `镜头N` 编号式
 
 ```
-[REQUIRED] One-sentence scene setup. Subject, location, mood.
+镜头1：<本镜需要的信息；必写的只有 镜头N 编号本身>
+镜头2：<……>；
+镜头1-2：<相邻两镜可合并>
+[段级质感句，可选，放最后]
+```
+覆盖项（范例实测）：主体动作 11/11、素材绑定 10/11、景别 9/11、运镜 7/11、细节 6/11。
+**个别镜可省略**、素材可沿用上一镜；冒号与分隔符全篇一致；排斥项内联句内。
 
-[REQUIRED] Action description. What happens, in what order.
+## T2 · 时间轴式
 
-[REQUIRED] Camera: [shot type], [movement], [framing].
+```
+[素材说明]
+[整体设定] 12秒，16:9，720p，写实电影质感。无对白、无字幕、无旁白、无背景BGM。
+[时间轴]
+[00.0-03.0秒|场景名]
+<画面与动作>
+<音效>
+[03.0-05.5秒|场景名]
+……
+[稳定性限制] 全片恒定项 + 不要慢动作/瞬移/穿模/变形/方向跳变
+```
+简单形态：`0-1.5秒: …`（不要区块头也行）。需要某段不可缩短时显式写死。
 
-[OPTIONAL] Lighting: [quality and source].
+## T3 · 单一镜头 · 内部时间轴
 
-[OPTIONAL] Style: [visual tone, color palette, era].
+```
+[首帧/构图参考] 图片N为首帧参考，人物与道具保持一致。
+[镜头定义] 镜头从…开始，持续缓慢后拉……
+0-3秒: ……镜头缓慢后拉……
+3-7秒: ……镜头继续后拉到半身景别……
+光影: <光源层>，<光行为层>，<色调层>
+音效：……
+禁止：任何文字、字幕、LOGO或水印
+```
+先声明"这是一个镜头"；后续只写"镜头继续/拉回到"；内部切点用 `CUT_02 硬切至…`；
+变形类必须写"保持相同占地位置，不出现粒子或渐变过程"。
 
-[OPTIONAL] Technical: [duration]s, [fps]fps, no subtitles.
+## T4 · 单镜头连续（一镜到底式）
+
+```
+写实街头电影质感，手持纪实摄影。一镜到底。
+[场景与素材锚定]
+[事件流：按发生顺序，不切时间轴]
+[可选相机硬约束] 镜头始终保持…，保持…，不升高不降低，不改变视角。
+[一致性] 无瞬移、无肢体变形、无方向错乱。
 ```
 
-**Required sections:** scene setup, action, camera movement.
-**Optional sections:** lighting, style, technical specs (include when precision matters).
+## T5 · 视频驱动
 
----
-
-## Tech Spec Conventions
-
-Append technical constraints at the end of any prompt. Use these exact phrasings:
-
-| Spec       | Standard phrasing                  | Notes                              |
-|------------|------------------------------------|------------------------------------|
-| Duration   | `15 seconds`, `15s`                | 15s is the dominant standard (416/2366 prompts) |
-| Frame rate | `24fps`                            | Most common (48 uses); also `30fps`, `60fps`    |
-| Resolution | `high definition`                  | Use sparingly; model defaults are high          |
-| Subtitles  | `no subtitles`                     | Explicit suppression; 16 prompts use this       |
-| Combined   | `15 seconds, 24fps, no subtitles`  | Combine on one line at end of prompt            |
-
----
-
-## Camera Language Glossary
-
-Use these terms precisely. Vague camera direction produces inconsistent output.
-
-- **tracking shot** — camera follows a moving subject, maintaining distance and framing
-- **wide shot** — full scene in frame; establishes location and scale
-- **POV** — camera represents the subject's eyes; first-person perspective
-- **FPV (first-person view)** — kinetic, immersive; often used for fast-moving or drone-style sequences
-- **handheld** — slight shake and drift; conveys urgency, intimacy, or realism
-- **match cut** — cut that aligns action or shape across two scenes for visual continuity
-- **bird's-eye** — directly overhead; flattens depth, emphasizes geometry and layout
-- **close-up** — tight framing on face or object detail; heightens emotional or visual impact
-- **pull back** — camera retreats from subject; reveals context, creates scale or isolation
-- **shallow depth of field** — background blurred; isolates subject from environment
-
----
-
-## Archetype A: Prose Narrative
-
-**When to use:** single-scene, character-driven, or emotionally atmospheric content. Works best when timing does not need to be exact and mood carries more weight than beat structure.
-
-**Template:**
 ```
-In [location with atmosphere], [subject] [initial state or position].
-[Camera movement] [shot type] as [subject] [primary action].
-[Environmental detail that reinforces mood].
-[Secondary action or reaction].
-[Closing camera move or final framing].
+严格参考: <视频文件名>的<白模运镜/打斗动作/镜头运动>
+场景变为图片N，<原主体>变为图片M，其他角色分配给<角色描述>图片K
 ```
+第一句必须写 `严格参考:`；映射用"变为 / 分配给"。
 
-**Example:**
-```
-In a fog-drenched harbor at dawn, a fisherman coils rope on a weathered dock.
-A slow tracking shot follows him from behind as he walks toward the water's edge.
-The masts of anchored boats cut silhouettes against the pale orange sky.
-He pauses, looks out, his breath visible in the cold air.
-The camera holds on his profile as the first light breaks the horizon.
-```
+## 共用配件
 
----
+- **素材说明**：逐份声明角色——首帧/构图、场景、人物三视图、正脸五官、道具、配角/动物、变形对象、多角色分配、参考视频；并写"不迁移什么"
+- **光影三层**：`光影: <光源层>，<光行为层>，<色调层>`
+- **音效行**：`音效: …` 或 `<…>`；无音频时追加 `不生成音乐，仅生成音效。`
+- **禁止项**：`禁止：任何文字、字幕、LOGO或水印`
+- **画质与稳定性**：`写实电影质感`、`35mm胶片颗粒`、`手持纪实摄影`；稳定性限制段写恒定项与禁用项
 
-## Archetype B: Timestamped Sequence
+## 素材编号
 
-**When to use:** multi-beat action, product demos, dance or sports content, or any scene where specific timing control matters. Best when different shots need to hit at defined moments.
+中文裸标签 `图片N`，按 **图片 → 视频 → 音频 的传入顺序**重编号；官方原形编号（`图片32`/`图片75`）与
+文件名（`Stati..2.png`、`飞书202...7.mp4`）、中文数字、`(2)` 版本括号**都必须转换**。同一素材全片同号。
+每段 prompt 整体至少含一个 `图片N`。详情见正本第七节。
 
-**Template:**
-```
-0:00–0:05: [Shot type]. [Subject] [action]. Camera [movement].
-0:05–0:10: [Shot type]. [Transition or new angle]. [Action continues or shifts].
-0:10–0:13: [Close-up or detail shot]. [Climax action].
-0:13–0:15: [Final framing]. [Resolution or hold].
-```
+## 合法 vs 禁止
 
-**Example:**
-```
-0:00–0:04: Ultra-wide establishing shot. A sprinter crouches in the starting blocks. Camera holds low and still.
-0:04–0:09: FPV tracking shot launches forward as the sprinter explodes off the line.
-0:09–0:13: Side-angle slow motion. Legs and arms in full extension, sweat visible mid-air.
-0:13–0:15: Bird's-eye pull back. Runner crosses the finish line. Camera rises and holds.
-15 seconds, 24fps, no subtitles.
-```
+**合法**：`镜头N` / `0-1.5秒:` / `[00.0-03.0秒|场景名]` / `[00:00-00:05] 镜头1：` /
+`[素材说明]`·`[整体设定]`·`[时间轴]`·`[稳定性限制]` 区块头 / `CUT_02 硬切至…` / 段级质感句 / 光影三层 / 音效行。
 
----
+**禁止**：管道符拼接标题（`0.0-4.0 秒｜第一段｜图片2`，代码层拒绝）、`@图片1`、`参考图片1`、
+正文残留素材文件名、技术尾巴（fps/码率/模型名）、段级负面清单、同层混用两种分段体系。
 
-## Archetype C: Bold-Header Structured
+## 交付前自检（完整版见正本第九节）
 
-**When to use:** complex multi-element scenes, prompts shared with collaborators, content requiring precise control over multiple independent variables. The headers make each component reviewable in isolation.
-
-**Template:**
-```
-**Subject/Character:** [Description, appearance, any reference image citation]
-**Environment:** [Location, time of day, weather, background detail]
-**Action:** [What the subject does, sequence of movements]
-**Camera:** [Shot type, movement, lens style, any transitions]
-**Style:** [Visual tone, color grading, era, film stock or digital look]
-**Technical:** [Duration, fps, subtitle suppression if needed]
-```
-
-**Example:**
-```
-**Subject/Character:** A young woman in a red wool coat, late 20s, carrying a leather satchel. (@Image1)
-**Environment:** A rainy Tokyo street at night. Neon reflections on wet pavement. Dense foot traffic.
-**Action:** She pauses under a convenience store awning, checks her phone, then steps back into the rain.
-**Camera:** Medium shot holds as she pauses. Slow zoom in to her face as she reads the phone. Pull back wide as she walks away.
-**Style:** Cinematic, desaturated except for the warm red of her coat. Anamorphic lens flare on wet surfaces.
-**Technical:** 15 seconds, 24fps, no subtitles.
-```
-
----
-
-## Reference Image Integration
-
-Seedance 2.0 accepts reference images for character consistency and visual style matching.
-
-**Citation patterns observed in the corpus:**
-
-| Pattern | Usage context |
-|---------|---------------|
-| `@Image1` | Shorthand for first attached reference; use when one image is attached |
-| `@img1`, `@img2` | Lowercase variant; use consistently within a single prompt |
-| `@character_ref` | Named reference; clearer when multiple images serve different roles |
-| `based on reference image (upper-body)` | Prose integration; specifies which part of the reference applies |
-
-**Rules:**
-- Cite the reference at the point where it applies, not only at the end.
-- For character references, place the citation inside `**Subject/Character:**` or in the opening sentence of a prose prompt.
-- Specify which aspect the reference governs when it is not the full subject: `face only`, `outfit`, `upper-body`, `color palette`.
-- In timestamped sequences, re-cite the reference in any segment that introduces the character after a cut.
-
-**Example integrations:**
-
-Prose: `A woman (@Image1) with long dark hair walks through a market at dusk.`
-
-Bold-header: `**Subject/Character:** Male lead, early 40s, stern expression. Use @character_ref for face and build.`
-
-Timestamped: `0:00–0:05: Close-up on subject (@img1). Eyes open slowly. Warm backlight.`
+选了哪个模板、对得上情况吗？同层只用一种分段吗？`[整体设定]` 写了时长/比例/画质吗？
+音效成行吗？`[稳定性限制]` 覆盖恒定项与禁用项吗？素材角色逐份声明了吗？
+编号已按传入顺序重写、同一素材同号吗？音频默认句加了吗？

@@ -402,6 +402,16 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             const media = { images: 1, videos: 0, audios: 0 } // every material binds at least its primary image
             const blocked: Array<{ material: string; prompt: string }> = []
             const unsearched: Array<{ material: string }> = []
+            const overflow: Array<{ material: string; prompt: string; reason: string }> = []
+            // Official 即梦 samples number references by the SOURCE file name (图片27,
+            // 图片31(2), 图片一…). DSH binds by 图片 → 视频 → 音频 upload order, so a
+            // reference number may never exceed this segment's declared image count.
+            const segmentImageCount = new Map<string, number>()
+            for (const m of manifest.materials ?? []) {
+              const row = m as { path?: unknown; images?: unknown }
+              const extra = Array.isArray(row.images) ? row.images.length : 0
+              segmentImageCount.set(String(row.path), 1 + extra)
+            }
             for (const p of incoming) {
               // Normalize non-conforming reference labels to bare 图片N form (BUG-03).
               const norm = normalizeReferenceLabels(p.prompt)
@@ -429,6 +439,19 @@ function apply(ctx: Context, config: ResolvedConfig): void {
                 blocked.push({ material: p.material, prompt: finalPrompt })
                 continue
               }
+              // Order-binding gate: 图片N must fit this segment's declared reference
+              // count — never paste an official sample's source-file number as-is.
+              const declared = segmentImageCount.get(p.material) ?? 1
+              const refNums = [...finalPrompt.matchAll(/图片\s*(\d+)/g)].map((m) => Number(m[1]))
+              const biggest = refNums.length > 0 ? Math.max(...refNums) : 0
+              if (biggest > declared) {
+                overflow.push({
+                  material: p.material,
+                  prompt: finalPrompt,
+                  reason: `图片${biggest} exceeds this segment's ${declared} reference image(s) — renumber by upload order (图片1..${declared}); run set_visuals first if extra references were added`,
+                })
+                continue
+              }
               if (byMaterial.has(p.material)) updated += 1
               else added += 1
               byMaterial.set(p.material, { material: p.material, prompt: finalPrompt })
@@ -447,6 +470,15 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               return {
                 ok: false,
                 message: `${blocked.length} prompt(s) rejected — missing bare 图片N reference binding. Run prompt_revision search_corpus + authoring_gate first, then bind every material with 图片N. ${list}`,
+                batch_id: batchId,
+                diagnostics,
+              }
+            }
+            if (overflow.length > 0) {
+              const list = overflow.map((b) => `${b.material}: ${b.reason}`).join(' | ')
+              return {
+                ok: false,
+                message: `${overflow.length} prompt(s) rejected — 图片N out of range. The 即梦 standard template numbers references by upload order within each segment; official sample numbers (图片27, 图片31(2), 图片一) must be renumbered. ${list}`,
                 batch_id: batchId,
                 diagnostics,
               }

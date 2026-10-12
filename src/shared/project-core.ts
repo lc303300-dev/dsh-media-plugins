@@ -325,7 +325,9 @@ export function materialPromptAliases(state: ProjectState): string[] {
 
 /** 校验提示词内容（codex-cs project_pipeline validate_prompt_content 移植）：
  *  1) 不得泄漏内部素材文件名/别名（只能用 图片1、图片2 等有序标签）；
- *  2) 不得使用管道符分镜标题（须写自然标题如 "0.0-4.0 秒，第一段，参考图片2。"）。 */
+ *  2) 不得使用管道符分镜标题（须写自然标题如 "0.0-4.0 秒，第一段，参考图片2。"）。
+ *  备注：时间码 / 秒数区间分镜标题（`[00:00-00:05] 镜头1：`、`0-1.5秒:`、`0.0-4.0 秒，第一段，…`）
+ *        是官方范例的合法写法，**不拒绝**；只有管道符拼接形态被拒。 */
 export function validatePromptContent(state: ProjectState, content: string): void {
   const text = String(content ?? '')
   const leaked = materialPromptAliases(state).filter((alias) => alias && text.includes(alias))
