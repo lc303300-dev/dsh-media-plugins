@@ -551,8 +551,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
 
         // 官方 Skill 要求「创建画布成功或进入已有画布后，主动打开画布」：
         // best-effort + 冷却去重，打开失败绝不阻断生成。
-        if (config.openCanvasInBrowser && project.webUrl) {
-          const opened = await openCanvasInBrowser(project.webUrl, {
+        // CLI 只对 canvas create/ls 返回 webUrl；显式指定画布或复用路径上没有它，
+        // 因此按官方画布路由构造（与 dreamina_canvas 工具同一套兜底）。
+        const canvasWebUrl = project.webUrl ?? `https://jimeng.jianying.com/ai-tool/ai-canvas/${project.projectId}`
+        if (config.openCanvasInBrowser) {
+          const opened = await openCanvasInBrowser(canvasWebUrl, {
             privateRoot,
             projectId: project.projectId,
             cooldownMs: config.canvasOpenCooldownMs,
@@ -682,8 +685,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           status: results.every((r) => r.status === 'success') ? 'success' : results.some((r) => r.status === 'failed') ? 'partial' : 'submitted',
         })
 
-        const canvasFields: Record<string, unknown> = { canvas_project_id: project.projectId }
-        if (project.webUrl) canvasFields.canvas_web_url = project.webUrl
+        const canvasFields: Record<string, unknown> = { canvas_project_id: project.projectId, canvas_web_url: canvasWebUrl }
         if (resolvedGroupName) canvasFields.video_group = resolvedGroupName
 
         if (count === 1) {
