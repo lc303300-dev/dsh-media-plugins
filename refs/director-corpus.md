@@ -6,7 +6,7 @@
 >
 > **结构标准唯一真源**：`video-director-prompt` 技能的
 > [jimeng-standard-template.md](../skills/video-director-prompt/references/jimeng-standard-template.md)
-> （即梦标准提示词模板）。本文件只保留 DSH 专用的语料检索与证据分级规则，以及速查索引；
+> （即梦提示词模板集）。本文件只保留 DSH 专用的语料检索与证据分级规则，以及速查索引；
 > 与正本不一致时以正本为准。
 >
 > **完整导演创作层请加载 `video-director-prompt` 技能**（`skill` 工具），按其
