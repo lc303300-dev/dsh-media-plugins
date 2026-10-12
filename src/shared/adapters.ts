@@ -441,7 +441,13 @@ function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
       // 每一步都按「整条候选剩余时间」动态收敛，绝不使用全新的整段预算。
       const remaining = () => Math.max(1000, input.deadlineAtMs - Date.now())
       const binary = await resolveCanvasBinary(cfg.dreaminaCanvasPath)
-      const cli = createCanvasCli({ binary, profile: cfg.dreaminaCanvasProfile, timeoutMs: remaining() })
+      const cli = createCanvasCli({
+        binary,
+        profile: cfg.dreaminaCanvasProfile,
+        timeoutMs: remaining(),
+        // journal 收进私有运行目录，避开写用户 AppData 的权限类失败。
+        env: { DREAMINA_CANVAS_STATE_DIR: join(input.privateRoot, 'canvas-state') },
+      })
       const project = await resolveCanvasProject(cli, DREAMINA_IMAGE_CANVAS)
       const outDir = await ensureDir(join(input.privateRoot, 'jobs', '_router', 'outputs'))
 
@@ -504,8 +510,17 @@ function dreaminaImageAdapter(cfg: RouterConfig): ImageAdapter {
         operation.resources.map((r) => r.resourceId).find((value) => value.length > 0) ?? accepted.resourceIds[0]
       if (!resourceId) throw mediaErrors.provider('dreamina-canvas image succeeded but returned no resourceId')
       const downloaded = await downloadCanvasResource(cli, project.projectId, resourceId, outDir)
-      if (!downloaded) throw mediaErrors.provider('dreamina-canvas image download failed')
-      return { outputPath: downloaded }
+      if (downloaded.error || !downloaded.path) {
+        throw mediaErrors.provider(`dreamina-canvas image download failed: ${downloaded.error ?? 'no path'}`)
+      }
+      // 交付校验：CLI 落地文件名不可信（实测扩展名 .png 而内容是 jpeg），必须读真实内容。
+      try {
+        const meta = await sharp(downloaded.path, { failOn: 'none' }).metadata()
+        if (!meta.width || !meta.height) throw new Error('no dimensions')
+      } catch {
+        throw mediaErrors.provider(`dreamina-canvas image 下载产物不是有效图片：${downloaded.path}`)
+      }
+      return { outputPath: downloaded.path }
     },
   }
 }

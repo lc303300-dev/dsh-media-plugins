@@ -22,6 +22,7 @@ export default defineConfig({
     'tool-status': 'src/tool-status.ts',
     'tool-cost': 'src/tool-cost.ts',
     'tool-dreamina-account': 'src/tool-dreamina-account.ts',
+    'tool-canvas': 'src/tool-canvas.ts',
     'notify': 'src/notify.ts',
   },
   format: ['esm'],

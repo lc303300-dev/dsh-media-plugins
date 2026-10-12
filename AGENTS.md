@@ -16,7 +16,7 @@ DSH Studio 媒体能力包。一次安装提供 16 个工具、11 个技能与�
 
 ## 即梦画布 CLI（`dreamina-canvas`）—— 生成线路的唯一执行层
 
-> **旧 `dreamina` CLI 自 2026-11 起停止维护**，仓库已于 2026-10-12 完成迁移。旧二进制只剩「积分余额查询」一个用途（画布 CLI 的 `auth account` 不返回余额）。
+> **旧 `dreamina` CLI 自 2026-11 起停止维护**：仓库已**彻底**迁移到画布 CLI —— 旧二进制、旧登录流程（`login --headless`）与**积分余额查询**全部移除。画布 CLI 的 `auth account` 只返回 `userId` / `isVip` / `vipLevel`，不返回余额。
 
 - **二进制**：`dreamina-canvas`（官方安装器装到 `~/bin/dreamina-canvas.exe` + Skill `~/.agents/skills/dreamina-canvas-cli`）。解析顺序：配置 `dreaminaPath`/`dreaminaCanvasPath` → 包内 `bin/` → `~/bin/` → PATH（`resolveCanvasBinary`）。
 - **产品模型完全不同**：画布(project) + 节点(node) + 报价确认 + 可恢复操作。**保存 ≠ 生成**；付费链路固定六段，任何一步不可跳过：`resource upload` → `node create ...（保存）` → `node quote` → `node confirm --credit-ceiling`（取 `creditConfirmationToken`）→ `node run --submit-id` → `operation wait` → `resource download`。
@@ -25,7 +25,9 @@ DSH Studio 媒体能力包。一次安装提供 16 个工具、11 个技能与�
 - **同一任务绝不换新 `submit-id` 重放**（付费不可回滚）；`operation wait` 退出码 20（本地等待超时）**不是失败**，服务端任务仍在跑 → 记 `needs_review` 并保留身份。
 - **引用形态**：`--ref res:<小写规范 UUID>`（上传登记或冻结某份产物）或 `--ref node:<nodeId>`（跟随节点最新产物并保留连线）。大写/`urn:uuid:`/去连字符的 Resource ID 会被 CLI 本地拒绝。
 - **账号**：画布 CLI 的登录态在**另一个 keychain 子键**（见下节），与旧 CLI 互不覆盖；`--profile` 只隔离登录态名，业务记录目录可用 `DREAMINA_CANVAS_STATE_DIR` 重定向。
-- **实现与回归**：`src/shared/dreamina-canvas.ts`（envelope/退出码分类、模式选择、命令构造、画布复用、二进制解析）、`src/shared/video-canvas-pipeline.ts`（六段链路 + 有界并发 + 下载）、`src/tool-video-gen.ts`、`src/shared/adapters.ts` 的 `dreamina-image` 适配器；测试 `tests/dreamina-canvas.test.mjs`（真机零成本验证脚本曾覆盖 t2v/m2v/first_last_frame/i2i 四种 `--dry-run` 形态）。
+- **实现与回归**：`src/shared/dreamina-canvas.ts`（envelope/退出码分类、模式选择、命令构造、画布复用、二进制解析）、`src/shared/video-canvas-pipeline.ts`（六段链路 + 有界并发 + 下载）、`src/shared/canvas-browser.ts`（按需打开画布，带冷却去重）、`src/tool-video-gen.ts`、`src/shared/adapters.ts` 的 `dreamina-image` 适配器；测试 `tests/dreamina-canvas.test.mjs`、`tests/canvas-tool.test.mjs`。
+- **通用能力入口（官方命令面全覆盖）**：`dreamina_canvas` 工具（`src/tool-canvas.ts`）开放 `catalog`(model list/find)、`voice list`、`canvas`、`node`（含 `text` / `element` / `timeline` / `upscale image`）、`operation`、`resource`、`schema`、`version`。**调用前必须先用 `command=schema` + `action="node create video"` 查当前制品的真实 flag 与枚举，绝不凭记忆猜参数**（官方硬性要求）。内置付费门：`--run` / `node run` / `node upscale` 必须在同一次调用里带 `credit_ceiling` 或 `credit_token`，否则直接拒绝 —— 报价 ≠ 授权。返回结构化字段 `outcome` / `required_action` / `request_id` / `partial_items` / `credit_confirmation`，失败时原样带出 `partialData` 身份供续跑。
+- **协议遵循（官方 5 份 reference 已落实）**：退出码 20 恒为 `pending`（本地等待超时 ≠ 失败）；`error.localStorage.submissionPhase === 'after_submit'` 同样归 `pending`（副作用可能已发生 → 只读恢复，**绝不重提**）；`node run` 返回 10 时从 `partialData.items[]` 取回 `nodeId` + `submitId` 并记 `needs_review`（**换新 submitId 等于第二次运行、会再扣一次钱**）；报价不可用（`occupancy_unknown` / `confirmable=false`）**绝不按 0 批准**；下载必须校验 `size > 0` 与真实容器/图片内容（CLI 落地扩展名不可信：实测 `.png` 内容是 jpeg）并记录 `sha256`；`meta.requestId` 全程留痕；`DREAMINA_CANVAS_STATE_DIR` 指向私有运行目录。
 
 ## 即梦账号切换（`dreamina_account`，多账号）
 

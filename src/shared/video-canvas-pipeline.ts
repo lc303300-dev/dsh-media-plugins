@@ -26,10 +26,13 @@ import { basename, join } from 'node:path'
 import { readdir, stat } from 'node:fs/promises'
 import {
   buildVideoNodeArgs,
+  canvasRequestId,
+  parseCanvasCreditConfirmation,
   parseCanvasCreditToken,
   parseCanvasDownload,
   parseCanvasNodeHandle,
   parseCanvasOperation,
+  parseCanvasPartialItems,
   parseCanvasQuote,
   parseCanvasRunAcceptance,
   selectCanvasVideoMode,
@@ -67,11 +70,17 @@ export interface CanvasVideoTaskResult {
   submitId?: string
   resourceId?: string
   path?: string
+  /** 落地字节数（官方交付校验：零字节不算有效交付）。 */
+  bytes?: number
+  /** CLI 返回的 SHA256，供校验与交付记录。 */
+  sha256?: string
   /** 服务端实际扣费（若回执带 creditsAmount）。 */
   credits?: number
   error?: string
   /** 受理但未到终态：保留身份，稍后可继续查询。 */
   advice?: string
+  /** 报价后停下、从未提交（服务端没有这份 submission，不得轮询、不得换 ID 重跑）。 */
+  paused?: boolean
 }
 
 export interface CanvasVideoBatchOptions {
@@ -171,7 +180,7 @@ export async function submitCanvasVideoTask(
   task: CanvasVideoTask,
   refs: CanvasNodeRef[],
   submitId: string,
-): Promise<{ nodeId: string; submitId: string; resourceIds: string[]; quotedCredits?: number; mode: CanvasVideoMode }> {
+): Promise<{ nodeId: string; submitId: string; resourceIds: string[]; quotedCredits?: number; mode: CanvasVideoMode; paused?: boolean; pausedReason?: string }> {
   const { cli } = options
   const mode = selectCanvasVideoMode({
     images: task.images.length,
@@ -209,11 +218,20 @@ export async function submitCanvasVideoTask(
     { timeoutMs: 90_000, label: 'node quote' },
   )
   const quote = parseCanvasQuote(quoted.envelope)
+  const quoteRequestId = canvasRequestId(quoted.envelope)
 
-  // 3) 批准：用户 ceiling 优先，否则用服务端报价本身封顶
-  const ceiling = options.creditCeiling !== undefined ? options.creditCeiling : quote.totalMaxCredits
-  if (!Number.isFinite(ceiling) || ceiling < 0) {
-    throw new Error(`无法确定积分上限（报价 ${quote.totalMaxCredits}），拒绝在未授权的情况下提交`)
+  // 3) 批准：用户 ceiling 优先，否则用服务端报价封顶。
+  //    报价不可信时**绝不按 0 批准**：官方明确 `minimumCreditCeiling` 缺席等于
+  //    occupancy_unknown（「不等于 0」），按 0 去批准必然再次被拒，还会掩盖"算不准"。
+  let ceiling = options.creditCeiling
+  if (ceiling === undefined) {
+    if (!quote.confirmable || !(quote.totalMaxCredits > 0)) {
+      throw new Error(
+        `服务端暂时给不出可用报价（totalMaxCredits=${quote.totalMaxCredits}, confirmable=${quote.confirmable}）：` +
+          '不能按 0 积分批准。请稍后重试，或显式传 video_credit_ceiling 给出你愿意接受的上限。',
+      )
+    }
+    ceiling = quote.totalMaxCredits
   }
   const confirmed = await cli.runOrThrow(
     ['node', 'confirm', '--project-id', options.projectId, '--node-id', handle.nodeId, '--credit-ceiling', String(ceiling)],
@@ -223,7 +241,11 @@ export async function submitCanvasVideoTask(
   if (!token) throw new Error(`dreamina-canvas node confirm 未返回 creditConfirmationToken: ${confirmed.raw.slice(0, 300)}`)
 
   // 4) 运行（同一 submitId 是重试身份，绝不换新）
-  const ran = await cli.runOrThrow(
+  //
+  // 官方 recovery 协议：媒体在报价后停下（退出码 10）时，节点已保存、**没有扣费**，
+  // 必须复用 `partialData` 里的 nodeId + submitId 续跑；换新 submitId 会被当成第二次
+  // 运行、再扣一次钱。所以这里不把 10 当失败抛出，而是把已冻结的身份交给上层。
+  const ran = await cli.run(
     [
       'node', 'run',
       '--project-id', options.projectId,
@@ -231,8 +253,36 @@ export async function submitCanvasVideoTask(
       '--submit-id', submitId,
       '--credit-token', token,
     ],
-    { timeoutMs: 240_000, label: 'node run' },
+    { timeoutMs: 240_000 },
   )
+  const runRequestId = canvasRequestId(ran.envelope)
+  if (ran.classification.outcome !== 'ok') {
+    const partial = parseCanvasPartialItems(ran.envelope)[0]
+    const confirmation = parseCanvasCreditConfirmation(ran.envelope)
+    const identity = { nodeId: partial?.nodeId ?? handle.nodeId, submitId: partial?.submitId ?? submitId }
+    if (ran.classification.outcome === 'credits_required' || ran.classification.outcome === 'pending') {
+      await options.log?.('canvas-paused-before-submit', {
+        taskId: task.taskId,
+        ...identity,
+        ceiling,
+        reason: confirmation.reason,
+        occupancyUnknown: confirmation.occupancyUnknown,
+        requestId: runRequestId,
+      })
+      return {
+        nodeId: identity.nodeId,
+        submitId: identity.submitId,
+        resourceIds: [],
+        quotedCredits: quote.totalMaxCredits,
+        mode,
+        paused: true,
+        pausedReason: confirmation.occupancyUnknown
+          ? '服务端算不准本次积分占用（occupancy_unknown）：节点已保存且未扣费，需要用户给出上限后再续跑'
+          : `服务端要求批准（${confirmation.reason ?? ran.classification.requiredAction ?? 'confirm'}）：节点已保存且未扣费，复用原 submitId 续跑即可，切勿换新 ID`,
+      }
+    }
+    throw new Error(`dreamina-canvas node run failed [${ran.classification.outcome}]: ${ran.classification.message}`)
+  }
   const acceptance = parseCanvasRunAcceptance(ran.envelope)
   const accepted = acceptance.find((a) => a.nodeId === handle.nodeId) ?? acceptance[0]
   if (!accepted) throw new Error(`dreamina-canvas node run 未返回受理回执: ${ran.raw.slice(0, 300)}`)
@@ -244,6 +294,8 @@ export async function submitCanvasVideoTask(
     mode,
     quotedCredits: quote.totalMaxCredits,
     ceiling,
+    quoteRequestId,
+    runRequestId,
   })
 
   return {
@@ -287,19 +339,39 @@ export async function waitCanvasOperation(
   return { state: 'pending', resourceIds, advice: operation.advice }
 }
 
-/** 下载一份产物到指定目录，返回落地路径。 */
+/** 一次下载的可验证事实。 */
+export interface CanvasDownloadOutcome {
+  path?: string
+  size?: number
+  sha256?: string
+  /** 致命失败原因（命令失败，或文件体积异常）。 */
+  error?: string
+}
+
+/**
+ * 下载一份产物到指定目录。
+ *
+ * 官方交付校验要求：检查 CLI 返回的字节数（零字节/异常文件不算有效交付）、记录
+ * SHA256、必要时验真实内容而不是只看扩展名。这里把 `size > 0` 作为硬门槛并把
+ * SHA256 带出来；媒体类型/容器校验由调用方按期望类型追加。
+ */
 export async function downloadCanvasResource(
   cli: CanvasCli,
   projectId: string,
   resourceId: string,
   outputDir: string,
-): Promise<string | undefined> {
+): Promise<CanvasDownloadOutcome> {
   const result = await cli.run(
     ['resource', 'download', resourceId, '--project-id', projectId, '--output', outputDir],
     { timeoutMs: 600_000 },
   )
-  if (result.classification.outcome !== 'ok') return undefined
-  return parseCanvasDownload(result.envelope)?.path
+  if (result.classification.outcome !== 'ok') {
+    return { error: `resource download failed [${result.classification.outcome}]: ${result.classification.message}` }
+  }
+  const parsed = parseCanvasDownload(result.envelope)
+  if (!parsed) return { error: `resource download 未返回落地路径: ${result.raw.slice(0, 200)}` }
+  if (!(parsed.size > 0)) return { error: `产物体积异常（size=${parsed.size}），不作为有效交付` }
+  return { path: parsed.path, size: parsed.size, sha256: parsed.sha256 }
 }
 
 /** 产物校验：可读、非空、真实容器头（复用视频管线的判定）。 */
@@ -372,6 +444,20 @@ export async function runCanvasVideoBatch(
       return { taskId: task.taskId, status: 'failed', error: String((outcome.reason as any)?.message ?? outcome.reason).slice(0, 400) }
     }
     const accepted = outcome.value
+    // 报价后停下（退出码 10 / occupancy_unknown）：节点已保存且**未扣费**，身份已冻结。
+    // 必须记 needs_review 并保留同一 submitId —— 换新 ID 重跑等于第二次运行、再扣一次钱。
+    if (accepted.paused) {
+      return {
+        taskId: task.taskId,
+        status: 'needs_review',
+        mode: accepted.mode,
+        nodeId: accepted.nodeId,
+        submitId: accepted.submitId,
+        credits: accepted.quotedCredits,
+        advice: accepted.pausedReason,
+        paused: true,
+      }
+    }
     return {
       taskId: task.taskId,
       status: options.submitOnly ? 'submitted' : 'needs_review',
@@ -386,7 +472,7 @@ export async function runCanvasVideoBatch(
 
   // 等终态（有界并发），再按各自的 download 目录取片
   await mapWithConcurrency(results, options.concurrency ?? results.length, async (result, index) => {
-    if (result.status === 'failed' || !result.submitId) return
+    if (result.status === 'failed' || result.paused || !result.submitId) return
     if (options.signal?.aborted) return
       const waited = await waitCanvasOperation(options, result.submitId)
       if (waited.state === 'failed' || waited.state === 'canceled') {
@@ -408,12 +494,20 @@ export async function runCanvasVideoBatch(
       result.resourceId = resourceId
       const dir = taskDirs[index]
       const downloaded = await downloadCanvasResource(options.cli, options.projectId, resourceId, dir)
-      if (!downloaded) {
+      if (downloaded.error || !downloaded.path) {
         result.status = 'needs_review'
-        result.advice = 'resource download failed; operation already succeeded, re-download with the same resourceId'
+        result.advice = `${downloaded.error ?? 'resource download failed'}；operation 已成功，可用同一 resourceId 重新下载（不要重跑生成）`
         return
       }
-      result.path = downloaded
+      // 内容校验：必须是真实可用的视频容器（官方交付校验：不能只看扩展名或接口成功）
+      if (!(await isUsableVideoFile(downloaded.path))) {
+        result.status = 'needs_review'
+        result.advice = `下载产物不是可用的视频容器：${downloaded.path}`
+        return
+      }
+      result.path = downloaded.path
+      result.bytes = downloaded.size
+      result.sha256 = downloaded.sha256
       result.status = 'success'
   })
 

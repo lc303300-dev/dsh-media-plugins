@@ -95,6 +95,13 @@
     - id: Ws_tool-dreamina-account
       name: dsh-media-plugins/Ws_tool-dreamina-account
 
+    # 即梦画布 CLI 通用能力入口（对齐官方完整命令面：catalog / voice / canvas /
+    # node（含 text·element·timeline·upscale）/ operation / resource / schema）。
+    # 付费门内置：--run、node run、node upscale 必须显式带 credit_ceiling 或
+    # credit_token，否则拒绝执行。
+    - id: Ws_tool-canvas
+      name: dsh-media-plugins/Ws_tool-canvas
+
     - id: Ws_tool-cost
       name: dsh-media-plugins/Ws_tool-cost
       config:

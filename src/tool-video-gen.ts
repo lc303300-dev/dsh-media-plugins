@@ -41,6 +41,7 @@ import {
 import { createAccountGate } from './shared/dreamina-account.ts'
 import { normalizeProviderImage } from './shared/image-ops.ts'
 import { createCanvasCli, resolveCanvasBinary, resolveCanvasProject } from './shared/dreamina-canvas.ts'
+import { DEFAULT_CANVAS_OPEN_COOLDOWN_MS, openCanvasInBrowser } from './shared/canvas-browser.ts'
 import {
   runCanvasVideoBatch,
   type CanvasVideoTask,
@@ -100,6 +101,17 @@ export interface Config {
   /** 提交前做一次廉价的能力预检（`model list`）。 */
   runHelpBeforeSubmit?: boolean
   /**
+   * 生成开始时自动把画布 webUrl 打开到浏览器（官方 Skill 的「主动打开画布」要求）。
+   * 同一画布在 `canvasOpenCooldownMs` 内只打开一次；打开失败绝不影响生成。
+   */
+  openCanvasInBrowser?: boolean
+  /** 打开画布用的浏览器可执行文件；留空 = 系统默认浏览器。 */
+  canvasBrowserPath?: string
+  /** 同一画布重复打开的冷却窗口（毫秒），默认 10 分钟。 */
+  canvasOpenCooldownMs?: number
+  /** CLI 业务记录目录（`DREAMINA_CANVAS_STATE_DIR`）；留空 = 收进私有运行目录。 */
+  canvasStateDir?: string
+  /**
    * 管线默认即梦账号。空 = 不触碰登录态；否则每次 CLI 调用前确保它是活登录。
    * 账号库与切换逻辑沿用 `shared/dreamina-account.ts`。
    */
@@ -117,6 +129,10 @@ export const Config: z<Config> = z.object({
   executionMode: z.union([...VIDEO_EXECUTION_MODES]).default('production'),
   videoCapacity: z.number().default(DEFAULT_VIDEO_CAPACITY),
   runHelpBeforeSubmit: z.boolean().default(false),
+  openCanvasInBrowser: z.boolean().default(true),
+  canvasBrowserPath: z.string().default(''),
+  canvasOpenCooldownMs: z.number().default(DEFAULT_CANVAS_OPEN_COOLDOWN_MS),
+  canvasStateDir: z.string().default(''),
   dreaminaAccount: z.string().default(''),
 })
 
@@ -506,11 +522,15 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         await accountGate.ensure()
 
         const binary = await resolveCanvasBinary(config.dreaminaPath)
+        // 业务记录（journal）收进私有运行目录：官方支持 DREAMINA_CANVAS_STATE_DIR，
+        // 可绕开写用户 AppData 时的权限/沙箱类失败。
+        const canvasStateDir = config.canvasStateDir.trim().length > 0 ? config.canvasStateDir.trim() : join(privateRoot, 'canvas-state')
         const cli = createCanvasCli({
           binary,
           profile: config.dreaminaProfile,
           ensureAccount: () => accountGate.ensure(),
           timeoutMs: 300_000,
+          env: { DREAMINA_CANVAS_STATE_DIR: canvasStateDir },
         })
 
         // ---- canvas resolution (reuse a same-named canvas, never touch `--use`) ----
@@ -526,6 +546,22 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           resolvedGroupName = String(args.video_group ?? '').trim().length > 0 ? datedVideoGroup(String(args.video_group)) : DEFAULT_CANVAS_NAME
           project = await resolveCanvasProject(cli, resolvedGroupName)
           if (resolvedGroupName === DEFAULT_CANVAS_NAME) resolvedGroupName = undefined
+        }
+
+        // 官方 Skill 要求「创建画布成功或进入已有画布后，主动打开画布」：
+        // best-effort + 冷却去重，打开失败绝不阻断生成。
+        if (config.openCanvasInBrowser && project.webUrl) {
+          const opened = await openCanvasInBrowser(project.webUrl, {
+            privateRoot,
+            projectId: project.projectId,
+            cooldownMs: config.canvasOpenCooldownMs,
+            browserPath: config.canvasBrowserPath,
+          })
+          await appendSafeLog(privateRoot, 'generate_video', {
+            event: 'canvas-open',
+            projectId: project.projectId,
+            ...opened,
+          })
         }
         // 能力预检（可选）：一次廉价 `model list` 证明二进制与登录可用。
         if (config.runHelpBeforeSubmit) {

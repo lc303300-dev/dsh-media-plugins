@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   parseCanvasEnvelope,
   classifyCanvasResult,
@@ -427,7 +430,14 @@ function fullChainRoutes(state) {
     }],
     ['node create video', () => ({ stdout: ok({ node: { nodeId: 'node_x', type: 'video', title: 't', status: 'empty' } }), stderr: '', exitCode: 0 })],
     ['operation wait', () => ({ stdout: ok({ operationRef: state.submitId, state: 'succeeded', resources: [{ resourceId: UUID_B, state: 'succeeded' }] }), stderr: '', exitCode: 0 })],
-    ['resource download', () => ({ stdout: ok({ resourceId: UUID_B, path: 'C:\\jobs\\out.mp4', size: 1234, sha256: 'h' }), stderr: '', exitCode: 0 })],
+    ['resource download', (args) => {
+      // 交付校验要求真实可用的容器：写一个最小 mp4（ftyp box）而不是伪造路径。
+      const dir = args[args.indexOf('--output') + 1]
+      mkdirSync(dir, { recursive: true })
+      const file = join(dir, 'out.mp4')
+      writeFileSync(file, Buffer.concat([Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom'), Buffer.alloc(16)]))
+      return { stdout: ok({ resourceId: UUID_B, path: file, size: 28, sha256: 'h' }), stderr: '', exitCode: 0 }
+    }],
   ]
 }
 
@@ -435,11 +445,12 @@ test('runCanvasVideoBatch: full paid chain, quote becomes the ceiling, identity 
   const state = { uploads: 0, ceiling: undefined, submitId: undefined }
   const { exec, calls } = fakeExec(fullChainRoutes(state))
   const cli = createCanvasCli({ binary: 'b', exec })
+  const workDir = mkdtempSync(join(tmpdir(), 'canvas-batch-'))
   const task = { taskId: 't1', title: 'a-1', prompt: '海面日落', images: ['C:\\in\\a.png'], videos: [], audios: [], duration: 5, explicitRatio: false }
   const results = await runCanvasVideoBatch(
     { cli, projectId: PROJECT, model: 'seedance_2.5', resolution: '480p', ratio: '16:9', pollTimeoutMs: 60_000 },
     [task],
-    ['C:\\jobs\\t1'],
+    [workDir],
     [UUID_SUBMIT],
   )
   assert.equal(results.length, 1)
@@ -447,7 +458,10 @@ test('runCanvasVideoBatch: full paid chain, quote becomes the ceiling, identity 
   assert.equal(results[0].nodeId, 'node_x')
   assert.equal(results[0].submitId, UUID_SUBMIT)
   assert.equal(results[0].resourceId, UUID_B)
-  assert.equal(results[0].path, 'C:\\jobs\\out.mp4')
+  assert.equal(results[0].path, join(workDir, 'out.mp4'))
+  // 交付事实：字节数与 SHA256 都要带出来（官方交付校验）
+  assert.equal(results[0].bytes, 28)
+  assert.equal(results[0].sha256, 'h')
   assert.equal(results[0].mode, 'first_last_frame', '单图且未显式指定比例 → 首帧模式')
   // 报价 48 自动成为批准上限
   assert.equal(state.ceiling, '48')

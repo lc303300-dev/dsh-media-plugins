@@ -70,6 +70,11 @@ export interface CanvasErrorBody {
   traceId?: string
   /** 结构化校验信息（fieldPath / reasonCode），只用于人工排查。 */
   validation?: Record<string, unknown>
+  /**
+   * 本地业务记录（journal）失败时的分类事实。`submissionPhase: 'after_submit'`
+   * 意味着副作用可能已经发生 —— 官方要求改用只读查询，**不得**重新创建或提交。
+   */
+  localStorage?: { reason?: string; stage?: string; directory?: string; submissionPhase?: string }
 }
 
 export interface CanvasEnvelope<T = any> {
@@ -78,6 +83,10 @@ export interface CanvasEnvelope<T = any> {
   data?: T
   error?: CanvasErrorBody
   meta?: Record<string, unknown>
+  /** 失败但已产生副作用时的部分事实（官方 recovery 协议：必须复用这些身份续跑）。 */
+  partialData?: { items?: Array<Record<string, unknown>> }
+  /** 报价之后停下时的金额事实；`minimumCreditCeiling` 缺席表示服务端算不准占用。 */
+  creditConfirmation?: { reason?: string; minimumCreditCeiling?: number }
 }
 
 /**
@@ -107,6 +116,52 @@ export function parseCanvasEnvelope(raw: string): CanvasEnvelope | undefined {
     }
   }
   return undefined
+}
+
+/** envelope 顶层的关联 ID（官方硬边界：存在时必须保留，用于排障与支持）。 */
+export function canvasRequestId(envelope?: CanvasEnvelope): string | undefined {
+  const id = envelope?.meta?.requestId
+  return typeof id === 'string' && id.length > 0 ? id : undefined
+}
+
+/**
+ * 失败 envelope 里的 `partialData.items[]`。
+ *
+ * 关键场景：媒体 `--run` 在报价之后停下（退出码 10）时，节点已保存、**没有扣费**，
+ * 此时必须复用同一 `nodeId` + `submitId` 续跑 —— 换新 submitId 会被当成第二次运行
+ * 再扣一次钱。
+ */
+export function parseCanvasPartialItems(envelope?: CanvasEnvelope): Array<{ nodeId?: string; submitId?: string; sourceNodeId?: string }> {
+  const items = envelope?.partialData?.items
+  if (!Array.isArray(items)) return []
+  return items
+    .filter((item: any) => item && typeof item === 'object')
+    .map((item: any) => ({
+      nodeId: typeof item.nodeId === 'string' ? item.nodeId : undefined,
+      submitId: typeof item.submitId === 'string' ? item.submitId : undefined,
+      sourceNodeId: typeof item.sourceNodeId === 'string' ? item.sourceNodeId : undefined,
+    }))
+}
+
+/**
+ * `creditConfirmation`：报价后停下时的金额事实。
+ *
+ * `minimumCreditCeiling` 缺席表示服务端算不准占用（`occupancy_unknown`），官方明确
+ * 「它**不等于 0**」—— 按 0 去批准必然再次被拒，此时必须交回用户。
+ */
+export function parseCanvasCreditConfirmation(envelope?: CanvasEnvelope): {
+  reason?: string
+  minimumCreditCeiling?: number
+  occupancyUnknown: boolean
+} {
+  const node = envelope?.creditConfirmation
+  const minimum = node?.minimumCreditCeiling
+  const hasMinimum = typeof minimum === 'number' && Number.isFinite(minimum)
+  return {
+    reason: typeof node?.reason === 'string' ? node.reason : undefined,
+    minimumCreditCeiling: hasMinimum ? minimum : undefined,
+    occupancyUnknown: !hasMinimum,
+  }
 }
 
 /** 画布 CLI 的结果分类（只依赖退出码与结构化字段，绝不解析本地化 message）。 */
@@ -151,6 +206,13 @@ export function classifyCanvasResult(exitCode: number, envelope?: CanvasEnvelope
   const message = String(error?.message ?? CANVAS_EXIT_MEANINGS[exitCode] ?? `dreamina-canvas exited with ${exitCode}`)
   const retryable = error?.retryable === true
   const requestId = typeof error?.requestId === 'string' ? error.requestId : undefined
+
+  // 本地业务记录失败（`error.localStorage`）：`after_submit` 说明副作用可能已发生。
+  // 官方要求此时改用只读查询、**不得**重新创建或提交，因此归为 pending（保留身份），
+  // 绝不能当成失败让上层重跑 —— 那会二次扣费。
+  if (exitCode !== 0 && error?.localStorage?.submissionPhase === 'after_submit') {
+    return { outcome: 'pending', requiredAction: requiredAction ?? 'resume', retryable: false, message, requestId }
+  }
 
   if (exitCode === 0 && envelope?.ok !== false) {
     return { outcome: 'ok', requiredAction, retryable: false, message }
@@ -710,6 +772,11 @@ export interface CanvasCliOptions {
   /** 单次调用超时。 */
   timeoutMs?: number
   /** 注入执行器（单测用）；默认 node:child_process。 */
+  /**
+   * 额外环境变量。用来把 CLI 的业务记录目录收进私有运行目录
+   * （`DREAMINA_CANVAS_STATE_DIR`），避免 journal 写进用户 AppData 时的权限/污染问题。
+   */
+  env?: Record<string, string>
   exec?: (binary: string, args: string[], timeoutMs: number) => Promise<{ stdout: string; stderr: string; exitCode: number }>
 }
 
@@ -738,7 +805,12 @@ export function createCanvasCli(options: CanvasCliOptions): CanvasCli {
         const { promisify } = await import('node:util')
         const execFileAsync = promisify(execFile)
         try {
-          const { stdout, stderr } = await execFileAsync(binary, argv, { timeout: budget, maxBuffer: 32 * 1024 * 1024, windowsHide: true })
+          const { stdout, stderr } = await execFileAsync(binary, argv, {
+            timeout: budget,
+            maxBuffer: 32 * 1024 * 1024,
+            windowsHide: true,
+            env: options.env ? { ...process.env, ...options.env } : process.env,
+          })
           return { stdout: String(stdout), stderr: String(stderr ?? ''), exitCode: 0 }
         } catch (error: any) {
           const code = typeof error?.code === 'number' ? error.code : Number.isFinite(Number(error?.code)) ? Number(error.code) : 1

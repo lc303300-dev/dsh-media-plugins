@@ -44,6 +44,8 @@
     "./Ws_tool-cost": "./dist/tool-cost.js",
     "./tool-dreamina-account": "./dist/tool-dreamina-account.js",
     "./Ws_tool-dreamina-account": "./dist/tool-dreamina-account.js",
+    "./tool-canvas": "./dist/tool-canvas.js",
+    "./Ws_tool-canvas": "./dist/tool-canvas.js",
     "./notify": "./dist/notify.js",
     "./Ws_completion-notify": "./dist/notify.js",
     "./package.json": "./package.json"
