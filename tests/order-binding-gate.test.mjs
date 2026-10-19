@@ -59,7 +59,7 @@ test('set_prompts rejects 图片N beyond the segment reference count', async () 
 
     // 范例 03 shape: source-file numbers pasted verbatim (图片27/28/31)
     const pasted = await batch.tool.execute(
-      { command: 'set_prompts', batch_id: batchId, prompts: [{ material, prompt: '镜头1：近景，女孩拿起滴管，图片27，环绕拍摄。' }] },
+      { command: 'set_prompts', batch_id: batchId, allow_manual_prompts: true, prompts: [{ material, prompt: '镜头1：近景，女孩拿起滴管，图片27，环绕拍摄。' }] },
       exec,
     )
     assert.equal(pasted.ok, false)
@@ -68,7 +68,7 @@ test('set_prompts rejects 图片N beyond the segment reference count', async () 
 
     // renumbered by upload order -> accepted
     const rewritten = await batch.tool.execute(
-      { command: 'set_prompts', batch_id: batchId, prompts: [{ material, prompt: '镜头1：近景，女孩拿起滴管，图片1，环绕拍摄。' }] },
+      { command: 'set_prompts', batch_id: batchId, allow_manual_prompts: true, prompts: [{ material, prompt: '镜头1：近景，女孩拿起滴管，图片1，环绕拍摄。' }] },
       exec,
     )
     assert.equal(rewritten.ok, true, rewritten.message)
@@ -89,7 +89,7 @@ test('set_prompts accepts timestamp and second-range headings (official sample s
 
     // 范例 06 的 `[00.0-03.0秒|标题]`、范例 04 的 `0-1.5秒:` 必须放行
     const withHeading = await batch.tool.execute(
-      { command: 'set_prompts', batch_id: batchId, prompts: [{ material, prompt: '[00.0-03.0秒|穿过拥挤酒馆]\nAura从人群后方冲出，图片1。' }] },
+      { command: 'set_prompts', batch_id: batchId, allow_manual_prompts: true, prompts: [{ material, prompt: '[00.0-03.0秒|穿过拥挤酒馆]\nAura从人群后方冲出，图片1。' }] },
       exec,
     )
     assert.equal(withHeading.ok, true, withHeading.message)

@@ -140,3 +140,75 @@ export function creativeGateMessage(missingSince: string | undefined): string {
     + 'instead, pass allow_manual_prompts=true and state why.'
   )
 }
+
+/** On-disk ledger file name under the private root (writer and gate must agree). */
+export const CREATIVE_LEDGER_FILE = 'creative-ledger.json'
+
+/** A creative record older than this no longer counts as a credential. */
+export const CREATIVE_CREDENTIAL_TTL_MS = 24 * 60 * 60 * 1000
+
+export interface CreativeRecordInput {
+  /** Genre accepted by the gate (prompt/script/story/copy; others are recorded but never satisfy it). */
+  kind: string
+  /** Model actually used. */
+  model: string
+  /** Brief as sent to the model (hashed for audit). */
+  brief: string
+  /** Output text returned to the caller (hashed for audit). */
+  output: string
+  /** Clock injection (tests). */
+  now?: number
+}
+
+/**
+ * Build the audit record for one successful `creative_writer` call.
+ * Pure: the caller owns persistence.
+ */
+export function buildCreativeRecord(input: CreativeRecordInput): CreativeRecord {
+  const brief = String(input.brief ?? '').trim()
+  const output = String(input.output ?? '').trim()
+  const at = new Date(input.now ?? Date.now()).toISOString()
+  return {
+    id: newCreativeId(`${input.kind}|${brief}|${at}`),
+    kind: String(input.kind ?? 'other'),
+    model: String(input.model ?? ''),
+    brief_sha256: sha256Text(brief),
+    output_sha256: sha256Text(output),
+    chars: output.length,
+    at,
+  }
+}
+
+export interface CreativeGateOptions extends RecentCreativeQuery {
+  /** Caller explicitly opts out of the gate (it must state why in chat). */
+  allowManual?: boolean
+}
+
+export interface CreativeGateDecision {
+  allowed: boolean
+  /** True only when allowed because of `allowManual`. */
+  bypassed: boolean
+  record?: CreativeRecord
+  message?: string
+}
+
+/**
+ * Decide whether prompt authoring may proceed in this workspace.
+ *
+ * Defaults: any of `CREATIVE_KINDS`, no older than `CREATIVE_CREDENTIAL_TTL_MS`.
+ * Callers pass `allowManual: true` only for an explicit opt-out.
+ */
+export function decideCreativeGate(
+  ledger: CreativeLedger,
+  options: CreativeGateOptions = {},
+): CreativeGateDecision {
+  const record = findRecentCreative(ledger, {
+    kinds: options.kinds ?? CREATIVE_KINDS,
+    maxAgeMs: options.maxAgeMs ?? CREATIVE_CREDENTIAL_TTL_MS,
+    now: options.now,
+    since: options.since,
+  })
+  if (record) return { allowed: true, bypassed: false, record }
+  if (options.allowManual) return { allowed: true, bypassed: true }
+  return { allowed: false, bypassed: false, message: creativeGateMessage(options.since) }
+}

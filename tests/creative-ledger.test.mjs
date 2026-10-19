@@ -5,10 +5,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  CREATIVE_CREDENTIAL_TTL_MS,
   CREATIVE_LEDGER_MAX_ENTRIES,
   CREATIVE_KINDS,
   appendCreativeRecord,
+  buildCreativeRecord,
   creativeGateMessage,
+  decideCreativeGate,
   emptyCreativeLedger,
   findRecentCreative,
   newCreativeId,
@@ -90,4 +93,60 @@ test('creativeGateMessage tells the caller how to unblock', () => {
   const message = creativeGateMessage(undefined)
   assert.match(message, /creative_writer/)
   assert.match(message, /allow_manual_prompts=true/)
+})
+
+// ---- wiring: the writer records, the gate decides -------------------------
+
+test('buildCreativeRecord hashes the trimmed brief and output', () => {
+  const record = buildCreativeRecord({ kind: 'prompt', model: 'gemini-4-argon', brief: ' 写一段 ', output: ' 成品 ', now: T0 })
+  assert.match(record.id, /^cw-[0-9a-f]{8}$/)
+  assert.equal(record.kind, 'prompt')
+  assert.equal(record.model, 'gemini-4-argon')
+  assert.equal(record.brief_sha256, sha256Text('写一段'))
+  assert.equal(record.output_sha256, sha256Text('成品'))
+  assert.equal(record.chars, 2)
+  assert.equal(record.at, new Date(T0).toISOString())
+})
+
+test('decideCreativeGate allows a fresh creative record', () => {
+  const ledger = appendCreativeRecord(
+    emptyCreativeLedger(),
+    buildCreativeRecord({ kind: 'prompt', model: 'm', brief: 'b', output: 'o', now: T0 }),
+  )
+  const decision = decideCreativeGate(ledger, { now: T0 + 1000 })
+  assert.equal(decision.allowed, true)
+  assert.equal(decision.bypassed, false)
+  assert.ok(decision.record)
+})
+
+test('decideCreativeGate rejects when no record exists', () => {
+  const decision = decideCreativeGate(emptyCreativeLedger(), { now: T0 })
+  assert.equal(decision.allowed, false)
+  assert.equal(decision.bypassed, false)
+  assert.match(decision.message, /creative_writer/)
+})
+
+test('decideCreativeGate rejects an expired record', () => {
+  const ledger = appendCreativeRecord(
+    emptyCreativeLedger(),
+    buildCreativeRecord({ kind: 'prompt', model: 'm', brief: 'b', output: 'o', now: T0 }),
+  )
+  const decision = decideCreativeGate(ledger, { now: T0 + CREATIVE_CREDENTIAL_TTL_MS + 1 })
+  assert.equal(decision.allowed, false)
+})
+
+test('decideCreativeGate lets an explicit manual opt-out through but marks it', () => {
+  const decision = decideCreativeGate(emptyCreativeLedger(), { now: T0, allowManual: true })
+  assert.equal(decision.allowed, true)
+  assert.equal(decision.bypassed, true)
+  assert.equal(decision.record, undefined)
+})
+
+test('decideCreativeGate ignores kinds that are not production text', () => {
+  const ledger = appendCreativeRecord(
+    emptyCreativeLedger(),
+    buildCreativeRecord({ kind: 'article', model: 'm', brief: 'b', output: 'o', now: T0 }),
+  )
+  const decision = decideCreativeGate(ledger, { now: T0 + 1000 })
+  assert.equal(decision.allowed, false)
 })

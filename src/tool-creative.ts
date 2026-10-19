@@ -12,6 +12,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { join } from 'node:path'
+import { appendCreativeRecord, buildCreativeRecord, CREATIVE_LEDGER_FILE, parseCreativeLedger } from './shared/creative-ledger.ts'
+import { atomicWriteJson, readJsonSafe, resolvePrivateRoot } from './shared/private-runtime.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-creative'
@@ -27,12 +30,15 @@ export interface Config {
   model?: string
   /** Per-request output token cap (thinking variants spend budget on reasoning first). */
   maxTokens?: number
+  /** Private runtime dir; must match `Ws_tool-prompt-batch` so the ledger is found. */
+  privateDir?: string
 }
 
 export const Config: z<Config> = z.object({
   provider: z.string().default('comfly'),
   model: z.string().default('gemini-4-argon-thinking-high'),
   maxTokens: z.number().default(32768),
+  privateDir: z.string().default(''),
 })
 
 type ResolvedConfig = Required<Config>
@@ -149,6 +155,8 @@ export function apply(ctx: Context, config: Config): void {
         properties: {
           text: { type: 'string', required: true },
           model: { type: 'string', required: true },
+          /** Ledger id proving this text came from a creative model (audit / gate). */
+          credential_id: { type: 'string' },
         },
       },
       render(_args, value) {
@@ -197,7 +205,25 @@ export function apply(ctx: Context, config: Config): void {
           + '; a thinking variant can spend its whole budget on reasoning — raise maxTokens or pass thinking=base',
         )
       }
-      return { text: trimmed, model }
+      // Record the creative credential so downstream gates (`prompt_batch set_prompts`)
+      // can prove this text came from a creative model instead of self-reporting.
+      // Best-effort: a ledger write failure must never discard text the model has
+      // already produced (and billed).
+      let credentialId: string | undefined
+      try {
+        const workspaceRoot: string = (exec as any)?.agent?.session?.header?.cwd ?? process.cwd()
+        const privateRoot = resolvePrivateRoot(workspaceRoot, resolved.privateDir)
+        const ledgerPath = join(privateRoot, CREATIVE_LEDGER_FILE)
+        const record = buildCreativeRecord({ kind, model, brief, output: trimmed })
+        const ledger = parseCreativeLedger(await readJsonSafe(ledgerPath))
+        await atomicWriteJson(ledgerPath, appendCreativeRecord(ledger, record))
+        credentialId = record.id
+      } catch {
+        credentialId = undefined
+      }
+      return credentialId === undefined
+        ? { text: trimmed, model }
+        : { text: trimmed, model, credential_id: credentialId }
     },
   }))
 }

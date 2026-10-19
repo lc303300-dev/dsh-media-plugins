@@ -22,6 +22,7 @@ import { searchCorpus } from './shared/corpus-core.ts'
 import { buildReviewHtml, buildReviewItems } from './shared/prompt-batch-core.ts'
 import { normalizeReferenceLabels, classifyVideoPromptCompleteness } from './shared/video-pipeline.ts'
 import { parseLedger, segmentEvidence } from './shared/corpus-ledger.ts'
+import { CREATIVE_LEDGER_FILE, decideCreativeGate, parseCreativeLedger } from './shared/creative-ledger.ts'
 import { DEFAULT_VIDEO_CAPACITY, promptDurationLabel } from './shared/video-policy.ts'
 import sharp from 'sharp'
 
@@ -115,6 +116,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         prompts: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_prompts 用：[{material, prompt}] 逐素材中文提示词。按 material 合并（非整体替换）：只传部分条目不会覆盖未传条目；非规范引用标签（@图片N/参考图片N/@Image N）会自动规范为裸标签 图片N。**每段必须先 prompt_revision search_corpus（返回一次性 search_id）再用 authoring_gate（segment=该段 material）消费；缺已消费凭证的段、以及缺少 图片N 裸标签绑定的段都会被整次拒绝**（一段一张凭证，不可复用）。' },
         items: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'set_visuals 用：[{material, photo_type?, visual?, motion_plan?, images?}] 逐素材写入拍摄信息；images 为该段绑定的额外参考图（每段可多图，顺序即 --image 顺序）。' },
         confirm: { type: 'boolean', description: 'run_batch 用：确认所有提示词后生成提交计划。' },
+        allow_manual_prompts: { type: 'boolean', description: 'set_prompts 用：显式豁免创作门。默认要求工作区最近 24 小时内存在 creative_writer 记录（kind=prompt/script/story/copy），否则整次拒绝；Agent 手写提示词时必须传 true 并说明原因。' },
       },
       output: {
         schema: {
@@ -135,6 +137,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             submission_paths: { type: 'array' },
             summary: { type: 'object', additionalProperties: true },
             diagnostics: { type: 'array' },
+            creative_credential: { type: 'string' },
+            manual_prompts: { type: 'boolean' },
           },
         },
         render(_args: unknown, value: any) {
@@ -390,6 +394,15 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           case 'set_prompts': {
             const incoming = (args.prompts ?? []).map((p: any) => ({ material: String(p.material), prompt: String(p.prompt ?? '') }))
             if (incoming.some((p: any) => !p.prompt.trim())) return { ok: false, message: 'every prompt must be non-empty' }
+            // 创作门（creative credential）：提示词必须由 creative_writer 产出。插件层拦不住
+            // 模型直接吐出的自由文本，所以门放在第一个下游消费点——与语料门并列，先于它判定。
+            const creativeDecision = decideCreativeGate(
+              parseCreativeLedger(await readJsonSafe(join(privateRoot, CREATIVE_LEDGER_FILE))),
+              { allowManual: args.allow_manual_prompts === true },
+            )
+            if (!creativeDecision.allowed) {
+              return { ok: false, message: `${creativeDecision.message} (private root: ${privateRoot})`, batch_id: batchId }
+            }
             // 每段必须有一条自己的、已由 authoring_gate 消费的检索凭证（一次性，不可复用）
             const ledger = parseLedger(await readJsonSafe(join(privateRoot, 'corpus-ledger.json')))
             // Merge by material — NEVER wholesale-replace. A partial write must
@@ -492,9 +505,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             if (incomplete.length > 0) notes.push(`${incomplete.length} prompt(s) incomplete — run prompt_revision search_corpus + authoring_gate and rewrite before submit`)
             return {
               ok: true,
-              message: `${added} added, ${updated} updated (${manifest.prompts.length} total)${notes.length ? ' — ' + notes.join('; ') : ''}`,
+              message: `${added} added, ${updated} updated (${manifest.prompts.length} total)${notes.length ? ' — ' + notes.join('; ') : ''}${creativeDecision.bypassed ? ' — creative gate bypassed via allow_manual_prompts' : ''}`,
               batch_id: batchId,
               diagnostics,
+              ...(creativeDecision.record ? { creative_credential: creativeDecision.record.id } : {}),
+              ...(creativeDecision.bypassed ? { manual_prompts: true } : {}),
             }
           }
           case 'finalize_review': {

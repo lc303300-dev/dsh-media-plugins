@@ -77,7 +77,7 @@ test('prompt_batch refuses a segment without its own consumed credential', async
     const batchId = init.batch_id
 
     // 1) no credential for this segment yet -> the whole call is refused
-    const noCredential = await batch.tool.execute({ command: 'set_prompts', batch_id: batchId, prompts: [{ material, prompt }] }, exec)
+    const noCredential = await batch.tool.execute({ command: 'set_prompts', batch_id: batchId, allow_manual_prompts: true, prompts: [{ material, prompt }] }, exec)
     assert.equal(noCredential.ok, false)
     assert.match(String(noCredential.message), /no consumed corpus credential/)
 
@@ -91,7 +91,7 @@ test('prompt_batch refuses a segment without its own consumed credential', async
     )
     assert.equal(gate.ok, true, gate.message)
 
-    const withCredential = await batch.tool.execute({ command: 'set_prompts', batch_id: batchId, prompts: [{ material, prompt }] }, exec)
+    const withCredential = await batch.tool.execute({ command: 'set_prompts', batch_id: batchId, allow_manual_prompts: true, prompts: [{ material, prompt }] }, exec)
     assert.equal(withCredential.ok, true, withCredential.message)
     assert.equal(withCredential.diagnostics[0].corpus_search_id, search.search_id, 'diagnostics record the credential used')
 
@@ -99,7 +99,7 @@ test('prompt_batch refuses a segment without its own consumed credential', async
     const other = join(cwd, 'seg-2.png')
     await writeFile(other, 'x')
     const wrongSegment = await batch.tool.execute(
-      { command: 'set_prompts', batch_id: batchId, prompts: [{ material: other, prompt: '镜头推进，图片1 参考。' }] },
+      { command: 'set_prompts', batch_id: batchId, allow_manual_prompts: true, prompts: [{ material: other, prompt: '镜头推进，图片1 参考。' }] },
       exec,
     )
     assert.equal(wrongSegment.ok, false, 'a credential bound to seg-1 must not authorize seg-2')
