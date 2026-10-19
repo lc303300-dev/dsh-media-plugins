@@ -405,5 +405,7 @@
 - [ ] 挂参考图时：已写"仅参考 XX 属性" + 禁止引入清单，且 ≤2 张
 - [ ] 命名 `<原名>-UE5.jpg`，原图不被覆盖
 - [ ] 线路按固定参数走 `comfly-gemini-flash-preview`（2K，强制点名）；不可用时失败即停、**不换线路**，报告用户决定
+- [ ] **硬门已带**：`generate_image` 传了 `repaint: true`；批量 manifest 顶层写了 `"repaint": true`（可同时写 `"image_provider": "comfly-gemini-flash-preview"` 留痕）。缺了它工具不认这是洗图任务，会落到默认线路 `comfly-gpt-image-2-4k`
+- [ ] 结算后核对每张结果的 `provider` 字段确实为 `comfly-gemini-flash-preview`（`repaint: true` 下这不可能是别的值；若不是，说明该批不是洗图批，须停下来查）
 - [ ] 批量：并发 10、deadline 已按规模或慢速期设置
 - [ ] 交付：成品 + 对比图 + 路径 + 比例差异说明 + 看图结论 + 风格统一说明（挂了哪张风格参考图、哪一档强度、是否全组共用）
