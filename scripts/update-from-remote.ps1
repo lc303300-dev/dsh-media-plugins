@@ -9,10 +9,11 @@
     1. 检查 git / node / pnpm；
     2. 目标目录不存在则 git clone，存在则 git pull --ff-only（有未提交改动会停下来提示，绝不覆盖）；
     3. pnpm install + pnpm build +（默认）pnpm test；
-    4. 确保即梦画布 CLI（dreamina-canvas）已安装 —— 缺失时调用官方安装器；
-    5. 清理旧时代的 bin\dreamina.exe（旧 CLI 自 2026-11 停维，本包不再分发它）；
-    6. 检查画布 CLI 登录态，未登录时引导 auth login；
-    7. 打印验证结果与后续动作（重启 dsh、重新 save 账号）。
+    4. 注册 creative_writer 的 Comfly LLM provider（llm-pi-ai 的 comfly 路由，幂等）；
+    5. 确保即梦画布 CLI（dreamina-canvas）已安装 —— 缺失时调用官方安装器；
+    6. 清理旧时代的 bin\dreamina.exe（旧 CLI 自 2026-11 停维，本包不再分发它）；
+    7. 检查画布 CLI 登录态，未登录时引导 auth login；
+    8. 打印验证结果与后续动作（重启 dsh、重新 save 账号）。
 
   典型用法：
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\update-from-remote.ps1
@@ -69,7 +70,7 @@ Write-Host "  branch : $Branch"
 Write-Host "  target : $RepoDir"
 
 # ---------------------------------------------------------------- 1. 前置检查
-Step '1/7 前置检查'
+Step '1/8 前置检查'
 foreach ($tool in @('git', 'node')) {
     $cmd = Get-Command $tool -ErrorAction SilentlyContinue
     if (-not $cmd) { throw "缺少 $tool，请先安装（node 建议 >= 20）" }
@@ -86,7 +87,7 @@ Ok "pnpm -> $($pnpm.Source)"
 Ok "node -> $(node --version)"
 
 # ---------------------------------------------------------------- 2. 拉取代码
-Step '2/7 拉取最新代码'
+Step '2/8 拉取最新代码'
 if (-not (Test-Path (Join-Path $RepoDir '.git'))) {
     if (Test-Path $RepoDir) { throw "$RepoDir 已存在但不是 git 仓库，请手工处理后再跑本脚本" }
     Write-Host "  克隆到 $RepoDir …"
@@ -108,21 +109,33 @@ if (-not (Test-Path (Join-Path $RepoDir '.git'))) {
 Push-Location $RepoDir
 try { Ok "HEAD = $(git log --oneline -1)" } finally { Pop-Location }
 
-# ---------------------------------------------------------------- 3-5. 依赖 / 构建 / 测试
+# ---------------------------------------------------------------- 3-6. 依赖 / 构建 / 测试 / provider
 Push-Location $RepoDir
 try {
-    Step '3/7 安装依赖'
+    Step '3/8 安装依赖'
     if ($SkipInstall) { Warn 'pnpm install 已跳过' } else { Run 'pnpm' @('install') 'pnpm install' }
 
-    Step '4/7 构建'
+    Step '4/8 构建'
     Run 'pnpm' @('build') 'pnpm build'
     Ok 'dist/ 已重建'
 
-    Step '5/7 单测'
+    Step '5/8 单测'
     if ($SkipTests) { Warn 'pnpm test 已跳过' } else { Run 'pnpm' @('test') 'pnpm test'; Ok '单测通过' }
 
-    # ------------------------------------------------------------ 6. 画布 CLI + 清理旧物
-    Step '6/7 即梦画布 CLI 就绪 + 清理旧二进制'
+    # ------------------------------------------------------------ 6. Comfly LLM provider
+    # creative_writer 默认 provider=comfly，但 dsh-base 的 llm-pi-ai 是「零路由」挂载：
+    # profile 不写 provider 时调用会报 `no adapter registered for provider "comfly"`。
+    # 这一步幂等地把 provider 补进每个 profile 的 cordis.patch.yml（保留已有 provider）。
+    Step '6/8 注册 Comfly LLM provider（creative_writer / Gemini 4）'
+    $ensureProvider = Join-Path $RepoDir 'scripts\ensure-llm-provider.ps1'
+    if (Test-Path $ensureProvider) {
+        try { & $ensureProvider } catch { Warn "Comfly provider 注册失败：$($_.Exception.Message)" }
+    } else {
+        Warn 'scripts\ensure-llm-provider.ps1 不存在（旧版本？）：creative_writer 会报 no adapter registered for provider "comfly"'
+    }
+
+    # ------------------------------------------------------------ 7. 画布 CLI + 清理旧物
+    Step '7/8 即梦画布 CLI 就绪 + 清理旧二进制'
     $canvasExe = $null
     $homeCandidate = Join-Path $HOME 'bin\dreamina-canvas.exe'
     if (Test-Path $homeCandidate) { $canvasExe = $homeCandidate }
@@ -156,7 +169,7 @@ try {
     Write-Host '  提示：若 dreamina_account list 里的账号是迁移前 save 的（没有画布登录态），请重新 save 一次'
 
     # ------------------------------------------------------------ 7. 登录 + 验证
-    Step '7/7 登录检查与验证'
+    Step '8/8 登录检查与验证'
     if ($canvasExe) {
         $loggedIn = $false
         try {
@@ -193,6 +206,7 @@ Write-Host '  生效  : 本包在 DSH 里是 link: 安装，**重启 dsh** 后�
 Write-Host '  复核  : 重启后调用 media_status（verify），确认 dreamina_canvas_binary / dreamina_canvas_login 均为真。'
 Write-Host ''
 Write-Host '  本次替换要点：' -ForegroundColor Gray
+Write-Host '   - creative_writer 的 comfly provider 已自动注册（Gemini 4 Argon 四个变体），无需手工改 profile 配置；' -ForegroundColor Gray
 Write-Host '   - 生成线路已从旧 dreamina CLI 全量迁移到即梦画布 CLI（dreamina-canvas）；' -ForegroundColor Gray
 Write-Host '   - 旧 CLI 不再分发、也不再提供积分余额查询；账户身份取 auth account；' -ForegroundColor Gray
 Write-Host '   - 付费链路：node quote -> node confirm --credit-ceiling -> node run --submit-id；报价不等于授权；' -ForegroundColor Gray

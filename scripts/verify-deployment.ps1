@@ -101,6 +101,27 @@ if (Test-Path -LiteralPath $installedSkills -PathType Container) {
     Write-Host "  [info] $installedSkills 不存在，跳过已安装技能副本校验" -ForegroundColor DarkGray
 }
 
+# creative_writer 的 Comfly LLM provider：dsh-base 的 llm-pi-ai 默认「零路由」挂载，
+# profile 的 cordis.patch.yml 不写 provider 时，creative_writer 会直接报
+# `no adapter registered for provider "comfly"`。缺了就提示修复脚本，不阻断其它校验。
+$profilesRoot = Join-Path $dshHome "profiles"
+if (Test-Path -LiteralPath $profilesRoot -PathType Container) {
+    $missingProvider = @()
+    foreach ($profileDir in (Get-ChildItem -LiteralPath $profilesRoot -Directory -ErrorAction SilentlyContinue)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $profileDir.FullName "package.json") -PathType Leaf)) { continue }
+        $profilePatch = Join-Path $profileDir.FullName "cordis.patch.yml"
+        if (-not (Test-Path -LiteralPath $profilePatch -PathType Leaf)) { $missingProvider += $profileDir.Name; continue }
+        $patchText = [System.IO.File]::ReadAllText($profilePatch, [System.Text.UTF8Encoding]::new($false))
+        if ($patchText -notmatch '(?m)^\s+comfly:\s*$') { $missingProvider += $profileDir.Name }
+    }
+    if ($missingProvider.Count -gt 0) {
+        Write-Host "  [warn] llm-pi-ai 缺少 comfly provider（creative_writer 不可用）: $($missingProvider -join ', ')" -ForegroundColor DarkYellow
+        Write-Host "         修复: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\ensure-llm-provider.ps1" -ForegroundColor DarkYellow
+    } else {
+        Write-Host "  OK   llm-pi-ai comfly provider（creative_writer / Gemini 4）" -ForegroundColor Gray
+    }
+}
+
 if ($errors.Count -gt 0) {
     Write-Host "Deployment verification FAILED:" -ForegroundColor Red
     foreach ($e in $errors) { Write-Host "  - $e" -ForegroundColor Red }

@@ -114,8 +114,12 @@ provider；部署时**无需**申请或填写火山方舟 Key。
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-会完成：写 Comfly Key（火山方舟 Key 因通道屏蔽已跳过；需要时加 `-EnableVolcano`）→ 检测/安装即梦画布 CLI（`dreamina-canvas`）→
-引导 `auth login` → 安装 11 个 Studio 技能到 `$DSH_HOME\skills\<技能名>`（DSH 技能发现根，两级结构，重启后生效）→ ffmpeg 检查。
+会完成：写 Comfly Key（火山方舟 Key 因通道屏蔽已跳过；需要时加 `-EnableVolcano`）→ **注册 Comfly LLM provider（`creative_writer` / Gemini 4，幂等）** → 检测/安装即梦画布 CLI（`dreamina-canvas`）→
+引导 `auth login` → 安装 12 个 Studio 技能到 `$DSH_HOME\skills\<技能名>`（DSH 技能发现根，两级结构，重启后生效）→ ffmpeg 检查。
+
+> **其它电脑更新**：跑 `scripts/update-from-remote.ps1`（clone/pull → install → build → test）即可；它会自动调用
+> `scripts/ensure-llm-provider.ps1` 把 `comfly` provider 补进每个 profile 的 `llm-pi-ai` 配置。
+> 单独补配置：`powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\ensure-llm-provider.ps1`（已有配置时跳过，**重启 DSH** 后生效）。
 
 ## 使用
 

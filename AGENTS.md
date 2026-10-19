@@ -46,6 +46,7 @@ DSH Studio 媒体能力包。一次安装提供 17 个工具、11 个技能与�
 
 - **写提示词 / 剧本分镜 / 文章 / 文案 / 故事这类创意文本，交给 `creative_writer` 一次成稿**，主 Agent 不自己逐字写；返回文本即可直接交付（最多做少量编辑）。
 - 与 `describe_image` **同一模式**：工具内部经 `ctx.llm.stream` 直调 `llm-pi-ai` 注册的 provider，不碰文件系统、不反问。默认 `comfly` + **`gemini-4-argon-thinking-high`**（`baseURL: https://ai.comfly.org/v1`，`apiKeyEnv: COMFLY_API_KEY`）。**实测可直连**：网页站点的 451 地区限制不影响 API 端点，无需代理。
+- **provider 必须先注册（2026-10-19 补齐）**：dsh-base 把 `llm-pi-ai` 以「零路由」挂载，profile 的 `cordis.patch.yml` 里没有 `comfly` 时，工具调用直接报 `no adapter registered for provider "comfly"`，模型列表里也看不到 Gemini 4。`scripts/ensure-llm-provider.ps1` 幂等地把四个 `gemini-4-argon*` 变体写进每个 profile 的 `llm-pi-ai.providers.comfly`（保留 volcengine 等已有 provider，已有 comfly 则跳过），`setup.ps1` 与 `scripts/update-from-remote.ps1` 都会调用它；缺 `COMFLY_API_KEY` 凭据时只提示、不写凭证。改完 profile 配置需重启 DSH。
 - 参数：`brief`（必填）、`kind`（`prompt`/`script`/`article`/`copy`/`story`/`other`）、`context`、`length`（`short`/`medium`/`long`）、`thinking`（`base`/`low`/`medium`/`high`；**不传则跟随配置 = thinking-high**）。
 - **thinking 档位很慢**：high 实测 **77 秒 / 817 字**（completion 4862 tokens，约 40% 是思考），长剧本 1–3 分钟；思考 token 先于正文消耗 —— `maxTokens` 必须给足（现为 **32768**），否则长文会被截断成空回复。要快速草稿就显式传 `thinking=base`（4–12 秒）。
 - 系统提示词强制**只给成品正文**：无开场白、无创作思路/结构拆解、无 Markdown 装饰标题。换模型只改 `cordis.patch.yml` 里 `Ws_tool-creative.config`，不动代码。

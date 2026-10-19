@@ -21,7 +21,7 @@ Write-Host "== dsh-media-plugins setup ==" -ForegroundColor Cyan
 # 1. 确保即梦画布 CLI（dreamina-canvas）可用
 #    旧 `dreamina` CLI 自 2026-11 起停止维护，仓库已完全迁移到画布 CLI，不再随包分发旧二进制。
 Write-Host ""
-Write-Host "[1/5] 检查即梦画布 CLI (dreamina-canvas)..." -ForegroundColor Yellow
+Write-Host "[1/6] 检查即梦画布 CLI (dreamina-canvas)..." -ForegroundColor Yellow
 $canvasCmd = $null
 try { $canvasCmd = (Get-Command dreamina-canvas.exe -CommandType Application -ErrorAction Stop).Source } catch {}
 if (-not $canvasCmd) {
@@ -40,7 +40,7 @@ if ($canvasCmd) {
 
 # 2. 引导输入两个 Key，写入 .credentials.yaml
 Write-Host ""
-Write-Host "[2/5] 配置 API Key（写入 $credFile）" -ForegroundColor Yellow
+Write-Host "[2/6] 配置 API Key（写入 $credFile）" -ForegroundColor Yellow
 $creds = @{}
 if (Test-Path $credFile) {
     Get-Content $credFile | ForEach-Object {
@@ -73,13 +73,25 @@ Write-Host "    Comfly:   充值 https://pay.comfly.chat/pay/ ｜ 获取/管理 
 $comfly = Read-Key "COMFLY_API_KEY" "Comfly Key（生图主通道，可留空跳过）" $creds["COMFLY_API_KEY"]
 if ($volcano) { $creds["VOLCANO_ENGINE_API_KEY"] = $volcano }
 if ($comfly) { $creds["COMFLY_API_KEY"] = $comfly }
-$lines = $creds.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }
-$lines | Set-Content -LiteralPath $credFile -Encoding UTF8
-Write-Host "  已写入 $credFile" -ForegroundColor Green
+# 新版 DSH 的凭据库是 { version, refs, records } 结构；旧脚本那种整文件重写会破坏它。
+# 检测到结构就只提示、不改写（Key 请走 DSH 的 设置 -> 模型/凭据 页）。
+$structuredCreds = $false
+if (Test-Path $credFile) {
+    $rawCreds = [System.IO.File]::ReadAllText($credFile, [System.Text.UTF8Encoding]::new($false))
+    if ($rawCreds -match '(?m)^refs:\s*$') { $structuredCreds = $true }
+}
+if ($structuredCreds) {
+    Write-Host "  检测到新版凭据库（refs/records 结构）：为免破坏结构，setup 不改写 $credFile。" -ForegroundColor Yellow
+    Write-Host "  请在 DSH 的 设置 -> 模型/凭据 页写入 COMFLY_API_KEY（工具会从凭据服务读取）。" -ForegroundColor Yellow
+} else {
+    $lines = $creds.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }
+    $lines | Set-Content -LiteralPath $credFile -Encoding UTF8
+    Write-Host "  已写入 $credFile" -ForegroundColor Green
+}
 
 # 3. 配置火山 provider（settings.yaml 追加 llm-pi-ai）
 Write-Host ""
-Write-Host "[3/5] 配置火山方舟视觉 provider（$settingsFile）" -ForegroundColor Yellow
+Write-Host "[3/6] 配置火山方舟视觉 provider（$settingsFile）" -ForegroundColor Yellow
 if (-not $EnableVolcano) {
     Write-Host "  [已屏蔽] 跳过 llm-pi-ai.providers.volcengine 配置；恢复用 .\setup.ps1 -EnableVolcano" -ForegroundColor DarkGray
 } else {
@@ -109,9 +121,22 @@ llm-pi-ai:
 }
 }
 
-# 4. 引导即梦画布 CLI 登录
+# 4. 注册 creative_writer 的 Comfly LLM provider
+#    DSH 的 llm-pi-ai 默认「零路由」挂载：profile 的 cordis.patch.yml 不提供 provider 时，
+#    creative_writer（Gemini 4 创意写作）会直接报
+#    `no adapter registered for provider "comfly"`。这一步幂等地补齐，重复执行安全。
 Write-Host ""
-Write-Host "[4/5] 即梦登录（生成线路，OAuth 设备授权）" -ForegroundColor Yellow
+Write-Host "[4/6] 注册 Comfly LLM provider（creative_writer / Gemini 4）" -ForegroundColor Yellow
+$ensureProvider = Join-Path $PSScriptRoot "scripts\ensure-llm-provider.ps1"
+if (Test-Path $ensureProvider) {
+    & $ensureProvider
+} else {
+    Write-Host "  未找到 scripts\ensure-llm-provider.ps1，跳过（creative_writer 将不可用）" -ForegroundColor Yellow
+}
+
+# 5. 引导即梦画布 CLI 登录
+Write-Host ""
+Write-Host "[5/6] 即梦登录（生成线路，OAuth 设备授权）" -ForegroundColor Yellow
 Write-Host "  即将运行: $canvasCmd auth login" -ForegroundColor Gray
 Write-Host "  终端/浏览器会给出授权入口，请在已登录即梦账号的浏览器里完成授权。" -ForegroundColor Gray
 Write-Host "  即梦创作平台（会员/积分充值）：https://jimeng.jianying.com" -ForegroundColor Gray
@@ -120,9 +145,9 @@ if ($doLogin -eq '' -or $doLogin -eq 'y') {
     & $canvasCmd auth login
 }
 
-# 5. 安装业务技能到 $DSH_HOME/skills（DSH 技能发现根，重启后生效）
+# 6. 安装业务技能到 $DSH_HOME/skills（DSH 技能发现根，重启后生效）
 Write-Host ""
-Write-Host "[5/5] 安装 Studio 技能到 $DSH_HOME\skills" -ForegroundColor Yellow
+Write-Host "[6/6] 安装 Studio 技能到 $DSH_HOME\skills" -ForegroundColor Yellow
 $skillRoot = Join-Path $DSH_HOME "skills"
 $srcSkills = Join-Path $PSScriptRoot "skills"
 if (Test-Path $srcSkills) {
