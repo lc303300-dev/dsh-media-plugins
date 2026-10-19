@@ -43,6 +43,8 @@ import {
   SUPPORTED_RATIOS,
   SUPPORTED_RESOLUTIONS,
   SUPPORTED_IMAGE_PROVIDERS,
+  REPAINT_PROVIDER_GATE_NOTE,
+  resolveRepaintImageProvider,
   runImageRouter,
   normalizeRatio,
   ratioToSize,
@@ -142,7 +144,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'generate_image',
       description:
-        '用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。默认图片线路是 comfly-gpt-image-2-4k（Comfly gpt-image-2-4k）：只提交 aspect_ratio 比例、**绝不传 size**（传 size 会被网关改写成无配额渠道并返回 503），不传 resolution/response_format，实测输出固定 2048 长边（16:9 → 2048x1152，属 2K 档；模型名里的 4k 只是 Comfly 渠道后缀），图片读 data[0].url 下载；用户给的是具体像素尺寸（如 1920x1080、1920×1080、1920*1080、1080x1920）时，直接把它填进 image_ratio 即可，工具自动换算成最接近的标准比例（1920x1080 → 16:9、1080x1920 → 9:16、2880x2880 → 1:1 等）再出图，无需自行换算。次选线路 comfly-gemini-flash-preview 仅出 2K（1K/4K 请求一律按 2K 执行）。image_provider 可选：仅当用户明确点名某条受支持线路时传入（comfly-gpt-image-2-4k、comfly-gemini-flash-preview、dreamina-image；comfly-gpt-image-2、comfly-gpt-image-2.5 均为 comfly-gpt-image-2-4k 的兼容别名），指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前以 input_error 拒绝。未点名线路时只走链中第一条就绪线路（comfly-gpt-image-2-4k；缺凭证或熔断则顺延到 comfly-gemini-flash-preview、dreamina-image），**单线路执行、失败即停，绝不换线路重试、绝不重放已付费的尝试**；单张总预算 90 秒（提交 + 下载 + 下载重试共用同一个时间盒），提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。本工具只对出图数量与速度负责：生成后不做质量、审美或一致性检查，不逐张读图验收、不自动重生成；质量判断交由用户。全部图片任务（含 batch_image 与同一 workspace 的其他会话）共享一个跨进程容量池，默认最多 10 张图同时生成；视频容量独立。',
+        '用统一媒体路由器生成或编辑图片并保存到 workspace，返回图片的绝对路径。image_ratio 必填（仅 21:9、16:9、3:2、4:3、1:1、3:4、2:3、9:16），缺失或不支持会在任何供应商调用前拒绝。默认图片线路是 comfly-gpt-image-2-4k（Comfly gpt-image-2-4k）：只提交 aspect_ratio 比例、**绝不传 size**（传 size 会被网关改写成无配额渠道并返回 503），不传 resolution/response_format，实测输出固定 2048 长边（16:9 → 2048x1152，属 2K 档；模型名里的 4k 只是 Comfly 渠道后缀），图片读 data[0].url 下载；用户给的是具体像素尺寸（如 1920x1080、1920×1080、1920*1080、1080x1920）时，直接把它填进 image_ratio 即可，工具自动换算成最接近的标准比例（1920x1080 → 16:9、1080x1920 → 9:16、2880x2880 → 1:1 等）再出图，无需自行换算。次选线路 comfly-gemini-flash-preview 仅出 2K（1K/4K 请求一律按 2K 执行）。image_provider 可选：仅当用户明确点名某条受支持线路时传入（comfly-gpt-image-2-4k、comfly-gemini-flash-preview、dreamina-image；comfly-gpt-image-2、comfly-gpt-image-2.5 均为 comfly-gpt-image-2-4k 的兼容别名），指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前以 input_error 拒绝。' + REPAINT_PROVIDER_GATE_NOTE + ' 未点名线路时只走链中第一条就绪线路（comfly-gpt-image-2-4k；缺凭证或熔断则顺延到 comfly-gemini-flash-preview、dreamina-image），**单线路执行、失败即停，绝不换线路重试、绝不重放已付费的尝试**；单张总预算 90 秒（提交 + 下载 + 下载重试共用同一个时间盒），提交结果不确定时标记 needs_review 且绝不自动重试。文生图传 prompt；图生图再传 image 参考图路径列表（顺序有语义）。参考图会做 EXIF 方向归一化并按最长边 1920px 等比缩放后提交，绝不覆盖原图。本工具只对出图数量与速度负责：生成后不做质量、审美或一致性检查，不逐张读图验收、不自动重生成；质量判断交由用户。全部图片任务（含 batch_image 与同一 workspace 的其他会话）共享一个跨进程容量池，默认最多 10 张图同时生成；视频容量独立。',
       parameters: {
         prompt: {
           type: 'string',
@@ -161,7 +163,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         image_provider: {
           type: 'string',
           enum: [...SUPPORTED_IMAGE_PROVIDERS, 'comfly-gpt-image-2', 'comfly-gpt-image-2.5'],
-          description: '可选：用户明确点名的图片线路。默认线路是 comfly-gpt-image-2-4k；comfly-gpt-image-2 与 comfly-gpt-image-2.5 都是它的兼容别名。指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前以 input_error 拒绝。',
+          description: '可选：用户明确点名的图片线路。默认线路是 comfly-gpt-image-2-4k；comfly-gpt-image-2 与 comfly-gpt-image-2.5 都是它的兼容别名。指定后只走该线路、失败不回退；未知或禁用线路在任何供应商调用前以 input_error 拒绝。洗图任务不要用它指定非 Gemini 线路——见 repaint。',
+        },
+        repaint: {
+          type: 'boolean',
+          description: `可选：洗图标记。用户要求"洗图 / 洗一下 / 去绘画感 / 去 AI 味 / 写实化 / UE5 化 / 高清化 / 修复画面绘画感"（技能 image-repaint-cleanup）时必须传 true。${REPAINT_PROVIDER_GATE_NOTE}`,
         },
         image: {
           type: 'array',
@@ -207,6 +213,12 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         // A concrete pixel request (1920x1080) is converted to the nearest standard ratio.
         const ratio = normalizeRatio(requestedRatio)
         const size = ratioToSize(ratio) // throws input_error for unsupported
+        // 洗图硬门：repaint=true 时线路只能落到 Gemini（缺省补成它，点名其他线路
+        // 在这里直接 input_error）。这一步在任何 task 落库与任何供应商调用之前完成。
+        const repaint = args.repaint === true
+        const imageProvider = repaint
+          ? resolveRepaintImageProvider(args.image_provider)
+          : (args.image_provider ?? null)
         const workspaceRoot: string = exec.agent?.session?.header?.cwd ?? process.cwd()
         const privateRoot = resolvePrivateRoot(workspaceRoot, config.privateDir)
         const taskId = newTaskId()
@@ -243,7 +255,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           ensureDreaminaAccount: () => accountGate.ensure(),
         }
 
-        const request = { prompt: redactPrompt(prompt), ratio, size, resolution: args.image_resolution ?? null, imageProvider: args.image_provider ?? null, images: args.image ?? [] }
+        const request = { prompt: redactPrompt(prompt), ratio, size, resolution: args.image_resolution ?? null, imageProvider, images: args.image ?? [], repaint }
         await store.create('image', taskId, 'image', request)
         await store.transition('image', taskId, 'running')
 
@@ -253,7 +265,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             images: args.image ?? [],
             ratio,
             resolution: args.image_resolution,
-            imageProvider: args.image_provider,
+            imageProvider: imageProvider ?? undefined,
             config: routerConfig,
             workspaceRoot,
             privateRoot,

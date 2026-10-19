@@ -30,6 +30,8 @@ import {
   SUPPORTED_RESOLUTIONS,
   SUPPORTED_IMAGE_PROVIDERS,
   ADAPTER_ALIASES,
+  REPAINT_IMAGE_PROVIDER,
+  resolveRepaintImageProvider,
   normalizeRatio,
 } from './adapters.ts'
 
@@ -61,6 +63,13 @@ export interface BatchManifest {
   image_resolution?: string
   /** Optional batch-wide user-explicit image route (single-route, no fallback). */
   image_provider?: string
+  /**
+   * 洗图标记：true 表示本批是"洗图 / 去绘画感 / UE5 写实重渲染"任务
+   * （技能 `image-repaint-cleanup`）。此时线路被硬门钉死在
+   * `REPAINT_IMAGE_PROVIDER`（Gemini，2K-only）——未点名会被补成它，点名其他
+   * 线路直接 input_error。缺省（不传 / false）时行为与普通批次完全一致。
+   */
+  repaint?: boolean
   concurrency?: number
   /** Explicit dispatch cutoff in seconds; overrides the auto estimate. */
   deadline_seconds?: number
@@ -161,11 +170,19 @@ export function validateManifest(raw: unknown): BatchManifest {
   if (m.image_resolution !== undefined && !SUPPORTED_RESOLUTIONS.includes(m.image_resolution)) {
     throw new Error(`image_resolution must be one of ${SUPPORTED_RESOLUTIONS.join(', ')}, got ${m.image_resolution}`)
   }
+  if (m.repaint !== undefined && typeof m.repaint !== 'boolean') {
+    throw new Error(`repaint must be a boolean when present, got ${JSON.stringify(m.repaint)}`)
+  }
   if (m.image_provider !== undefined) {
     const canonical = ADAPTER_ALIASES[m.image_provider] ?? m.image_provider
     if (!SUPPORTED_IMAGE_PROVIDERS.includes(canonical)) {
       throw new Error(`image_provider must be a supported unified image route, got ${m.image_provider}`)
     }
+  }
+  // 洗图硬门：repaint=true 的批次只允许 Gemini 线路（缺省补成它，点名其他线路拒绝）。
+  // 校验发生在任何付费提交之前；拒绝时不会落下 job / task 状态。
+  if (m.repaint === true) {
+    resolveRepaintImageProvider(m.image_provider)
   }
   if (m.completion_grace_seconds !== undefined) {
     const grace = m.completion_grace_seconds
@@ -190,10 +207,24 @@ export function jobKeyFor(manifest: BatchManifest): string {
       }))
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
     image_resolution: manifest.image_resolution ?? null,
-    image_provider: manifest.image_provider ?? null,
+    // 洗图批的"未点名"与"显式点名 Gemini"是同一件事（硬门补的就是它），
+    // 因此 job key 里统一按生效线路记录；普通批照旧记录用户给的值。
+    image_provider: manifest.repaint === true ? REPAINT_IMAGE_PROVIDER : (manifest.image_provider ?? null),
+    // 洗图标记进入 job key：同一组素材的"洗图批"与"普通批"是两个不同的 job，
+    // 不会因为去重键相同而互相顶掉。
+    repaint: manifest.repaint === true,
     concurrency: manifest.concurrency ?? 10,
   }
   return createHash('sha256').update(JSON.stringify(normalized)).digest('hex').slice(0, 24)
+}
+
+/**
+ * 本批次实际生效的线路：洗图批强制 Gemini（缺省补成它），普通批沿用 manifest 的值
+ * （未点名 = undefined，由路由器按默认链取第一条就绪线路）。
+ */
+export function effectiveImageProvider(manifest: BatchManifest): string | undefined {
+  if (manifest.repaint === true) return resolveRepaintImageProvider(manifest.image_provider)
+  return manifest.image_provider
 }
 
 /**
@@ -414,6 +445,8 @@ export function flattenTasks(
   manifest: BatchManifest,
 ): Array<{ groupId: string; slot: number; prompt: string; ratio: string; resolution?: string; imageProvider?: string; references?: string[] }> {
   const tasks: Array<{ groupId: string; slot: number; prompt: string; ratio: string; resolution?: string; imageProvider?: string; references?: string[] }> = []
+  // 洗图批在这里就被钉死到 Gemini 线路（而不是"未点名 = 默认链路"）。
+  const provider = effectiveImageProvider(manifest)
   for (const g of manifest.groups) {
     const ratio = normalizeRatio(g.image_ratio ?? manifest.image_ratio!)
     for (let i = 1; i <= g.candidates; i += 1) {
@@ -423,7 +456,7 @@ export function flattenTasks(
         prompt: g.prompt.trim(),
         ratio,
         resolution: manifest.image_resolution,
-        imageProvider: manifest.image_provider,
+        imageProvider: provider,
         references: g.reference_images ?? undefined,
       })
     }

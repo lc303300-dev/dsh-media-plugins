@@ -97,6 +97,43 @@ export const GEMINI_MODELS_BY_RESOLUTION: Readonly<Record<string, string>> = {
   '2K': 'gemini-3.1-flash-image-preview-2k',
 }
 
+/**
+ * 洗图（去绘画感 / UE5 写实重渲染，技能 `image-repaint-cleanup`）**唯一允许的线路**。
+ *
+ * 洗图是"按原构图重新渲染质感"的确定性任务：Gemini 这条线路在去笔触、材质重
+ * 建与人物结构修复上的实测结果优于默认线路，因此洗图**强制点名**它，而不是
+ * 走默认的 `comfly-gpt-image-2-4k`。这里的常量是工具层硬门的单一事实来源：
+ * `generate_image`（`repaint: true`）与 `batch_image`（`repaint: true`）都必须
+ * 落到这条线路上，否则在任何供应商调用之前以 input_error 拒绝。
+ */
+export const REPAINT_IMAGE_PROVIDER = 'comfly-gemini-flash-preview'
+
+/**
+ * 解析洗图任务的线路：显式点名必须是 Gemini，未点名则补成 Gemini。
+ *
+ * 返回规范化后的 adapter id（别名也已解析），供路由器的 `image_provider` 使用。
+ * 点名了任何其他线路都直接 input_error —— 洗图不允许走默认 GPT 线路，也不允
+ * 许"失败后换线路"。
+ */
+export function resolveRepaintImageProvider(requested?: string | null): string {
+  const raw = (requested ?? '').trim()
+  if (raw.length === 0) return REPAINT_IMAGE_PROVIDER
+  const id = ADAPTER_ALIASES[raw] ?? raw
+  if (id !== REPAINT_IMAGE_PROVIDER) {
+    throw mediaErrors.input(
+      `洗图任务只允许 image_provider="${REPAINT_IMAGE_PROVIDER}"（强制 Gemini，2K-only）；收到 "${raw}"。` +
+        `洗图不得走默认线路 ${SUPPORTED_IMAGE_PROVIDERS[0]}，也不得换线路重跑：请用 ${REPAINT_IMAGE_PROVIDER} 重提交。`,
+    )
+  }
+  return REPAINT_IMAGE_PROVIDER
+}
+
+/** 洗图硬门在工具描述里的统一措辞（`generate_image` / `batch_image` 共用）。 */
+export const REPAINT_PROVIDER_GATE_NOTE =
+  `洗图（去绘画感 / 写实化重渲染 / UE5 化，技能 image-repaint-cleanup）有硬门：传 repaint: true 即被强制钉死在 ` +
+  `image_provider="${REPAINT_IMAGE_PROVIDER}"（2K-only，强制 Gemini），显式点名其他线路或默认线路都会在任何供应商调用前以 input_error 拒绝；` +
+  `repaint 缺省（不传 / false）时行为完全不变。`
+
 /** Comfly GPT Image 2 model id (default image route). */
 export const GPT_IMAGE_2_4K_MODEL = 'gpt-image-2-4k'
 

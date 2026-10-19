@@ -25,7 +25,9 @@ foreach ($tool in @("tool-image-gen", "tool-video-gen", "tool-batch-image", "too
     Require-Path (Join-Path $RepositoryRoot "dist\$tool.js") "built tool bundle $tool"
 }
 # 共享域 bundle（tsdown 从 dist/ 抽出的共享 chunk；单消费者内联的模块以源码存在性校验）
-foreach ($core in @("adapters", "corpus-core", "curator-core", "dreamina-account", "failure", "gif-core", "image-ops", "image-skill-core", "private-runtime", "project-core", "registry-core", "revision-core")) {
+# 注意：只有被两个及以上入口引用的模块才会抽成独立 chunk（failure 现已被内联，
+# 不再产出 dist/failure.js），所以这里只校验真正会产出的 chunk。
+foreach ($core in @("adapters", "corpus-core", "curator-core", "dreamina-account", "gif-core", "image-ops", "image-skill-core", "private-runtime", "project-core", "registry-core", "revision-core")) {
     Require-Path (Join-Path $RepositoryRoot "dist\$core.js") "built shared bundle $core"
 }
 if ($isSourceCheckout) {
@@ -66,6 +68,38 @@ $dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME ".dsh" }
 Require-Path (Join-Path $dshHome ".credentials.yaml") "DSH credentials file"
 $profileWeb = Join-Path $dshHome "profiles\web\package.json"
 if (-not (Test-Path $profileWeb)) { $errors.Add("web profile not found (run: dsh plugin --profile web add ...): $profileWeb") }
+# 已安装技能副本：DSH 从 $DSH_HOME\skills 发现技能，仓库 skills/ 改了不同步过去
+# 等于没改（2026-10 两次事故：副本比仓库旧、技能整个缺失）。
+# 洗图（image-repaint-cleanup）是硬性口径：副本必须存在，且必须带着"强制 Gemini"
+# 的两个标记（repaint 硬门 + comfly-gemini-flash-preview），否则技能等于没生效。
+# 其余技能的副本漂移只提示不报错——现网存在有意钉住的旧副本。
+$installedSkills = Join-Path $dshHome "skills"
+$repaintSkillId = "image-repaint-cleanup"
+if (Test-Path -LiteralPath $installedSkills -PathType Container) {
+    $repaintSkill = Join-Path $installedSkills "$repaintSkillId\SKILL.md"
+    if (-not (Test-Path -LiteralPath $repaintSkill -PathType Leaf)) {
+        $errors.Add("installed skill copy missing (run setup.ps1 or copy skills\$repaintSkillId): $repaintSkill")
+    } else {
+        $repaintText = [System.IO.File]::ReadAllText($repaintSkill, [System.Text.UTF8Encoding]::new($false))
+        if ($repaintText -notmatch "repaint") {
+            $errors.Add("installed $repaintSkillId copy lacks the repaint hard gate (repo skills\$repaintSkillId\SKILL.md is the source of truth)")
+        }
+        if ($repaintText -notmatch "comfly-gemini-flash-preview") {
+            $errors.Add("installed $repaintSkillId copy does not pin comfly-gemini-flash-preview")
+        }
+    }
+    foreach ($skill in @("default-image-generation", "default-video-generation", "batch-image-generation", "video-prompt-orchestrator", "video-director-prompt", "video-skill-router", "codex-cs-skill-curator", "video-to-gif", "image-skill-router", "image-skill-curator")) {
+        $repoSkill = Join-Path $RepositoryRoot "skills\$skill\SKILL.md"
+        $installedSkill = Join-Path $installedSkills "$skill\SKILL.md"
+        if (-not (Test-Path -LiteralPath $installedSkill -PathType Leaf)) {
+            Write-Host "  [warn] installed skill copy missing: $installedSkill" -ForegroundColor DarkYellow
+        } elseif ((Test-Path -LiteralPath $repoSkill -PathType Leaf) -and ((Get-FileHash -LiteralPath $repoSkill -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $installedSkill -Algorithm SHA256).Hash)) {
+            Write-Host "  [warn] installed skill copy differs from the repo: $installedSkill" -ForegroundColor DarkYellow
+        }
+    }
+} else {
+    Write-Host "  [info] $installedSkills 不存在，跳过已安装技能副本校验" -ForegroundColor DarkGray
+}
 
 if ($errors.Count -gt 0) {
     Write-Host "Deployment verification FAILED:" -ForegroundColor Red
