@@ -46,6 +46,8 @@
     "./Ws_tool-dreamina-account": "./dist/tool-dreamina-account.js",
     "./tool-canvas": "./dist/tool-canvas.js",
     "./Ws_tool-canvas": "./dist/tool-canvas.js",
+    "./tool-creative": "./dist/tool-creative.js",
+    "./Ws_tool-creative": "./dist/tool-creative.js",
     "./notify": "./dist/notify.js",
     "./Ws_completion-notify": "./dist/notify.js",
     "./package.json": "./package.json"
@@ -58,6 +60,9 @@
     "refs/",
     "scripts/"
   ],
+  "engines": {
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

@@ -1,18 +1,63 @@
 # AGENTS.md
 
-DSH Studio 媒体能力包。一次安装提供 16 个工具、11 个技能与一个完成通知，是 Codex_Wsstudio
+DSH Studio 媒体能力包。一次安装提供 17 个工具、11 个技能与一个完成通知，是 Codex_Wsstudio
 能力指南在 DSH 平台上的重建。本文件给在此仓库工作的 Agent 一个最小但足够的上下文。
 
 > **火山方舟通道已屏蔽**：`cordis.patch.yml` 里 `Ws_tool-vision`（`describe_image`）的注册被注释，
-> 实际注册 15 个工具；`setup.ps1` 默认也不再引导 `VOLCANO_ENGINE_API_KEY` 与
+> 实际注册 16 个工具；`setup.ps1` 默认也不再引导 `VOLCANO_ENGINE_API_KEY` 与
 > `llm-pi-ai.providers.volcengine`。恢复：`.\setup.ps1 -EnableVolcano` + 取消该两行注释 + 重启 dsh。
 > `src/tool-vision.ts` 实现保留，`media_status` 里该项显示 `disabled`。
+
+## 插件整体不加载：dsh 版本兼容门（2026-10-18 根因修复）
+
+> **症状**：dsh 重启后 `creative_writer` / `dreamina_canvas` / `media_status` / `generate_video` 等**全部**工具消失，
+> GUI 与主进程都没有报错。**根因不在 patch、不在 dist、不在符号链接**。
+>
+> **机制**：`@deepseek-ai/dsh-app-boot` 启动时对组合后的**每一行**插件行跑 compatibility preflight
+> （`evaluatePluginCompatibility` → `prepareProfileEntries`）。manifest 若声明 `engines.dsh` 则只看它；否则检查
+> `peerDependencies` 里每个 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` 是否满足**当前 dsh 运行时版本**。不满足时该行
+> `disabled = true`（group 行整组禁用），只往 stderr 写 `dsh: disabling profile plugin <row>: ...`，**进程不报错**。
+> 本仓库 `peerDependencies` 锁过 `0.2.0-rc.2`，桌面版 dsh 升到 `0.2.1-rc.2`（2026-10-17 安装）后，19 个 insert 行全部被
+> 静默禁用 —— 整个 bundle 一个工具都注册不出来。
+>
+> **为什么"曾经能用"**：升级后旧进程仍在跑（旧会话日志直到 10-18 01:45），重启才让新 dsh 生效；10-18 18:08 加
+> `Ws_tool-creative` 只是同期巧合，与本故障无关。
+>
+> **修复（已固化）**：`package.json` 增加 `"engines": { "dsh": ">=0.2.0-rc.2 <0.3.0" }`。`engines.dsh` 存在时优先且
+> 忽略 peer 检查；`0.2.0-rc.2` 与 `0.2.1-rc.2` 的实际用到的导出（`defineTool` / `createSystemMessage` /
+> `createUserMessage` / `credentialRef`）已逐一验证存在。
+>
+> **离线验证（无需重启）**：
+> `$env:ELECTRON_RUN_AS_NODE=1; & "D:\AI\DeepSeek Harness\DeepSeek Harness.exe" --expose-internals <script.mjs>`，
+> 脚本内 `import { evaluatePluginCompatibility, getDshRuntimeVersion } from 'file:///D:/AI/DeepSeek Harness/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js'`，
+> 用它读 `package.json`。返回 `undefined` = 兼容；返回对象（带 `requirements`）= 该行会被禁用。
+>
+> **部署注意（第二条坑，2026-10-18 踩到）**：profile 的 `node_modules/dsh-media-plugins` 必须是**指向本仓库的链接**
+> （pnpm 的 symlink，或 `mklink /J` junction）。曾用 robocopy 把插件复制成真实目录 —— 这会把 pnpm 的 symlink 拓扑压平
+> （`.pnpm` 里的依赖链接变成真实目录），运行时 `sharp` / `@deepseek-ai/schemastery` 找不到自己的间接依赖
+> （`Cannot find package 'detect-libc'` / `'@deepseek-ai/cosmokit'`）。链接模式下改 `package.json` / `cordis.patch.yml`
+> 无需同步；若必须复制，请整体保留 `.pnpm` 的 symlink 结构，或在 profile 里重跑 pnpm install 重建链接。
+>
+> **升级 dsh 后**：超出 `engines.dsh` 上界（如 0.3.x）会被禁用 —— 这是刻意设计，需重新验证 API。应急授权：在 profile 的
+> `compatibility.json` 写 `{ "dsh-media-plugins@0.3.2": ["<dsh 版本>"] }`（exact 版本；**缺文件 = 不授权**），或
+> `dsh plugin allow-version --accept-risk`。
+
+## 创意写作（`creative_writer`，comfly / gemini-4-argon）
+
+- **写提示词 / 剧本分镜 / 文章 / 文案 / 故事这类创意文本，交给 `creative_writer` 一次成稿**，主 Agent 不自己逐字写；返回文本即可直接交付（最多做少量编辑）。
+- 与 `describe_image` **同一模式**：工具内部经 `ctx.llm.stream` 直调 `llm-pi-ai` 注册的 provider，不碰文件系统、不反问。默认 `comfly` + **`gemini-4-argon-thinking-high`**（`baseURL: https://ai.comfly.org/v1`，`apiKeyEnv: COMFLY_API_KEY`）。**实测可直连**：网页站点的 451 地区限制不影响 API 端点，无需代理。
+- 参数：`brief`（必填）、`kind`（`prompt`/`script`/`article`/`copy`/`story`/`other`）、`context`、`length`（`short`/`medium`/`long`）、`thinking`（`base`/`low`/`medium`/`high`；**不传则跟随配置 = thinking-high**）。
+- **thinking 档位很慢**：high 实测 **77 秒 / 817 字**（completion 4862 tokens，约 40% 是思考），长剧本 1–3 分钟；思考 token 先于正文消耗 —— `maxTokens` 必须给足（现为 **32768**），否则长文会被截断成空回复。要快速草稿就显式传 `thinking=base`（4–12 秒）。
+- 系统提示词强制**只给成品正文**：无开场白、无创作思路/结构拆解、无 Markdown 装饰标题。换模型只改 `cordis.patch.yml` 里 `Ws_tool-creative.config`，不动代码。
+- **创作门（2026-10-18 固化，硬门）**：插件层**拦不住模型直接吐出的自由文本**，所以门放在第一个下游消费点。`creative_writer` 每次成功调用都会在私有运行目录写 `creative-ledger.json`（`id/kind/model/brief_sha256/output_sha256/chars/at`）并返回 `credential_id`；`prompt_batch set_prompts` 默认要求该工作区（`resolvePrivateRoot`）**最近 24 小时**内存在 `kind ∈ {prompt, script, story, copy}` 的记录，否则**整次拒绝**。确实要手写提示词时传 `allow_manual_prompts: true` 显式豁免（测试与人工场景就是这么放行的）。想收紧到「每段一次调用」可把查询改成按 segment 绑定 —— 当前是批次级一票，兼顾成本（thinking-high 单次约 77 秒）。实现见 `src/shared/creative-ledger.ts`。
+- 实现 `src/tool-creative.ts` + `src/shared/creative-ledger.ts`；改提示词后跑 `pnpm build` + `pnpm test`，并**重启 dsh**（插件在启动时加载）。回归测试：`tests/creative-ledger.test.mjs`、`tests/corpus-credential-gate.test.mjs`、`tests/order-binding-gate.test.mjs`。
 
 ## 视频/图片创作线路
 
 - **导演线（默认，唯一）**：`skills/video-prompt-orchestrator` 编排器 —— 单条走非破坏性提示词门，多素材走批次模式（`prompt_batch` 工具 = 原 `dt_batch`，提供批次/1024px 预览/审阅页）。批次模式下**每段必须先 `prompt_revision search_corpus` 取得一次性检索凭证并经 `authoring_gate(segment=该段 material)` 消费**（账本 `corpus-ledger.json`）；`set_prompts` 拒写没有自己凭证的段。默认**不得**触发业务 Skill 线。
 - **Skill 线（仅用户显式要求"启用 Skill 模式"时）**：`skills/video-skill-router` → `project_pipeline`（`create` 有 `skill_mode=true` 硬门）+ `skill_registry`。进入时必须告知用户已进入 Skill 模式。
 - **图片侧对称**：`image-skill-router` / `image_skill_pipeline` / `image-skill-curator`（治理层 `skill_curator` / `image_skill_curator` 只在用户上传资料入库时走，不受上面收紧影响）。
+- **短剧 / 剧情 TVC（全链路）**：`skills/drama-tvc-prompt` —— **社区项目「山音超级导演大师」（剧本→九列分镜表，@山音，MIT）+ 用户实战归纳的即梦短剧 10 区块规范（分镜→提示词）** 两段式技能，覆盖「文字脚本 → 九列分镜表 → 即梦提示词 → 画板生成」全链路。社区方法论原文见 `references/shanyin-director-method.md`（五步工作流 / 六维定调 / 九列规范 / 551 镜时长基准 / 70-30 法则 / 动作-反应 12 变体）；本仓库实战补充（三幕重排 / 转场 / 连续性台词清单）单独标注在 `references/practice-notes.md`，**非社区内容**。**标准生产流程（2026-10-18 固化，必读）**见 `references/production-pipeline.md`：Agent 用山音九列搭骨架 → 12 项逻辑自检 → Gemini4 重写（**整套只调一次成功**；**档位分情况**：剧本 / 执行脚本 / 导演定调用 `gemini-4-argon-thinking-high`，**即梦提示词 / 文案 / 文章用基础档 `gemini-4-argon`**（快 10–20 倍）；**超时按输出字数动态计算**：thinking-high `clamp(70 + W×0.012, 120, 300)`、基础档 `clamp(40 + W×0.006, 60, 150)`，实测 817字/77s、2097字/101s、11513字/188s；→ 失败降基础档 → 再失败 **Agent 自己润色**，不报错不重试）→ Agent 验收并规范化输出（md + docx）。这是**线性流水线**，不是「骨架 / LLM 二选一」。单条提示词仍用 `video-director-prompt`。
 - **提示词模板唯一真源**：`skills/video-director-prompt/references/jimeng-standard-template.md`（即梦提示词模板集，据 **13 份官方范例**归纳：连续多镜头 6 / 单一镜头 4 / 一镜到底 1 / 视频驱动 1）。**5 个模板按情况选**——T1 `镜头N` 编号式（有分镜、逐镜推进）、T2 时间轴式（有分镜且要卡点：`0-1.5秒:` 或 `[00.0-03.0秒|场景名]` + `[素材说明]/[整体设定]/[时间轴]/[稳定性限制]`，每段音效单独成行）、T3 单一镜头内部时间轴（一镜内有连续变化）、T4 单镜头连续（一镜到底式）、T5 视频驱动（首句 `严格参考:<视频>的运镜/动作` + 用"变为/分配给"做素材映射）。**同一层只用一种分段手段。** 共用配件：素材说明（**逐份声明角色**：首帧/场景/三视图/正脸五官/道具/配角/变形对象/多角色/参考视频）、光影三层 `光影: <光源层>，<光行为层>，<色调层>`、音效行、禁止项、画质与稳定性限制。**时间码 / 秒数区间 / 方括号区块头 / `CUT_02 硬切至…` 都是合法写法**（2026-10 按用户指示**撤回**了此前的"时间码淘汰"改动）；**只有管道符拼接标题被代码层拒绝**（`0.0-4.0 秒｜第一段｜图片2`，`validatePromptContent`）。`@Image1`/`参考图片1` 与 fps/码率/模型名尾巴同样禁用。官方范例的 `图片N` 是**素材库内文件名编号**（可跳号、可带 `(2)`、跨范例复用同一素材，如 `图片32`），提交前必须按 **图片 → 视频 → 音频 的传入顺序**重编号，同一素材全片同号；`set_prompts` 拒绝超出该段素材数的编号，也拒写没有 `图片N` 绑定的段。回归测试：`tests/order-binding-gate.test.mjs`、`tests/project-core.test.mjs`。
 
 ## 即梦画布 CLI（`dreamina-canvas`）—— 生成线路的唯一执行层
@@ -30,6 +75,76 @@ DSH Studio 媒体能力包。一次安装提供 16 个工具、11 个技能与�
 - **通用能力入口（官方命令面全覆盖）**：`dreamina_canvas` 工具（`src/tool-canvas.ts`）开放 `catalog`(model list/find)、`voice list`、`canvas`、`node`（含 `text` / `element` / `timeline` / `upscale image`）、`operation`、`resource`、`schema`、`version`。**调用前必须先用 `command=schema` + `action="node create video"` 查当前制品的真实 flag 与枚举，绝不凭记忆猜参数**（官方硬性要求）。内置付费门：`--run` / `node run` / `node upscale` 必须在同一次调用里带 `credit_ceiling` 或 `credit_token`，否则直接拒绝 —— 报价 ≠ 授权。返回结构化字段 `outcome` / `required_action` / `request_id` / `partial_items` / `credit_confirmation`，失败时原样带出 `partialData` 身份供续跑。
 - **协议遵循（官方 5 份 reference 已落实）**：退出码 20 恒为 `pending`（本地等待超时 ≠ 失败）；`error.localStorage.submissionPhase === 'after_submit'` 同样归 `pending`（副作用可能已发生 → 只读恢复，**绝不重提**）；`node run` 返回 10 时从 `partialData.items[]` 取回 `nodeId` + `submitId` 并记 `needs_review`（**换新 submitId 等于第二次运行、会再扣一次钱**）；报价不可用（`occupancy_unknown` / `confirmable=false`）**绝不按 0 批准**；下载必须校验 `size > 0` 与真实容器/图片内容（CLI 落地扩展名不可信：实测 `.png` 内容是 jpeg）并记录 `sha256`；`meta.requestId` 全程留痕；`DREAMINA_CANVAS_STATE_DIR` 指向私有运行目录。
 
+## 画板批量制片流程（标准规范，2026-10-18 固化）
+
+> 一次「多段视频、同一画板、逐段生成」的标准链路。本次建发短剧 8 段实战验证。
+> 短剧提示词写法见技能 `drama-tvc-prompt`。
+
+### 1. 开画板前
+
+- `dreamina_account current` **核对浏览器账号**（Chrome = ISUN），不一致先 `dreamina_account default name=<n>`
+- 建画布：`canvas create "<名称>"`，拿 `projectId` + `webUrl`
+- **用 Chrome 显式打开** webUrl（`Start-Process <chrome.exe> -ArgumentList "<url>"`），不要用默认浏览器
+
+### 2. 素材上传（resource upload）
+
+- `resource upload --project-id <pid> --file <path> --name <名> --type image|audio`
+- 音频必须显式 `--type audio`
+- 一次调用一个文件；批量时用脚本循环（18 个素材约 1 分钟）
+- **上传只登记资源，不上画布**——上画布要建节点
+
+### 3. 素材节点（上画布）
+
+```
+node create image|audio --project-id <pid> --resource-id <rid> \
+  --import-kind external_generated --x <x> --y <y> --title "<名>"
+```
+
+- `--import-kind external_generated` 是**唯一支持坐标摆放**的路径；`local_upload` 会强制自动布局
+- 坐标分区（推荐）：音色 y=0（x=0/340/680）、角色 y=460（x 递增 340）、场景 y=980/1420（x=0/600/1200/1800）、视频卡片 x=2500 起（y 递增 400）
+- 标题加 `【场景】/【角色】/【音色】` 前缀便于识别
+
+### 4. 视频卡片（node create video）
+
+- `--mode m2v`（全能参考；有图/音频就是 m2v，不是 t2v）
+- `--ref node:<素材节点ID>` 建立**连线**（`--ref res:<uuid>` 无连线，只适用于资产库素材）
+- prompt 里用 `{{node:<nodeId>}}` 引用素材，**同一素材同一 ID，全片一致**
+- 每个产物一个节点：`--count 1`
+- **模型规格必须先查 `catalog list --type video`**：`seedance_2.0_vip` 时长上限 **15 秒**（16 秒会被服务端 `FIELD_VALUE_INVALID` 拒绝，且 edit 失败后节点静默保持旧值）
+
+### 5. 付费链路（六段，一步不能跳）
+
+```
+node quote --node-id <id>          # 拿 maxCredits + confirmable
+node confirm --node-id <id> --credit-ceiling <maxCredits>
+node run   --node-id <id> --submit-id <uuid> --credit-token <token>
+```
+
+- **必须单节点 confirm → 单节点 run**。批量 confirm 拿到的一个 token 拆开逐个 run 会全部 `exit=2`（本次 8 个全失败，只能逐个重来）
+- `credit-ceiling` 不得低于 quote 的 `maxCredits`
+- 报价结构：`data.items[].maxCredits` + `data.totalMaxCredits` + `data.confirmable`（**不是** `data.quote`，解析错会误判为"报价为空"）
+- 单价参考：Seedance 2.0 VIP ≈ **14 积分/秒**（720P）
+
+### 6. 等待与下载
+
+- 轮询：`node find --project-id <pid> --type video --format json`，看 `data.items[].status`
+- **`node find` 只返回定位摘要（nodeId/type/title/status/tags），不含 resources** —— 取资源 ID 用 `node show` 或 run 时记录的 `items[0].resources[0].resourceId`
+- 下载：`resource download <resourceId> --project-id <pid> --output <path> --yes`
+- **落地必须校验**：`size > 0` + 文件头含 `ftyp` + 记录 `sha256`；扩展名不可信
+- **实际时长要自己验**：解析 mp4 `mvhd` 的 duration/timescale，别信节点配置
+
+### 7. 踩坑清单
+
+| 坑 | 后果 | 规避 |
+|---|---|---|
+| 批量 confirm 的 token 拆开 run | 全部 exit=2 | 单节点 confirm + run |
+| 解析 `data.quote` | 误判报价为空 | 用 `data.items[].maxCredits` |
+| edit 后立刻 run | 服务端仍按旧配置执行（本次 16s 跑成 14s） | edit 后 `node show` 验证 `durationSeconds` 再 run |
+| 模型时长上限不查 | edit 被拒、节点静默保持旧值 | 先 `catalog list --type video` |
+| `node find` 找资源 ID | 取不到 | 用 `node show` |
+| 画布自动打开用默认浏览器 | 打开错账号、提示无权限 | 用 Chrome 显式打开 |
+| 提示词混入 Markdown | `**加粗**` 原样进提交文本 | 提交前扫 `**` 并清除 |
+
 ## 即梦账号切换（`dreamina_account`，多账号）
 
 - **真实登录态位置（2026-10-12 实测，两个 CLI 各有独立子键）**：都在 `HKCU\Software\BytedAuthClient\keychain` 下，值名都是 base64 的 `byted_cli_user_token`（REG_SZ，值为 **DPAPI blob 的 base64**）：
@@ -41,6 +156,11 @@ DSH Studio 媒体能力包。一次安装提供 16 个工具、11 个技能与�
 - **工具**：`dreamina_account`（`current` / `list` / `save` / `use` / `default` / `rename` / `login` / `login-check` / `forget`）。`login` 会先把现有登录态自动备份入库再清空，返回 `verification_uri` / `user_code` / `device_code`（用户在目标浏览器授权），`login-check` 轮询成功后自动入库；失败/放弃时自动恢复原登录态。`rename` 同步搬目录、改 `meta.name`、跟随默认指针；`login-check` 以 `login checklogin` 是否通过为唯一成功判据 —— 设备流程进行中 keychain 里会存在中间态值，**不得**据此报"已检测到新登录态"。
 - **管线默认账号**：`dreamina_account default name=<n>`（或工具的 `dreaminaAccount` 配置）→ `generate_video` / `generate_image` / `batch_image` 在**每次 CLI 调用前**调 `ensureActiveAccount`：指纹一致时只做一次 `reg query`（零写入），不一致才加租约切换（`locks/providers/...` 之外的 `dreamina-account` 单槽锁）。
 - **切换纪律**：有活动即梦任务（`locks/providers/seedance-cli|image` 内未过期 `.lock`）时 `use`/`default` 会拒绝切换（除非 `force=true`），否则进行中的任务会用错账号轮询/提交。
+- **浏览器即账号锚点（2026-10-17 实战踩坑）**：**同一台机器上不同浏览器登录的是不同即梦账号**，而画布是否"看得见"取决于 CLI 登录态与浏览器账号是否一致。实测：**Chrome = `ISUN`**（user_id `960342070926412`），默认浏览器对应的是另一个账号。所以：
+  1. 打开即梦画布 / 授权页**必须显式用 Chrome 可执行文件**：`Start-Process "C:\Program Files\Google\Chrome\Application\chrome.exe" -ArgumentList "<url>"`；`Start-Process "<url>"`（不带 exe）会落到默认浏览器 → 等于打开错账号的页面。
+  2. **建画布 / 上传素材 / 建节点前，先 `dreamina_account current` 核对**目标浏览器账号；不一致就先 `use`（同账号库内可切）或 `login`（账号库缺失时走设备授权）。只切旧 CLI 子键或只切画布子键都会导致校验失败（`切换校验失败：期望 user_id=…，实际 user_id=…`），此时应 `auth logout` 后重新 `dreamina_account login`，不要反复 `use`。
+  3. 账号库里某账号若**只有 `token.txt` 没有 `canvas-token.txt`**（且 `account.json` 无 `canvasSubKey`），说明当年只备份了旧 CLI，**画布侧不可切**，必须重新 OAuth 授权补全。
+  4. 画布 `webUrl` 交付给用户时也用 Chrome 打开 —— 否则用户在自己的（另一账号的）浏览器里看不到刚建的画布。
 - **实现与回归**：`src/shared/dreamina-keychain.ts`（注册表桥 + `reg query` 输出解析）、`src/shared/dreamina-account.ts`（账号库 / ensure / 指纹）、`src/tool-dreamina-account.ts`；测试 `tests/dreamina-keychain.test.mjs`、`tests/dreamina-account.test.mjs`。
 
 ## 批量生图交付约定（工具级，已固化）
