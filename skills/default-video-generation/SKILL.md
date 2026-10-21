@@ -12,6 +12,9 @@ generate_video 是**一条统一管线**，不区分单条与批量：任何一�
 
 1. **默认与边界**：默认模型 `seedance_2.5`、默认分辨率 `480p`、默认比例 `16:9`、默认时长 `5` 秒。seedance_2.5 支持 `480p/720p/1080p`、4-30 秒；seedance_2.0_vip 支持 `480p/720p/1080p/4k`。只有当前用户明确要求时才能使用 seedance2.0 系列（普通显式 2.0 会归一化为 `seedance_2.0_vip`）。
 2. **参考模式**：只传 `prompt` → text2video；传任意 `images`/`videos`/`audios` 参考 → 全能参考模式 multimodal2video。`multiframe2video` 是禁用的遗留命令，不得选择或提交。素材顺序即素材编号，prompt 中用中文裸标签（图片1、视频1、音频1）引用素材，序号对应该类素材传入顺序。
+   - **默认就是全能参考（m2v）**：只要有参考素材就走 m2v，**不得**因为"一张起点图 + 一张终点图"就自动改成首尾帧。`first_last_frame` 只在用户明确要求时使用。
+   - **画布直调同一个默认**：`--mode m2v`；纯文字才 `t2v`；`first_last_frame` 只吃图片、且只在用户点名时使用。
+   - **一条 vs 多条**：用户给的是一个整体时长（"一条 15 秒"）就只建**一个**视频节点、一次生成；分段写进同一条提示词内部，不拆节点。真要多条时说明原因。
 3. **确认门（正式提交前必须）**：production / production_submit_only 提交前，用户须明确确认**模型、分辨率、时长**，并把三者以 `video_confirmation_model`、`video_confirmation_resolution`、`video_confirmation_duration` 传入，且必须与最终解析值完全一致，否则工具拒绝提交。test_submit_only 跳过确认门。
 4. **执行模式**：普通请求用默认 `production`（提交+轮询+下载）；仅当用户明确要求"只提交/测试通道"时用 `production_submit_only` 或 `test_submit_only`（测试通道返回 submit_id 后请用户到即梦后台查看，绝不自动轮询下载；测试通道必须提供 `video_group`，且只允许 1 个任务）。
 5. **多份/多任务**：
