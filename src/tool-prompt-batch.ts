@@ -1,5 +1,5 @@
 /**
- * Prompt-batch tool (Codex_DT rebuild): creation manifests, 1024 px previews
+ * Prompt-batch tool (Codex_DT rebuild): creation manifests, 1920 px previews
  * and a review page for per-material prompt confirmation. Prompt authoring
  * itself stays with the agent (LLM); this tool owns the artifacts and the
  * human review surface.
@@ -89,7 +89,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'prompt_batch',
       description:
-'批次创作工作台（Codex_DT 的 DSH 重建，导演线的多素材批次能力，不是独立线路）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1024px 预览、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径/photo_type/surface/mode/resolution）、set_visuals 逐素材写入拍摄信息（photo_type/visual/motion_plan/duration/images，duration 为 4-30 秒的逐段时长，images 支持每段多图）、逐素材写入可执行中文提示词（set_prompts 按 material 合并、自动把 @图片N/参考图片N 规范为裸标签 图片N；**每段必须先用 prompt_revision search_corpus 取得一次性检索凭证并经 authoring_gate（segment=该段 material）消费，缺凭证的段与缺 图片N 裸标签绑定的段都会被整次拒绝写入**）、生成 review/index.html 逐段列出全部参考图供用户逐项确认、确认后生成提交计划（run_batch，含 asset_manifest 标签绑定，每段 tasks[].images 绑定全部参考图、tasks[].duration 绑定逐段时长；**按管线容量（默认 10）装满调用、绝不按时长拆分**）、语料匹配写回 manifest（update_forge_matches）。set_prompts 默认不读取任何业务 Skill（只有用户显式启用 Skill 模式时才读其 references 对照组织方式，范例不改变素材契约、不覆盖用户指令）。最终执行只调用统一媒体工具，不直接调用供应商。',
+'批次创作工作台（Codex_DT 的 DSH 重建，导演线的多素材批次能力，不是独立线路）：创建隔离批次（new_batch 文本/图片优先，批次 id 为 YYYYMMDD-HHMM-名称）、对话附件导入（import_images 等待文件稳定后复制）、生成 1920px 预览（JPEG q85）、初始化 manifest（时长/比例/模型选择证据/用户要求/素材路径/photo_type/surface/mode/resolution）、set_visuals 逐素材写入拍摄信息（photo_type/visual/motion_plan/duration/images，duration 为 4-30 秒的逐段时长，images 支持每段多图）、逐素材写入可执行中文提示词（set_prompts 按 material 合并、自动把 @图片N/参考图片N 规范为裸标签 图片N；**每段必须先用 prompt_revision search_corpus 取得一次性检索凭证并经 authoring_gate（segment=该段 material）消费，缺凭证的段与缺 图片N 裸标签绑定的段都会被整次拒绝写入**）、生成 review/index.html 逐段列出全部参考图供用户逐项确认、确认后生成提交计划（run_batch，含 asset_manifest 标签绑定，每段 tasks[].images 绑定全部参考图、tasks[].duration 绑定逐段时长；**按管线容量（默认 10）装满调用、绝不按时长拆分**）、语料匹配写回 manifest（update_forge_matches）。set_prompts 默认不读取任何业务 Skill（只有用户显式启用 Skill 模式时才读其 references 对照组织方式，范例不改变素材契约、不覆盖用户指令）。最终执行只调用统一媒体工具，不直接调用供应商。',
       parameters: {
         command: {
           type: 'string',
@@ -170,7 +170,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           for (let i = 0; i < (args.materials ?? []).length; i += 1) {
             const p = (args.materials as string[])[i]
             const abs = isAbsolute(p) ? p : join(workspaceRoot, p)
-            materials.push({ path: abs, hash: await sha256File(abs), photo_type: photoTypes[i] ?? undefined })
+            materials.push({
+              path: abs,
+              hash: await sha256File(abs),
+              ...(photoTypes[i] === undefined ? {} : { photo_type: photoTypes[i] }),
+            })
           }
           const manifest = {
             schema_version: 1,
@@ -188,7 +192,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             user_requirements: args.user_requirements ?? '',
             surface: 'jimeng-zh',
             mode: 'first-frame',
-            preview_max_long_edge: 1024,
+            preview_max_long_edge: 1920,
             video_resolution: '480p',
             materials,
             prompts: [] as Array<{ material: string; prompt: string }>,
@@ -352,7 +356,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               const all = [m.path, ...(Array.isArray(m.images) ? m.images : [])].filter(Boolean)
               const previews: string[] = []
               for (const img of all) {
-                const prev = await makePreview(img, previewsDir, 1024)
+                const prev = await makePreview(img, previewsDir, 1920)
                 mapping.push({ material: img, preview: prev.path, width: prev.width, height: prev.height })
                 previews.push(prev.path)
               }
@@ -360,7 +364,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             }
             await atomicWriteJson(join(dir, 'previews.json'), mapping)
             await atomicWriteJson(join(dir, 'manifest.json'), manifest)
-            return { ok: true, message: `${mapping.length} preview(s) ready (≤1024px)`, batch_id: batchId }
+            return { ok: true, message: `${mapping.length} preview(s) ready (≤1920px JPEG)`, batch_id: batchId }
           }
           case 'set_visuals': {
             const items = (args.items ?? []).map((v: any) => ({
@@ -526,7 +530,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               for (const ref of refs) {
                 const known = previewByPath.get(ref)
                 if (known && (await fileExists(known))) continue
-                const prev = await makePreview(ref, previewsDir, 1024)
+                const prev = await makePreview(ref, previewsDir, 1920)
                 previews.push({ material: ref, preview: prev.path, width: prev.width, height: prev.height })
                 previewByPath.set(ref, prev.path)
               }

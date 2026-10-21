@@ -1,6 +1,6 @@
 ---
 name: video-prompt-orchestrator
-description: 统一视频编排器（Codex_DT codex-dt-video-prompt 的 DSH 重建），即"导演线"，也是默认且唯一的视频创作线。用户要从文本/图片/视频/音频生成或测试视频时使用：仅当用户明确说不修改提示词时才只做语义保真规范化，否则一律用导演知识+语料补全结构与镜头方案；多张素材或用户要求逐素材创作/先看提示词再确认时，在本线走批次模式（1024px 预览 + 审阅页 + 逐段语料门）。默认不触发业务 Skill 线（skill_registry / project_pipeline）——只有用户显式要求启用 Skill 模式时才改走 video-skill-router。
+description: 统一视频编排器（Codex_DT codex-dt-video-prompt 的 DSH 重建），即"导演线"，也是默认且唯一的视频创作线。用户要从文本/图片/视频/音频生成或测试视频时使用：仅当用户明确说不修改提示词时才只做语义保真规范化，否则一律用导演知识+语料补全结构与镜头方案；多张素材或用户要求逐素材创作/先看提示词再确认时，在本线走批次模式（1920px 预览 + 审阅页 + 逐段语料门）。默认不触发业务 Skill 线（skill_registry / project_pipeline）——只有用户显式要求启用 Skill 模式时才改走 video-skill-router。
 whenToUse: 用户要从文本、图片、视频或音频生成/测试视频，或要求补全、优化、改写视频提示词后再生成时。这是默认视频创作线。
 ---
 
@@ -9,6 +9,11 @@ whenToUse: 用户要从文本、图片、视频或音频生成/测试视频，�
 > 本技能是 Codex_DT `codex-dt-video-prompt` 在 DSH 的等价物，是**默认且唯一**的视频创作线，接在 `default-video-generation` 之前。
 > 原独立的 DT 批次线已并入本线：多素材创作直接在这里走批次模式，不再有第二套入口。
 > 下游付费执行一律走 `default-video-generation` / 统一 `generate_video`，不直接调用任何供应商 CLI。
+>
+> **创意正文统一由 Gemini 4 生产（2026-10-21）**：单条、批次、短剧、Skill 线共用
+> `video-director-prompt/references/creative-brief-contract.md`。Agent 负责事实/镜头表/模板/标签/常量块/验收，
+> `creative_writer` 负责画面内容与逐镜语言；提示词用 `thinking=base`，剧本/分镜才用 `high`。
+> 唯一例外：用户明确说"不修改提示词"（normalize-only）。
 
 ## 一、线路判定（每次先做这一步）
 
@@ -38,11 +43,11 @@ whenToUse: 用户要从文本、图片、视频或音频生成/测试视频，�
 **触发条件（满足任一）**：一次给了 ≥2 张素材、要按素材逐条创作；或用户要求"先看提示词再确认""逐条给我确认"。
 
 1. **建隔离批次**：`prompt_batch` 的 `new_batch`（带短描述名）或 `init_batch`，传 duration、ratio、model、user_requirements、materials（路径顺序即素材编号）。对话附件先 `import_images`；新对话多附件场景先只导入并初始化，首轮不生成。
-2. **准备预览**：`prepare_previews` 生成最长边 1024px 预览并记录映射；**不要直接检查原始大图**。每段可多图：额外参考图用 `set_visuals` 的 `items[].images` 绑定（顺序即 `--image` 顺序）。
+2. **准备预览**：`prepare_previews` 生成最长边 1920px 预览（JPEG q85）并记录映射；**不要直接检查原始大图**。每段可多图：额外参考图用 `set_visuals` 的 `items[].images` 绑定（顺序即 `--image` 顺序）。
 3. **▶ 逐段检索语料并逐条列出命中（不可跳过；本模式由 `set_prompts` 代码强制）**：写任何一段之前，先对该段用 `prompt_revision search_corpus` 检索（≤10 条，只提取可迁移的镜头结构/导演方法，**不复制案例**）——该调用返回一张**一次性检索凭证 `search_id`**；随后用 `prompt_revision authoring_gate` 传 `search_id`、`current_prompt`（该段草稿）、`media={images:该段参考图数, videos, audios}`、`segment=该段 material 的绝对路径`。**只有 `authoring_gate` 返回 `ok=true` 才可继续写该段**；凭证在通过时被消费并绑定到该段，**同一张凭证不可复用——N 段就必须 N 次检索**（`set_prompts` 会逐段核对已消费凭证，缺凭证的段直接拒写）。检索后**逐条向用户列出该段命中的语料**（编号/标题/得分/可迁移结构）；语料的模型/版本只作 provenance，**绝不据此选生成模型**。每段开始前先输出 `▶ 步骤`。
-4. **▶ 编写提示词（逐素材）**：**先加载 `video-director-prompt` 技能**，按其 `references` 路由使用导演知识：**`jimeng-standard-template.md`（即梦提示词模板集＝结构与标签的唯一真源，必读）**、`directing-methods.md`（每次必读）、`prompt-structure.md`、`community-techniques.md`、`structure-guide.md`，并对照其"交付前检查"。**按即梦模板集选模板（T1 `镜头N` 编号式 / T2 时间轴式 / T3 单一镜头内部时间轴 / T4 一镜到底式 / T5 视频驱动），同一层只用一种分段手段；仅管道符拼接标题被代码层拒绝**（`0.0-4.0 秒｜第一段｜图片2`）。**用中文裸标签（图片1、视频1、音频1…）严格绑定传入顺序——官方范本里的 `图片27`、`图片31(2)` 等原始编号与中文数字必须先按传入顺序重编号，禁用 `@图片1` 等 chip 形式与 `参考图片N` 前缀**；用户未指定音频时追加 `不生成音乐，仅生成音效。`。用 `set_prompts`（[{material, prompt}]）写入——它按 material 合并、自动规范化标签，并对**缺少 `图片N` 绑定的段、以及没有自己那张已消费检索凭证的段整次拒绝**。
+4. **▶ 编写提示词（逐素材，Gemini 4 生产创意正文）**：**先加载 `video-director-prompt` 技能**，按其 `references` 路由使用导演知识：**`jimeng-standard-template.md`（即梦提示词模板集＝结构与标签的唯一真源，必读）**、`directing-methods.md`（每次必读）、`prompt-structure.md`、`community-techniques.md`、`structure-guide.md`，并对照其"交付前检查"。**再读 `creative-brief-contract.md`**，按它组本段 brief（`task=segment`、`facts`、`shots`、`template`、`blocks`、`corpus` 结构摘要、`constraints`、`output`、`acceptance`）→ 调用 `creative_writer(kind=prompt, thinking=base, length=short|medium, brief=..., context=..., images=[该段参考图路径（按素材顺序）])`——**有参考图就直接传 `images` 让 Gemini 4 读图**（每张按最长边 1920px 归一化），不要再先手写一遍场景描述；无图时才用 `context` 文字化 → 按契约第六节逐条验收（镜数/时长/时间戳/台词/`图片N`/禁用词）。**Agent 只负责事实、结构、标签与常量块，不得手写创意正文**（Gemini 不可用/失败一次后，Agent 可兜底自写，但 `set_prompts` 时必须传 `allow_manual_prompts=true` 并在结果里留痕）。**按即梦模板集选模板（T1 `镜头N` 编号式 / T2 时间轴式 / T3 单一镜头内部时间轴 / T4 一镜到底式 / T5 视频驱动），同一层只用一种分段手段；仅管道符拼接标题被代码层拒绝**（`0.0-4.0 秒｜第一段｜图片2`）。**用中文裸标签（图片1、视频1、音频1…）严格绑定传入顺序——官方范本里的 `图片27`、`图片31(2)` 等原始编号与中文数字必须先按传入顺序重编号，禁用 `@图片1` 等 chip 形式与 `参考图片N` 前缀**；用户未指定音频时追加 `不生成音乐，仅生成音效。`。用 `set_prompts`（[{material, prompt}]）写入——它按 material 合并、自动规范化标签，并对**缺少 `图片N` 绑定的段、以及没有自己那张已消费检索凭证的段整次拒绝**。
 5. **▶ 生成审阅页**：`finalize_review` 生成 `review/index.html`（逐段列出全部参考图 + 中文提示词），把路径交给用户**逐项确认**素材绑定；未经确认不得提交。审阅页现在**每张参考图都带复选框**（底部粘性工具栏显示"已选 N / 共 M"，**复制勾选名称** 得到换行分隔的文件名，**复制勾选路径** 得到完整路径），用户勾选后一键复制、贴回对话即可精确指出要换哪张图，不必手抄文件名。
-6. **▶ 提交**：确认后 `run_batch` 生成提交计划（含 asset_manifest 标签绑定），交给统一 `generate_video`（不同素材用 `tasks` 数组、每段 `tasks[].images` 绑定该段全部参考图；同一素材多份用 `video_count`；不同时长按时长分组提交）。正式 production 提交前把已确认的模型/分辨率/时长作为 `video_confirmation_model` / `video_confirmation_resolution` / `video_confirmation_duration` 传入且须与最终值一致。
+6. **▶ 提交**：确认后 `run_batch` 生成提交计划（含 asset_manifest 标签绑定），交给统一 `generate_video`（不同素材用 `tasks` 数组、每段 `tasks[].images` 绑定该段全部参考图；同一素材多份用 `video_count`；不同时长按时长分组提交）。正式 production 提交前把已确认的模型/分辨率/时长作为 `video_confirmation_model` / `video_confirmation_resolution` / `video_confirmation_duration` 传入且须与最终值一致。**生产提交会校验创作门**（24h 内有 `creative_writer` 记录）；只有用户明确要求不改写时，才传 `allow_manual_prompts: true` + `manual_prompts_reason` 豁免。
 
 ## 四、单条模式（素材 ≤1 且用户没要求逐条审阅）
 
@@ -51,10 +56,10 @@ whenToUse: 用户要从文本、图片、视频或音频生成/测试视频，�
 1. **▶ 步骤 1：读取输入**。先读用户有序媒体、请求的时长/比例/风格/运镜/音频偏好/约束。
 2. **▶ 步骤 2：加载导演知识**。**加载 `video-director-prompt` 技能**作为平台无关创作层；**必读其 `jimeng-standard-template.md`（即梦提示词模板集＝结构与标签唯一真源）**，按需用其 `directing-methods.md`、`prompt-structure.md`、`community-techniques.md`、`structure-guide.md`。
 3. **▶ 步骤 3：检索语料并逐条列出命中（本线创作纪律，不可跳过；但「单条模式没有代码闸门」——只有批次模式的 `set_prompts` 会因缺该段自己那份凭证而整次拒写，所以这一步靠纪律执行，不要误以为漏了会被拦住）**。一律先用 `prompt_revision search_corpus` 检索（≤10 条，只提取可迁移的镜头结构/导演方法，**不复制案例**），取得返回的**一次性凭证 `search_id`**；随后用 `prompt_revision authoring_gate` 传 `search_id`、`current_prompt`、`media={images,videos,audios}`（单条模式可省略 `segment`，凭证按提示词哈希绑定）——**只有当 `authoring_gate` 返回 `ok=true` 才可继续创作**，凭证一经消费即作废，自报命中数不再被接受。拿到结果后**逐条向用户展示命中语料**：`编号（id）`、`标题`、`得分`、`可迁移结构`；`source_model`/版本只作 provenance。
-4. **▶ 步骤 4：写提示词**。写一段简洁、可独立执行的中文视频提示词，保留用户的主体/身份/构图/时长/比例/运镜偏好，**按即梦模板集选模板（T1 `镜头N` 编号式 / T2 时间轴式 / T3 单一镜头内部时间轴 / T4 一镜到底式 / T5 视频驱动），同一层只用一种分段手段；T1 整段应覆盖主体动作、素材绑定、景别·机位、主导运镜（个别镜可省略，次序灵活）；用裸标签（图片1、视频1、音频1…）严格绑定传入顺序，官方原形编号先重编号**。
+4. **▶ 步骤 4：组 brief + Gemini 4 写正文 + Agent 验收**。按 `video-director-prompt/references/creative-brief-contract.md` 组 `task=single` 的 brief（`facts`/`shots`/`template`/`blocks`/`corpus` 结构摘要/`constraints`/`output`/`acceptance`）→ 调用 `creative_writer(kind=prompt, thinking=base, length=medium, brief=..., context=..., images=[参考图路径])`——**有参考图/实景图就直接传 `images` 让 Gemini 4 读图**（最长边 1920px 归一化），文字只补图中看不到的事实；无图时才用 `context` 文字化 → 按契约第六节逐条验收。**Agent 不手写创意正文**（例外：`creative_writer` 不可用或失败一次后，Agent 可兜底自写，但提交时必须显式 `allow_manual_prompts=true` + reason 留痕）。验收后由 Agent 装配：保留用户的主体/身份/构图/时长/比例/运镜偏好，**按即梦模板集选模板（T1 `镜头N` 编号式 / T2 时间轴式 / T3 单一镜头内部时间轴 / T4 一镜到底式 / T5 视频驱动），同一层只用一种分段手段；T1 整段应覆盖主体动作、素材绑定、景别·机位、主导运镜（个别镜可省略，次序灵活）；用裸标签（图片1、视频1、音频1…）严格绑定传入顺序，官方原形编号先重编号**。
 5. **▶ 步骤 5：应用参考绑定/清理规则**。每个引用分配明确职责（仅身份/仅服饰/仅首帧/仅运镜…），说明什么**不要**从该源转移；删除模型名、分辨率、参考模式、API/上传/工具调用措辞、系统规则套话；正需求只写一次，负面/约束只放一次。
 6. **▶ 步骤 6：音频默认**。**用户未指定音频时，追加 `不生成音乐，仅生成音效。`**（仅创作路径；已定稿提示词不得追加）。
-7. **▶ 步骤 7：提交**。调用 `default-video-generation` 用优化后的提示词 + 原始有序媒体。
+7. **▶ 步骤 7：提交**。调用 `default-video-generation` 用优化后的提示词 + 原始有序媒体。**生产提交有创作门**：本工作区 24h 内需有 `creative_writer` 记录；**仅当用户明确要求不修改提示词（normalize-only）**时，传 `allow_manual_prompts: true` + `manual_prompts_reason`（缺 reason 会被拒）。
 
 > **硬规则：直接写进画布节点时必须自己绑引用（2026-10-14 事故）**。仅当本线把提示词**直接落到即梦画布节点**（`dreamina-canvas node create|edit image|video ... --prompt`，**不经** `prompt_batch` / `generate_video` 适配器）时适用：**裸标签 `图片N` / `视频N` 在画布正文里只是普通文本，不会建立引用**——读回节点只会看到一个 `kind:"text"` 段，画布 UI 里显示的就是死文字"图片1"。画布自己的绑定形态是 `{{res:<小写规范 UUID>}}`（或 `{{node:<nodeId>}}`）：模板结构照旧（T5 首句仍写 `严格参考:`，素材位置写成 `严格参考:{{res:<视频 UUID>}}的镜头运动…`），**同一素材只插一次占位符**，其余位置用"该参考视频 / 该图片"指代。**保存后必须读回节点自检**：`generation.promptParts` 里 `kind:"reference"` 的条目数与素材数一致、`generation.references[]` 份数等于素材数；只有 `text` 段就是没绑定，必须重写后再交付。槽位顺序按**正文首次出现顺序**（`--ref` 的传入顺序不生效），T5 因此视频排在图片之前，属预期。**默认仍优先走 `generate_video`（绑定由适配器处理）；直调画布 CLI 是例外，不是替代路径。**
 

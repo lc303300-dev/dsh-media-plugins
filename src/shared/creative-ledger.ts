@@ -134,10 +134,11 @@ export function findRecentCreative(
 export function creativeGateMessage(missingSince: string | undefined): string {
   const window = missingSince ? ` since ${missingSince}` : ''
   return (
-    `No creative_writer record${window}. This workspace requires prompts to be produced by `
-    + '`creative_writer` (default gemini-4-argon) before prompt_batch set_prompts accepts them. '
-    + 'Call creative_writer (kind=prompt or kind=script) and retry; to write prompts by hand '
-    + 'instead, pass allow_manual_prompts=true and state why.'
+    `No creative_writer record${window}. This workspace requires creative text to be produced by `
+    + '`creative_writer` (default gemini-4-argon) before it can be written into a batch, a project, '
+    + 'or submitted for production. Call creative_writer (kind=prompt or kind=script) and retry; '
+    + 'to write by hand instead (user-supplied/normalize-only, or Agent fallback after a Gemini '
+    + 'failure), pass allow_manual_prompts=true with manual_prompts_reason.'
   )
 }
 

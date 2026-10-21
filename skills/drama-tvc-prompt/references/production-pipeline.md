@@ -240,7 +240,7 @@ thinking-high 超时 = clamp(70 + W × 0.012, 120, 300) 秒
 | 路径 | 怎么用 | 适用 |
 |---|---|---|
 | **文字转译（默认）** | Agent **先看图**，把材质 / 家私 / 光位 / 色调写成 `creative-manifest.md` 的【场景实景】（每场景 1–2 句，只留辨识特征） | 批处理（首选） |
-| **直连带图** | `creative_writer` 不收图片参数；要真给图必须直连 comfly（`image_url` + data URI，Pillow 压长边 1024px / q85 / 约 140KB 张） | 单段精修 |
+| **直连带图** | `creative_writer` 支持 `images`（≤8 张，最长边 1920px / JPEG q85，工具内 EXIF 归一化、不覆盖原图）；**整片 manifest 仍走文字资产**（多场景图会互相污染），单段精修可传该场图 | 单段精修 |
 
 **2026-10-19 实测**：只用文字转译，Gemini4 写出的画面块就能把「人字拼浅木地板、椭圆雕花镜、
 青色釉面葫芦雕塑、蓝色小方砖池水、长条排水格栅」全部落到位。**批量场景不要塞 16 张图** ——
@@ -390,7 +390,7 @@ thinking-high 超时 = clamp(70 + W × 0.012, 120, 300) 秒
 |---|---|---|
 | E1 | **必须用 curl 发请求** | urllib 的 SSL 栈处理长响应会 `UNEXPECTED_EOF_WHILE_READING`（小请求能通、长响应必挂） |
 | E2 | **并发 ≤ 3** | 实测并发 9 会被服务端拒绝 |
-| E3 | **图片压到长边 1024px / JPEG q85** | base64 约 140KB/张，请求体积可控 |
+| E3 | **图片压到长边 1920px / JPEG q85** | base64 约 300–500KB/张，请求体积可控 |
 | E4 | **拼装后校验 node 引用数 == refs 数** | 多一个少一个都会 `invalid_input`（曾因一个字符差异排查很久） |
 | E5 | **单段时长 ≤ 模型上限** | 先查 `catalog list --type video`，超了报 `FIELD_VALUE_INVALID` |
 | E6 | **docx 必须设 `w:eastAsia`** | 否则 Word 打开中文乱码（见 Step 4） |

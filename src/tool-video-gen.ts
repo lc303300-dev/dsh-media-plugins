@@ -30,6 +30,7 @@ import { randomUUID } from 'node:crypto'
 import { access, mkdir, readFile, rename } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { mediaErrors } from './shared/failure.ts'
+import { evaluateVideoCreativeGate, VIDEO_CREATIVE_GATE_HINT } from './shared/video-creative-gate.ts'
 import { packageRootOf } from './shared/pkg-root.ts'
 import {
   TaskStore,
@@ -238,7 +239,9 @@ function apply(ctx: Context, config: ResolvedConfig): void {
     defineTool({
       name: 'generate_video',
       description:
-        '统一视频生成管线（即梦画布 CLI dreamina-canvas）：所有调用分解为 N 个隔离任务，每个任务在画布上是一个独立节点（多产物分节点，每节点 count=1），先并发提交，再（production 模式）统一等待终态并按 resourceId 精确取回。付费链路固定为「保存节点 → node quote 报价 → node confirm 批准（--credit-ceiling）→ node run（--submit-id）→ operation wait → resource download」，报价不等于授权，同一任务绝不换新 submit-id 重放。视频公开模式只有 t2v / first_last_frame / m2v（没有 i2v）：无参考=t2v；单图锁首帧或两张有序图片=first_last_frame；单图但要保留指定比例、或图片/视频/音频混合参考=m2v。默认模型 seedance_2.5、默认 480p、默认 16:9、默认 5 秒（比例/时长也可从 prompt 推断兜底）。非默认模型需 video_model_selection_source=user_explicit（绝不从语料/示例/容量/失败回退自动换模型）。正式 production 提交前要求确认门：须传 video_confirmation_model / video_confirmation_resolution / video_confirmation_duration（多时长批次用 video_confirmation_durations），且与最终值一致。video_execution_mode：production（提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（强制最低成本模型+720p，仅提交，须提供 video_group）。video_count（1-10）为「同一 prompt+参考生成 N 份」；tasks（数组）为「不同素材/不同 prompt 的 N 个任务」。video_group 指定画布名（自动加 YYYY_MM_DD- 前缀，复用或新建画布），省略则用固定画布 dsh-media；也可用 canvas_project_id 直接指定画布。任务状态持久化在私有运行目录。',
+        '**创作门（视频）**：production / production_submit_only 要求本工作区 24h 内有 creative_writer 记录；'
+        + '用户自带原文 / normalize-only，或 Gemini 失败后的 Agent 兜底：allow_manual_prompts=true + manual_prompts_reason（结果留痕）。'
+        + '统一视频生成管线（即梦画布 CLI dreamina-canvas）：所有调用分解为 N 个隔离任务，每个任务在画布上是一个独立节点（多产物分节点，每节点 count=1），先并发提交，再（production 模式）统一等待终态并按 resourceId 精确取回。付费链路固定为「保存节点 → node quote 报价 → node confirm 批准（--credit-ceiling）→ node run（--submit-id）→ operation wait → resource download」，报价不等于授权，同一任务绝不换新 submit-id 重放。视频公开模式只有 t2v / first_last_frame / m2v（没有 i2v）：无参考=t2v；单图锁首帧或两张有序图片=first_last_frame；单图但要保留指定比例、或图片/视频/音频混合参考=m2v。默认模型 seedance_2.5、默认 480p、默认 16:9、默认 5 秒（比例/时长也可从 prompt 推断兜底）。非默认模型需 video_model_selection_source=user_explicit（绝不从语料/示例/容量/失败回退自动换模型）。正式 production 提交前要求确认门：须传 video_confirmation_model / video_confirmation_resolution / video_confirmation_duration（多时长批次用 video_confirmation_durations），且与最终值一致。video_execution_mode：production（提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（强制最低成本模型+720p，仅提交，须提供 video_group）。video_count（1-10）为「同一 prompt+参考生成 N 份」；tasks（数组）为「不同素材/不同 prompt 的 N 个任务」。video_group 指定画布名（自动加 YYYY_MM_DD- 前缀，复用或新建画布），省略则用固定画布 dsh-media；也可用 canvas_project_id 直接指定画布。任务状态持久化在私有运行目录。',
       parameters: {
         prompt: {
           type: 'string',
@@ -294,6 +297,14 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           type: 'string',
           enum: [...VIDEO_EXECUTION_MODES],
           description: '执行模式：production（默认，提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（测试通道，强制最低成本模型+720p，仅提交不轮询，须提供 video_group）。',
+        },
+        allow_manual_prompts: {
+          type: 'boolean',
+          description: '创作门豁免（最终兜底）：用户自带原文 / normalize-only，或 creative_writer 不可用/失败一次后 Agent 自写——必须同时传 manual_prompts_reason。production 与 production_submit_only 默认要求本工作区 24h 内有 creative_writer 记录，否则拒绝提交。',
+        },
+        manual_prompts_reason: {
+          type: 'string',
+          description: '创作门豁免原因；allow_manual_prompts=true 时必填（说明是用户原文、normalize-only，还是 Gemini 失败后的 Agent 兜底）。',
         },
         video_count: {
           type: 'integer',
@@ -381,6 +392,21 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         if (boundaryIssue) throw mediaErrors.input(boundaryIssue)
         const mode: VideoExecutionMode = args.video_execution_mode ?? config.executionMode
         if (!VIDEO_EXECUTION_MODES.includes(mode)) throw mediaErrors.input(`unsupported video_execution_mode: ${mode}`)
+
+        // Video creative gate: production submissions need a fresh creative_writer
+        // record in this workspace. User-supplied / normalize-only prompts opt out
+        // explicitly (with a reason); test submissions ship no content and are exempt.
+        if (mode !== 'test_submit_only') {
+          const gate = await evaluateVideoCreativeGate({
+            workspaceRoot: exec.agent?.session?.header?.cwd ?? process.cwd(),
+            privateDir: config.privateDir,
+            allowManual: args.allow_manual_prompts === true,
+            manualReason: args.manual_prompts_reason,
+          })
+          if (!gate.allowed) {
+            throw mediaErrors.input(`creative gate: ${gate.message ?? 'refused'} ${VIDEO_CREATIVE_GATE_HINT}`)
+          }
+        }
 
         // ---- shared call-level settings (one set for the whole call) ----
         const prefs = promptPreferences(prompt0)

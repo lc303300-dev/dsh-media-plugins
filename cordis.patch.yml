@@ -121,6 +121,8 @@
         model: 'gemini-4-argon-thinking-high'
         # 思考 token 先于正文消耗，预算给足，否则长文会被截断成空回复。
         maxTokens: 32768
+        # 参考图直读：EXIF 归一化后按最长边 1920px 等比缩放、JPEG q85。
+        maxImageEdge: 1920
 
     - id: Ws_completion-notify
       name: dsh-media-plugins/Ws_completion-notify

@@ -21,6 +21,16 @@ generate_video 是**一条统一管线**，不区分单条与批量：任何一�
 7. **任务状态**：任务状态与 `submit_id` 持久化在私有运行目录，同一任务绝不重复提交；不确定提交（needs_review）绝不自动重试。
 8. 每次调用消耗积分：正式提交前确认意图与时长/比例/分辨率/模型。
 
+## 创作门（视频端硬门）
+
+> `generate_video` 在 **production / production_submit_only** 提交前会检查本工作区最近 24 小时是否有 `creative_writer` 记录（`kind ∈ {prompt, script, story, copy}`）；没有就**拒绝提交**。图片提示词不在此门范围。
+
+- **正常路径**：先按契约调 `creative_writer` 产出提示词，再提交，记录自动满足。
+- **用户自带提示词 / 明确要求不改写（normalize-only）**：传 `allow_manual_prompts: true`，并**必须**传 `manual_prompts_reason`（如“用户自带提示词，要求原样提交”）；结果会回 `manual_prompts: true` 留痕。缺 reason 会被拒绝。
+- **Agent 自写是最终兜底**：`creative_writer` 不可用、或失败一次后，Agent 可以直接写提示词并提交，但必须走同一条豁免（`allow_manual_prompts: true` + reason 说明“Gemini 失败后的 Agent 兜底”）。**不得静默手写**。
+- **test_submit_only**：豁免（测试通道不交付内容）。
+- 被拒时不要反复重试同一次提交：先补 `creative_writer`，或按上两条显式豁免。
+
 ## 画布项目唯一性（默认，硬规则）
 
 > 用户 2026-10-14 明确：**一个对话窗口默认只使用同一个即梦画布项目**。

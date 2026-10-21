@@ -1,5 +1,10 @@
 # 创意 Manifest（一次调用完成整片创意内容）
 
+> **统一契约（2026-10-21）**：本文件是 `video-director-prompt/references/creative-brief-contract.md`
+> 的**整片批处理特化**。通用字段（`materials` / `facts` / `shots` / `constraints` / `output` / `acceptance`）、
+> 分工边界、输出契约与验收清单以契约文件为准；本文件只定义短剧专属的 manifest 排布、
+> `===Txx===` 分段、解析与机械校验。两者冲突时，通用规则以契约为准，短剧格式以本文为准。
+>
 > **2026-10-19 起，短剧的创意内容走批处理**：Agent 组装一份 manifest → **1 次 `creative_writer` 调用** →
 > 按 `===Txx===` 解析 → 机械校验 → 拼常量块 → 出完整提示词。
 >

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   确保每个 DSH profile 的 llm-pi-ai 配置里都有 creative_writer 需要的 Comfly provider。
 
@@ -68,6 +68,7 @@ function New-ProviderBlock([string]$indent) {
         $out.Add("${indent}      maxTokens: 32768")
         $out.Add("${indent}      input:")
         $out.Add("${indent}        - text")
+        $out.Add("${indent}        - image")
     }
     return $out.ToArray()
 }

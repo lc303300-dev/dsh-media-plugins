@@ -91,6 +91,9 @@ thinking-high 单次 77–188 秒；基础档 4–12 秒（几百字）。**写�
 - 长任务用后台 job，别阻塞对话
 - **硬门提醒**：`prompt_batch set_prompts` 会检查最近 24 小时有无 `creative_writer` 记录
   （kind=prompt/script/story/copy），没有则整次拒绝；确实要手写时显式传 `allow_manual_prompts: true`
+- **统一契约（2026-10-21）**：短剧共用 `video-director-prompt/references/creative-brief-contract.md`——
+  Agent 保留事实/镜头表/模板/标签/常量块/验收，Gemini 4 只写创意正文；本技能的
+  `references/creative-manifest.md` 是该契约的**整片批处理特化**。改通用字段先改契约，再改短剧 manifest。
 
 ## 两段式工作流（内容层）
 

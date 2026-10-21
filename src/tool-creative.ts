@@ -12,6 +12,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type {} from '@deepseek-ai/dsh-fs'
+import sharp from 'sharp'
 import { join } from 'node:path'
 import { appendCreativeRecord, buildCreativeRecord, CREATIVE_LEDGER_FILE, parseCreativeLedger } from './shared/creative-ledger.ts'
 import { atomicWriteJson, readJsonSafe, resolvePrivateRoot } from './shared/private-runtime.ts'
@@ -20,7 +23,7 @@ import { atomicWriteJson, readJsonSafe, resolvePrivateRoot } from './shared/priv
 export const name = 'Ws_tool-creative'
 
 /** Services required by the creative writer. */
-export const inject = ['tools', 'llm']
+export const inject = ['tools', 'llm', 'fs', 'attachments']
 
 /** Plugin config (all optional — `Config` supplies the defaults). */
 export interface Config {
@@ -30,6 +33,8 @@ export interface Config {
   model?: string
   /** Per-request output token cap (thinking variants spend budget on reasoning first). */
   maxTokens?: number
+  /** Longest edge applied to reference images before they reach the model (default 1920). */
+  maxImageEdge?: number
   /** Private runtime dir; must match `Ws_tool-prompt-batch` so the ledger is found. */
   privateDir?: string
 }
@@ -38,10 +43,24 @@ export const Config: z<Config> = z.object({
   provider: z.string().default('comfly'),
   model: z.string().default('gemini-4-argon-thinking-high'),
   maxTokens: z.number().default(32768),
+  maxImageEdge: z.number().default(1920),
   privateDir: z.string().default(''),
 })
 
 type ResolvedConfig = Required<Config>
+
+/** Extensions `images` accepts, mapped to their declared media type. */
+const IMAGE_MEDIA: Readonly<Record<string, ImageMediaType>> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+}
+
+/** Upper bounds for one vision call. */
+const MAX_IMAGES = 8
+const MAX_READ_BYTES = 20 * 1024 * 1024
 
 /** 体裁 → 该体裁的行业惯例要求，拼进系统提示词。 */
 const KIND_GUIDE: Readonly<Record<string, string>> = {
@@ -89,9 +108,10 @@ function resolveModel(thinking: string | undefined, configured: string): string 
  * 组装创意写作专家 persona。
  * @param kind - 体裁键，未知值按 `other` 处理。
  * @param length - 篇幅键，未知值按 `medium` 处理。
+ * @param hasImages - 本次是否随消息附了参考图片。
  * @returns 完整的系统提示词。
  */
-function systemPrompt(kind: string, length: string): string {
+function systemPrompt(kind: string, length: string, hasImages = false): string {
   return [
     '你是一位资深的创意写作与提示词工程专家。调用方会把创作需求交给你，你唯一的任务是把需求直接写成可用的成品。',
     '',
@@ -108,6 +128,9 @@ function systemPrompt(kind: string, length: string): string {
     `体裁要求：${KIND_GUIDE[kind] ?? KIND_GUIDE.other}`,
     '',
     `篇幅：${LENGTH_GUIDE[length] ?? LENGTH_GUIDE.medium}`,
+    ...(hasImages
+      ? ['', '参考图片已随消息附上：先读图再写；只写图中可见或需求明确给出的事实，不要用节令/风格先验补图中不存在的物件。']
+      : []),
   ].join('\n')
 }
 
@@ -121,6 +144,8 @@ export function apply(ctx: Context, config: Config): void {
       '创意写作子 Agent（默认 gemini-4-argon-thinking-high）：把「写提示词 / 剧本分镜 / 文章 / 营销文案 / 故事」这类创意任务一次性成稿交给它。'
       + '当用户要求创作或重写创意文本、且需要一份可直接交付的成品时使用；它会直接返回成品，不会再反问也不做文件操作。'
       + '主 Agent 只负责分派需求与验收，不必自己逐字创作。拿到返回文本即可交付或做少量编辑。'
+      + '**可直接读图**：传 images（本地图片路径）时 Gemini 4 会先看图再写，适合实景/参考图/场景游览类提示词；'
+      + '图片会 EXIF 归一化并按最长边 1920px（可配置 maxImageEdge）等比缩放、JPEG q85 后提交，不覆盖原图。'
       + '默认思考档位较高：实测 800 字提示词约 77 秒，长剧本 1–3 分钟；需要快速草稿时传 thinking=base。',
     parameters: {
       brief: {
@@ -136,6 +161,11 @@ export function apply(ctx: Context, config: Config): void {
       context: {
         type: 'string',
         description: '可选参考材料：设定、已有文本、素材清单、品牌资料等。原样提供给创作模型。',
+      },
+      images: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '可选：本地参考图片路径（PNG/JPEG/WebP/GIF），最多 8 张，顺序有语义。传图后 Gemini 4 直接读图，适合实景/参考图/场景游览提示词；每张按最长边 1920px（配置 maxImageEdge）等比缩放、JPEG q85 后提交。',
       },
       length: {
         type: 'string',
@@ -172,8 +202,44 @@ export function apply(ctx: Context, config: Config): void {
       const model = resolveModel(args.thinking, resolved.model)
 
       const context = (args.context ?? '').trim()
-      const userText = context.length > 0
-        ? `创作需求：\n${brief}\n\n参考材料：\n${context}`
+      const imagePaths = Array.isArray(args.images)
+        ? args.images.map((p: unknown) => String(p ?? '').trim()).filter((p) => p.length > 0)
+        : []
+      if (imagePaths.length > MAX_IMAGES) {
+        throw new Error(`images: at most ${MAX_IMAGES} files per call`)
+      }
+      // Provider-input cap shared with the media pipeline: EXIF-normalize, then
+      // fit inside `maxImageEdge` (default 1920) without ever enlarging. JPEG q85
+      // is the pipeline's standard copy format; alpha is flattened to white.
+      const edge = Math.max(256, Math.min(4096, Math.round(resolved.maxImageEdge)))
+      const imageBlocks: any[] = []
+      for (const filePath of imagePaths) {
+        const dot = filePath.lastIndexOf('.')
+        const mediaType = IMAGE_MEDIA[dot >= 0 ? filePath.slice(dot).toLowerCase() : '']
+        if (mediaType === undefined) {
+          throw new Error(`images only accepts PNG/JPEG/WebP/GIF paths: ${filePath}`)
+        }
+        const target = await ctx.fs.resolve(filePath)
+        const raw = await ctx.fs.readBytes(target, exec.signal, MAX_READ_BYTES)
+        const normalized = await sharp(raw)
+          .rotate()
+          .resize({ width: edge, height: edge, fit: 'inside', withoutEnlargement: true })
+          .flatten({ background: '#ffffff' })
+          .jpeg({ quality: 85 })
+          .toBuffer()
+        const base = filePath.slice(Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')) + 1)
+        const name = `${base.replace(/\.[^.]+$/, '') || 'image'}.jpg`
+        const ref = await ctx.attachments.saveImage({ data: normalized, mediaType: 'image/jpeg', name })
+        imageBlocks.push({ type: 'image', attachment: ref })
+      }
+
+      const materials: string[] = []
+      if (context.length > 0) materials.push(context)
+      if (imageBlocks.length > 0) {
+        materials.push(`见随附 ${imageBlocks.length} 张参考图片（按传入顺序；已按最长边 ${edge}px 归一化）。`)
+      }
+      const userText = materials.length > 0
+        ? `创作需求：\n${brief}\n\n参考材料：\n${materials.join('\n\n')}`
         : `创作需求：\n${brief}`
 
       let text = ''
@@ -182,9 +248,9 @@ export function apply(ctx: Context, config: Config): void {
         provider: resolved.provider,
         model,
         messages: [
-          createSystemMessage(systemPrompt(kind, length)),
+          createSystemMessage(systemPrompt(kind, length, imageBlocks.length > 0)),
           createUserMessage({
-            content: [{ type: 'text', text: userText }],
+            content: [{ type: 'text', text: userText }, ...imageBlocks] as any,
             source: { kind: 'plugin', plugin: 'Ws_tool-creative' },
           }),
         ],

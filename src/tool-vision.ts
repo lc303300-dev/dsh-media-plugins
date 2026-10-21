@@ -13,6 +13,7 @@ import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-fs'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import sharp from 'sharp'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-vision'
@@ -104,7 +105,30 @@ export function apply(ctx: Context, config: Config): void {
       const slash = filePath.lastIndexOf('/')
       const back = filePath.lastIndexOf('\\')
       const name = filePath.slice(Math.max(slash, back) + 1)
-      const ref = await ctx.attachments.saveImage({ data, mediaType, name })
+      // Every image handed to a model uses the pipeline-wide copy policy:
+      // longest edge 1920 px, JPEG q85, alpha flattened to white. If sharp
+      // cannot decode the bytes, keep the original so the provider can report
+      // the real error instead of a local decode failure.
+      let payload = data
+      let payloadType: ImageMediaType = mediaType
+      let payloadName = name
+      try {
+        payload = await sharp(data)
+          .rotate()
+          .resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true })
+          .flatten({ background: '#ffffff' })
+          .jpeg({ quality: 85 })
+          .toBuffer()
+        payloadType = 'image/jpeg'
+        payloadName = `${name.replace(/\.[^.]+$/, '')}.jpg`
+      } catch {
+        payload = data
+      }
+      const ref = await ctx.attachments.saveImage({
+        data: payload,
+        mediaType: payloadType,
+        name: payloadName,
+      })
 
       let text = ''
       let failure: string | null = null

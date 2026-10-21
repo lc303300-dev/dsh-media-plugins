@@ -26,11 +26,23 @@ whenToUse: 需要把故事/脚本/画面创意/参考素材写成可执行中文
 
 ## 资料读取路由
 
-- **先读 [即梦提示词模板集](references/jimeng-standard-template.md)**：它是模板选择、素材角色、编号映射与允许/禁止写法的**唯一真源**。
+- **先读 [创意 Brief 契约](references/creative-brief-contract.md)**：所有视频提示词创意类管线（导演单条/批次、短剧、Skill 线）共用的唯一字段契约——谁产什么、brief 结构、调用参数、输出与验收全在这里。
+- **再读 [即梦提示词模板集](references/jimeng-standard-template.md)**：它是模板选择、素材角色、编号映射与允许/禁止写法的**唯一真源**。
 - 每次创作都读 [导演方法](references/directing-methods.md)，用于可视化表达、场面调度、表演、光色、物理与声音。
 - 需要确定要素语义、素材语义、风格分布或转场写法时，读 [提示词结构](references/prompt-structure.md)。
 - 需要特殊视角、高速动作、复杂转场、极端 FOV 或社区实战技巧时，读 [社区与实验技巧](references/community-techniques.md)。
 - [即梦模板速查](references/structure-guide.md) 只作快速落笔用，内容与正本重复时以正本为准。
+
+## 创意正文生产（Gemini 4）
+
+本技能是"怎样拍"的知识层；**创意正文由 `creative_writer` 生产，Agent 不手写**。
+
+- Agent 先按 [创意 Brief 契约](references/creative-brief-contract.md) 组 brief：事实、镜头表、模板、要写的区块、语料结构摘要、约束、验收。
+- 调用：`creative_writer(kind=prompt, thinking=base, length=medium, brief=<brief>, context=<事实+语料摘要>, images=[参考图路径])`。
+  **提示词默认 `base`**（快 10–20 倍）；只有剧本/分镜/导演阐述才用 `thinking=high`。
+- **有实景/参考图就传 `images`**：Gemini 4 直接读图；每张会 EXIF 归一化并按**最长边 1920px**（`maxImageEdge` 可配）等比缩放、JPEG q85 后提交，不覆盖原图。图是事实源，文字只补图中看不到的事实；无图时才完全文字化。
+- Gemini 只写指定区块（画面内容、逐镜语言、布光/背景、风格措辞）；**镜数/时长/景别/机位、素材编号、常量块、音频默认句由 Agent 保留**。
+- 不适用：用户明确说"不修改提示词"（normalize-only），或已给定完整提示词并要求原样提交。
 
 ## 证据与适用性
 

@@ -33,6 +33,7 @@ import {
 import { SkillRegistry, type SlotContract } from './shared/registry-core.ts'
 import { buildRevisionRequest } from './shared/revision-core.ts'
 import { atomicWriteJson, ensureDir, readJsonSafe, resolvePrivateRoot, sha256File } from './shared/private-runtime.ts'
+import { evaluateVideoCreativeGate, VIDEO_CREATIVE_GATE_HINT, type VideoCreativeGateDecision } from './shared/video-creative-gate.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-project'
@@ -195,7 +196,9 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         slot: { type: 'string', description: 'add_material 用：素材槽 id（对应 Skill contract 的 slot）。' },
         path: { type: 'string', description: 'add_material 用：素材文件路径。' },
         text: { type: 'string', description: 'set_prompt 用：提示词文本。' },
-        source: { type: 'string', enum: ['skill_v1', 'governed_revision', 'user'], description: 'set_prompt 用：提示词来源。' },
+        source: { type: 'string', enum: ['skill_v1', 'governed_revision', 'user'], description: 'set_prompt 用：提示词来源。skill_v1 与创作类 revision 需先调 creative_writer；user=用户自带原文，直接放行。' },
+        allow_manual_prompts: { type: 'boolean', description: 'set_prompt 用：显式豁免创作门（用户自带原文 / normalize-only，或 creative_writer 不可用/失败后的 Agent 兜底）。必须同时传 manual_prompts_reason。' },
+        manual_prompts_reason: { type: 'string', description: 'set_prompt 用：豁免原因，allow_manual_prompts=true 时必填（说明是用户原文、normalize-only，还是 Gemini 失败后的 Agent 兜底）。' },
         revision_type: { type: 'string', enum: ['explicit_local', 'ambiguous_creative', 'structural_rewrite'], description: 'request_revision 用：修订类型（与 feedback 二选一）。' },
         feedback: { type: 'string', description: 'request_revision 用：用户修改意见原文；提供后自动分类并生成受约束修订请求。' },
         use_source: { type: 'boolean', description: 'lock_final 用：true 表示把 source 目录素材复制到 final 并锁定（用户供图）；false 用 final 目录已有生成结果。' },
@@ -213,6 +216,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             payload: { type: 'object', additionalProperties: true },
             slot_dirs: { type: 'array' },
             scan: { type: 'array' },
+            creative_credential: { type: 'string' },
+            manual_prompts: { type: 'boolean' },
           },
         },
         render(_args: unknown, value: any) {
@@ -361,8 +366,37 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           }
           case 'set_prompt': {
             if (!args.text) return { ok: false, message: 'text is required' }
-            const next = addPrompt(state, args.text, (args.source ?? 'user') as any)
-            return { ok: true, message: `prompt v${next.prompts.length} added (${next.status})`, project: await save(next) }
+            const source = (args.source ?? 'user') as 'skill_v1' | 'governed_revision' | 'user'
+            const classification = (state as any).revisionRequest?.classification
+            // V1 and creative revisions must come from creative_writer. User-supplied
+            // text and explicit_local edits are exempt (the latter still needs the
+            // caller to pass the bypass when source is governed_revision).
+            const needsCreative = source === 'skill_v1'
+              || (source === 'governed_revision' && classification !== 'explicit_local')
+            let gate: VideoCreativeGateDecision | undefined
+            if (needsCreative) {
+              gate = await evaluateVideoCreativeGate({
+                workspaceRoot,
+                privateDir: config.privateDir,
+                allowManual: args.allow_manual_prompts === true,
+                manualReason: args.manual_prompts_reason,
+              })
+              if (!gate.allowed) {
+                return {
+                  ok: false,
+                  message: `creative gate: ${gate.message ?? 'refused'} ${VIDEO_CREATIVE_GATE_HINT}`,
+                  project: state,
+                }
+              }
+            }
+            const next = addPrompt(state, args.text, source as any)
+            return {
+              ok: true,
+              message: `prompt v${next.prompts.length} added (${next.status})${gate?.bypassed ? ' — creative gate bypassed via allow_manual_prompts' : ''}`,
+              project: await save(next),
+              ...(gate?.record ? { creative_credential: gate.record.id } : {}),
+              ...(gate?.bypassed ? { manual_prompts: true } : {}),
+            }
           }
           case 'request_revision': {
             // feedback text → deterministic classification (Codex_DT port); stored on the project
