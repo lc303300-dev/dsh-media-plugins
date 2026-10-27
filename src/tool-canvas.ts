@@ -159,6 +159,21 @@ export function isSpendingCall(command: string, action: string, args: Record<str
   return false
 }
 
+/**
+ * 是否属于**视频提交**（生成启动门覆盖范围）。
+ *
+ * 门只盖视频：`node run` / `--run` 需要一次性票据；`upscale`（改图放大）与
+ * 显式的图片节点（`node create image` / `node edit image`）属于图片线路，不拦。
+ */
+export function isVideoSubmitCall(command: string, action: string, args: Record<string, unknown> | undefined): boolean {
+  if (!isSpendingCall(command, action, args)) return false
+  const act = String(action ?? '').trim().toLowerCase()
+  if (act.includes('upscale')) return false
+  // `node create image --run` / `node edit image --run`：图片，不拦
+  if (/(^|\s)image(\s|$)/.test(act) && !act.includes('video')) return false
+  return true
+}
+
 function apply(ctx: Context, config: ResolvedConfig): void {
   ctx.tools.register(
     defineTool({
@@ -188,7 +203,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         },
         launch_ticket: {
           type: 'string',
-          description: '生成启动门票据（lt_xxx）：仅付费动作（--run / node run / node upscale）需要，由真人在终端 approve 生成；其余命令不需要也不接受该值透传。',
+          description: '生成启动门票据（lt_xxx）：仅**视频提交**（node run / --run）需要，由真人在终端 approve 生成；upscale 与图片节点（node create/edit image）走图片线路，不拦也不需要该值。',
         },
       },
       output: {
@@ -250,9 +265,10 @@ function apply(ctx: Context, config: ResolvedConfig): void {
 
         const workspaceRoot: string = exec.agent?.session?.header?.cwd ?? process.cwd()
         const privateRoot = resolvePrivateRoot(workspaceRoot, config.privateDir)
-        // 生成启动门（硬门）：付费动作（--run / node run / node upscale）除报价批准外，
+        // 生成启动门（硬门，仅视频提交）：`node run` / `--run` 除报价批准外，
         // 还必须有真人在终端批准的一次性票据；票据在真正调用 CLI 前消费。
-        if (isSpendingCall(command, action, flags)) {
+        // `upscale` 与图片节点属于图片线路，不拦（见 isVideoSubmitCall）。
+        if (isVideoSubmitCall(command, action, flags)) {
           const ticketCheck = await consumeLaunchTicket(privateRoot, {
             ticketId: String(args.launch_ticket ?? '').trim(),
             tool: 'dreamina_canvas',

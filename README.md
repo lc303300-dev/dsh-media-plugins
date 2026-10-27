@@ -136,14 +136,14 @@ batch_image(command="start", manifest={groups:[{id:"g1",prompt:"橘猫",candidat
 video_to_gif(video="D:\\out\\clip.mp4")
 ```
 
-## 生成启动门（付费必须人工批准）
+## 生成启动门（视频必须人工批准）
 
-`generate_video` / `generate_image` / `batch_image start` / `dreamina_canvas`（`node run`、`--run`、`node upscale`）在工具层强制校验一次性票据 `launch_ticket`：没有票据直接拒绝，**绝不会**替你提交付费任务。
+**只盖视频**：`generate_video` 与 `dreamina_canvas` 的视频提交（`node run`、`--run`）在工具层强制校验一次性票据 `launch_ticket`：没有票据直接拒绝，**绝不会**替你提交视频任务。`upscale`、`node create/edit image` 这类图片节点，以及 `generate_image` / `batch_image`（图片线路）**不过门**——出图是迭代活，不让人每改一版都去终端确认。
 
 票据只能由**真人在真实终端**里生成——`approve` 检查 `process.stdin.isTTY`，Agent、后台进程、管道喂确认词都会被拒：
 
 ```text
-# 1) 登记计划（Agent 可执行；只写清单，不付费）
+# 1) 登记计划（Agent 可执行；只写清单，不提交）
 node scripts/launch-gate.mjs plan --json plan.json
 # 2) 打开终端窗口，由用户本人输入「自动开始任务」
 node scripts/launch-gate.mjs ask --plan pl_xxx

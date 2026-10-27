@@ -1,11 +1,12 @@
 /**
  * 生成启动门 — 工具接线测试（防止"门只存在于文档"）。
  *
- * 真实故障模式（2026-10-27）：规则写了"必须人工启动"，但生成工具里没有校验，
- * Agent 仍然一句调用就能花钱。这里直接调用工具的 execute，断言：
- *   1. 没有 launch_ticket → 拒绝，且报错里给出申请票据的下一步；
- *   2. 票据工具不符 → 拒绝；
- *   3. 未过门的调用不会触达供应商（拒绝发生在任何付费/网络动作之前）。
+ * 覆盖范围：**只有视频**。真实故障模式（2026-10-27）：规则写了"必须人工启动"，
+ * 但生成工具里没有校验，Agent 仍然一句调用就能花钱。这里直接调用工具的 execute，断言：
+ *   1. 视频提交（generate_video / dreamina_canvas node run）没有 launch_ticket → 拒绝；
+ *   2. 拒绝发生在任何付费/网络动作之前（不会先发请求再报错）；
+ *   3. 图片线路（generate_image / batch_image / upscale / 图片节点）不过门，
+ *      且 schema 里没有 launch_ticket —— 迭代出图不被拖慢。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -14,7 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply as applyCanvas } from '../src/tool-canvas.ts'
 import { apply as applyImage } from '../src/tool-image-gen.ts'
-import { approveLaunchPlan, createLaunchPlan } from '../src/shared/launch-gate.ts'
+import { apply as applyBatch } from '../src/tool-batch-image.ts'
 
 function makeCtx() {
   const ctx = {
@@ -61,6 +62,19 @@ const imageConfig = {
   dreaminaAccount: '',
 }
 
+/** Minimal batch config: only the parameter shape is asserted, nothing executes. */
+const batchImageConfig = {
+  comflyBaseURL: 'https://example.invalid',
+  comflyApiKeyEnv: 'COMFLY_API_KEY',
+  dreaminaPath: '',
+  dreaminaCanvasPath: '',
+  dreaminaCanvasProfile: '',
+  proxyUrl: '',
+  outputDir: 'outputs',
+  privateDir: '',
+  dreaminaAccount: '',
+}
+
 async function withRoot(fn) {
   const root = await mkdtemp(join(tmpdir(), 'launch-gate-wiring-'))
   try {
@@ -95,37 +109,39 @@ test('dreamina_canvas: 非付费动作（node show）不需要票据', async () 
   })
 })
 
-test('generate_image: 没有票据 → 拒绝且提示申请下一步', async () => {
+test('dreamina_canvas: upscale（图片改图）不受启动门限制', async () => {
   await withRoot(async (root) => {
     const ctx = makeCtx()
-    applyImage(ctx, imageConfig)
-    await assert.rejects(
-      () => ctx.tool.execute({ prompt: '测试提示词', image_ratio: '1:1' }, makeExec(root)),
-      (error) => {
-        const text = String(error?.message ?? error)
-        assert.match(text, /launch_ticket/)
-        assert.match(text, /launch-gate\.mjs/)
-        return true
-      },
+    applyCanvas(ctx, canvasConfig)
+    const result = await ctx.tool.execute(
+      { command: 'node', action: 'upscale image', args: { project_id: 'p', node_id: 'node_x', credit_ceiling: 10 } },
+      makeExec(root),
     )
+    assert.notEqual(result?.outcome, 'launch_ticket_required')
   })
 })
 
-test('generate_image: 票据工具不符 → 拒绝', async () => {
+test('dreamina_canvas: node create image --run（图片节点）不受启动门限制', async () => {
   await withRoot(async (root) => {
-    // 工具把 privateRoot 解析为 <cwd>/.dsh-media-private，计划必须写在同一个根下。
-    const privateRoot = join(root, '.dsh-media-private')
-    const plan = await createLaunchPlan(privateRoot, { tool: 'generate_video', scope: { maxItems: 1 }, summary: ['video'] })
-    const approved = await approveLaunchPlan(privateRoot, { planId: plan.id, phrase: '自动开始任务', isTTY: true })
-    assert.equal(approved.ok, true)
     const ctx = makeCtx()
-    applyImage(ctx, imageConfig)
-    await assert.rejects(
-      () => ctx.tool.execute({ prompt: '测试提示词', image_ratio: '1:1', launch_ticket: approved.ticket.id }, makeExec(root)),
-      (error) => {
-        assert.match(String(error?.message ?? error), /不能用于 generate_image/)
-        return true
-      },
+    applyCanvas(ctx, canvasConfig)
+    const result = await ctx.tool.execute(
+      { command: 'node', action: 'create image', args: { project_id: 'p', run: true, credit_ceiling: 10 } },
+      makeExec(root),
     )
+    assert.notEqual(result?.outcome, 'launch_ticket_required')
   })
 })
+
+test('generate_image: 图片线路不过门（schema 里没有 launch_ticket）', async () => {
+  const ctx = makeCtx()
+  applyImage(ctx, imageConfig)
+  assert.equal(ctx.tool.parameters?.launch_ticket, undefined)
+})
+
+test('batch_image: 图片线路不过门（schema 里没有 launch_ticket）', async () => {
+  const ctx = makeCtx()
+  applyBatch(ctx, batchImageConfig)
+  assert.equal(ctx.tool.parameters?.launch_ticket, undefined)
+})
+

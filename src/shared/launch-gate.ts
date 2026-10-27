@@ -1,8 +1,13 @@
 /**
- * Launch gate (生成启动门): no paid generation may start without a one-shot
+ * Launch gate (生成启动门): no **video** submission may start without a one-shot
  * ticket that a human minted **in a real terminal** by typing the confirmation
  * phrase. Agents run without a TTY, so they cannot mint (approve) a ticket
  * themselves — that is the whole point of the gate.
+ *
+ * Scope: video only (`generate_video`, and `dreamina_canvas` node run / --run).
+ * Image routes (`generate_image`, `batch_image`, canvas upscale / image nodes)
+ * are deliberately NOT gated — image work is iterative and the approval friction
+ * would break the loop.
  *
  * Flow:
  *   1. Agent writes a plan file (node ids / prompts / model / ratio / duration).
@@ -269,10 +274,11 @@ export async function revokeLaunchTicket(privateRoot: string, ticketId: string):
   return true
 }
 
-/** Text shown when a paid tool refuses to run without a valid ticket. */
+/** Text shown when a video tool refuses to submit without a valid ticket. */
 export function launchGateGuidance(privateRoot: string): string {
   return [
-    '生成启动门：付费提交需要一次性票据，票据只能由真人在真实终端里输入确认词生成。',
+    '生成启动门：视频提交需要一次性票据，票据只能由真人在真实终端里输入确认词生成。',
+    '（图片线路——generate_image / batch_image / upscale——不受此门限制。）',
     '步骤 1（Agent）写计划：node scripts/launch-gate.mjs plan --json plan.json',
     '步骤 2（用户）在终端批准：node scripts/launch-gate.mjs approve --plan <plan_id>，按提示输入「自动开始任务」',
     '步骤 3（Agent）带 launch_ticket=<ticket_id> 重新调用本工具。',

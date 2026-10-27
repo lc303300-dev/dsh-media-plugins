@@ -47,10 +47,11 @@ generate_video 是**一条统一管线**，不区分单条与批量：任何一�
 
 ## 生成启动门（硬门，不可跳过）
 
-`generate_video` / `generate_image` / `batch_image start` 这类付费提交都强制校验一次性票据 `launch_ticket`：
+视频提交（`generate_video`，以及 `dreamina_canvas` 的 `node run` / `--run`）强制校验一次性票据 `launch_ticket`：
 
 1. 写计划并登记：`node scripts/launch-gate.mjs plan --json plan.json` → `pl_xxx`；
 2. 由用户本人在终端运行 `node scripts/launch-gate.mjs ask --plan pl_xxx`，输入「自动开始任务」→ `lt_xxx`；
-3. 带 `launch_ticket=lt_xxx` 调用生成工具。
+3. 带 `launch_ticket=lt_xxx` 调用 `generate_video`。
 
 票据一次性、30 分钟过期、范围锁定（工具 / 项数 / 总时长），提交时消费。Agent 没有 TTY，**不得代批、不得复用、不得绕过**；拿不到票据就停下，把计划与 `pl_xxx` 交给用户批准。
+图片线路（`generate_image` / `batch_image` / upscale / 图片节点）不过门。
