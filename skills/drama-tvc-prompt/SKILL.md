@@ -24,7 +24,7 @@ description: >
 | **① 上游：剧本 → 九列分镜表** | 五步工作流、导演定调六维、节奏规划与镜头组、叙事目的分析法、动作-反应 12 变体、70/30 法则、切镜连接逻辑、九列规范、551 镜时长基准 | **社区项目** [Shanyin-ai/shanyin-director-master](https://github.com/Shanyin-ai/shanyin-director-master)（@山音，MIT） | `references/shanyin-director-method.md` |
 | **② 下游：分镜 → 即梦提示词** | 10 区块剧本式结构（风格/布光锁定/参考/设定/特殊要求/导演/故事背景/画面内容/镜头/一致性/限定） | **用户提供的 4 段即梦短剧实战范本**归纳 | `references/jimeng-drama-template.md` |
 | **③ 布光模块** | 三套可复用布光（日系青春 / 建发高端 / 温馨日常）+ 8 维度拆解法 | 日系集自用户范本；建发集自本项目实战 | `references/lighting-modules.md` |
-| **④ 画板执行** | 素材上传→节点→卡片→报价确认→运行→下载 | 本仓库 AGENTS.md「画板批量制片流程」 | AGENTS.md |
+| **④ 画板执行** | 素材上传→**建素材节点（四类建全）**→卡片→报价确认→运行→下载；改卡用 `node edit --node-id`，改前校验 refs 死链 | 本仓库 AGENTS.md「画板批量制片流程」第 3.5 节 | AGENTS.md |
 | **⑤ 实战补充（非社区内容）** | 三幕重排、转场设计、连续性/台词检查清单、反常识清单 | **本仓库建发短剧项目实战验证** | `references/practice-notes.md` |
 | **⑥ 镜头级渲染** | 分镜表→逐镜行：动作/对峙两套模式、因果链、时间戳闭环、台词不跨镜、连续拆段、素材绑定纪律 | 方法论参考社区项目 [jiayushi1-ux/script-to-shot-engine](https://github.com/jiayushi1-ux/script-to-shot-engine) v2.3.2（**该仓库无开源协议 → 本文件为自有表述重写 + 本项目实测适配，非原文转载**） | `references/shot-level-rendering.md` |
 
