@@ -44,3 +44,13 @@ generate_video 是**一条统一管线**，不区分单条与批量：任何一�
 4. **会话恢复或换窗口**：先用 `canvas ls` 或持久化的 projectId 认下已有项目再继续，不要另起一个。
 5. **例外**：原项目不可用时（无权限、已删除、状态异常）先报告原因，再新建。
 6. **不要混淆**：这里指的是**即梦画布项目**（canvas project）；Skill 线的 `project_pipeline` 项目是治理层状态机，两者不是一回事。
+
+## 生成启动门（硬门，不可跳过）
+
+`generate_video` / `generate_image` / `batch_image start` 这类付费提交都强制校验一次性票据 `launch_ticket`：
+
+1. 写计划并登记：`node scripts/launch-gate.mjs plan --json plan.json` → `pl_xxx`；
+2. 由用户本人在终端运行 `node scripts/launch-gate.mjs ask --plan pl_xxx`，输入「自动开始任务」→ `lt_xxx`；
+3. 带 `launch_ticket=lt_xxx` 调用生成工具。
+
+票据一次性、30 分钟过期、范围锁定（工具 / 项数 / 总时长），提交时消费。Agent 没有 TTY，**不得代批、不得复用、不得绕过**；拿不到票据就停下，把计划与 `pl_xxx` 交给用户批准。

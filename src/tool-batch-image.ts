@@ -34,6 +34,7 @@ import { parseGridSpec, splitGridPanels } from './shared/grid-detect.ts'
 import { DEFAULT_IMAGE_CONCURRENCY, REPAINT_PROVIDER_GATE_NOTE, runImageRouter, type RouterConfig } from './shared/adapters.ts'
 import { DEFAULT_IMAGE_REQUEST_TIMEOUT_MS } from './shared/media-client.ts'
 import { appendSafeLog, ensureDir, resolvePrivateRoot, sha256Text } from './shared/private-runtime.ts'
+import { consumeLaunchTicket, launchGateGuidance } from './shared/launch-gate.ts'
 import { createAccountGate } from './shared/dreamina-account.ts'
 
 /** Bundle root: the built tool file lives in dist/, so resolve from the package root. */
@@ -175,6 +176,10 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           description: 'start 用：{groups: [{id, prompt, candidates, image_ratio, reference_images?, original_image?}], image_resolution?, image_provider?, repaint?, concurrency?, deadline_seconds?, completion_grace_seconds?}；reference_images 为该组所有候选的参考图（相对 manifest 所在目录解析），original_image 作为联系表槽 0 素材/风格参考；repaint: true = 洗图批（强制 Gemini 线路）；或传 manifest_path。',
         },
         manifest_path: { type: 'string', description: 'start 用：manifest JSON 文件路径（UTF-8）。' },
+        launch_ticket: {
+          type: 'string',
+          description: '生成启动门票据（lt_xxx）：start 会付费批量出图，必须带一次性票据（由真人在终端 approve 生成）；缺失/过期/项数超出票据范围会被拒绝。',
+        },
         job_key: { type: 'string', description: 'status/contact_sheet 用：稳定 job key。' },
       },
       output: {
@@ -221,6 +226,16 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             }
             const manifest: BatchManifest = validateManifest(raw)
             const plan = computeDeadline(manifest)
+            // 生成启动门（硬门）：批量出图是付费动作，必须有真人在终端批准的一次性票据。
+            const ticketCheck = await consumeLaunchTicket(privateRoot, {
+              ticketId: String(args.launch_ticket ?? '').trim(),
+              tool: 'batch_image',
+              items: plan.total,
+              detail: `${plan.total} candidate(s) @ concurrency ${plan.concurrency}`,
+            })
+            if (!ticketCheck.ok) {
+              return { ok: false, message: `${ticketCheck.message}\n\n${launchGateGuidance(privateRoot)}` }
+            }
             const existing = db.prepare('SELECT * FROM jobs WHERE job_key = ?').get(plan.jobKey)
             if (existing) {
               return { ok: false, message: `job ${plan.jobKey} already exists (${existing.status}); stable job key prevents duplicate submission`, job_key: plan.jobKey, summary: existing }

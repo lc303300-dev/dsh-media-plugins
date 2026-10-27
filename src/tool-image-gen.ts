@@ -38,6 +38,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { copyFile, rename } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { packageRootOf } from './shared/pkg-root.ts'
+import { consumeLaunchTicket, launchGateGuidance } from './shared/launch-gate.ts'
 import {
   DEFAULT_IMAGE_CONCURRENCY,
   SUPPORTED_RATIOS,
@@ -160,6 +161,10 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           enum: [...SUPPORTED_RESOLUTIONS],
           description: '可选：图片输出分辨率（1K/2K/4K）。两条 Comfly 线路都是单档位、只钳制不报错：默认线路 comfly-gpt-image-2-4k 实测输出 2048 长边（属 2K 档，传 1K/2K/4K 都按该档执行），comfly-gemini-flash-preview 只出 2K（传 1K/4K 按 2K 执行）；Dreamina 缺省 1K。用户要求的是具体像素尺寸（如 1920x1080）时不要用本字段，直接把像素尺寸传进 image_ratio，工具会自动换算成最接近的标准比例。',
         },
+        launch_ticket: {
+          type: 'string',
+          description: '生成启动门票据（lt_xxx）：出图是付费动作，必须带一次性票据。票据只能由真人在真实终端运行 `node scripts/launch-gate.mjs approve --plan <plan_id>` 并输入「自动开始任务」生成；缺失/过期/范围不符会被拒绝。',
+        },
         image_provider: {
           type: 'string',
           enum: [...SUPPORTED_IMAGE_PROVIDERS, 'comfly-gpt-image-2', 'comfly-gpt-image-2.5'],
@@ -253,6 +258,17 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           enabled: config.enabled,
           credentials,
           ensureDreaminaAccount: () => accountGate.ensure(),
+        }
+
+        // 生成启动门（硬门）：没有真人终端批准的一次性票据，绝不调用任何供应商。
+        const ticketCheck = await consumeLaunchTicket(privateRoot, {
+          ticketId: String(args.launch_ticket ?? '').trim(),
+          tool: 'generate_image',
+          items: 1,
+          detail: `${ratio} ${imageProvider ?? 'auto'}${repaint ? ' repaint' : ''}`,
+        })
+        if (!ticketCheck.ok) {
+          throw mediaErrors.input(`${ticketCheck.message}\n\n${launchGateGuidance(privateRoot)}`)
         }
 
         const request = { prompt: redactPrompt(prompt), ratio, size, resolution: args.image_resolution ?? null, imageProvider, images: args.image ?? [], repaint }

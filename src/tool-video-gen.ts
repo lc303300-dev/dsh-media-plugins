@@ -32,6 +32,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path'
 import { mediaErrors } from './shared/failure.ts'
 import { evaluateVideoCreativeGate, VIDEO_CREATIVE_GATE_HINT } from './shared/video-creative-gate.ts'
 import { packageRootOf } from './shared/pkg-root.ts'
+import { consumeLaunchTicket, launchGateGuidance } from './shared/launch-gate.ts'
 import {
   TaskStore,
   appendSafeLog,
@@ -305,6 +306,10 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         manual_prompts_reason: {
           type: 'string',
           description: '创作门豁免原因；allow_manual_prompts=true 时必填（说明是用户原文、normalize-only，还是 Gemini 失败后的 Agent 兜底）。',
+        },
+        launch_ticket: {
+          type: 'string',
+          description: '生成启动门票据（lt_xxx）：付费提交必须带一次性票据。票据只能由真人在真实终端运行 `node scripts/launch-gate.mjs approve --plan <plan_id>` 并输入「自动开始任务」生成；缺失/过期/范围不符会被拒绝，绝不由工具自动补票。',
         },
         video_count: {
           type: 'integer',
@@ -600,6 +605,19 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           } catch (error: any) {
             await appendSafeLog(privateRoot, 'generate_video', { event: 'model_list_check_failed', detail: String(error?.message ?? error).slice(0, 200) })
           }
+        }
+
+        // ---- 生成启动门（硬门）：付费提交必须有真人终端批准的一次性票据 ----
+        // 在这里（所有校验通过、即将建任务/提交前）才消费票据，之前的失败不会烧掉它。
+        const ticketCheck = await consumeLaunchTicket(privateRoot, {
+          ticketId: String(args.launch_ticket ?? '').trim(),
+          tool: 'generate_video',
+          items: specs.length,
+          durationSeconds: specDurations.reduce((sum: number, value: number) => sum + value, 0),
+          detail: `${mode} ${model} ${resolution} ${specs.length} task(s)`,
+        })
+        if (!ticketCheck.ok) {
+          throw mediaErrors.input(`${ticketCheck.message}\n\n${launchGateGuidance(privateRoot)}`)
         }
 
         // ---- per-task isolation: its own dir, its own persisted identity ----

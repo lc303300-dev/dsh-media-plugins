@@ -25,3 +25,13 @@ whenToUse: 用户要求"每组生成 N 张""多组候选图""编号选图板""�
 - **失败后处置**：先冷却 2–5 分钟，然后给该组换一个新的组 id（如 `S07-...-R2`）重新排队；直接重投同一 manifest 会被 job key 去重拒绝。
 - **每批规格**：一次 6–10 组最稳；提示词控制在约 700–900 字（更长会明显拖慢并更容易撞 90 秒盒）。
 - **排期预估**：并发 10 时 ≈ `⌈张数÷10⌉ × 60–100 秒` + 1 分钟收尾；40 张约 6–10 分钟。
+
+## 生成启动门（硬门，不可跳过）
+
+`generate_video` / `generate_image` / `batch_image start` 这类付费提交都强制校验一次性票据 `launch_ticket`：
+
+1. 写计划并登记：`node scripts/launch-gate.mjs plan --json plan.json` → `pl_xxx`；
+2. 由用户本人在终端运行 `node scripts/launch-gate.mjs ask --plan pl_xxx`，输入「自动开始任务」→ `lt_xxx`；
+3. 带 `launch_ticket=lt_xxx` 调用生成工具。
+
+票据一次性、30 分钟过期、范围锁定（工具 / 项数 / 总时长），提交时消费。Agent 没有 TTY，**不得代批、不得复用、不得绕过**；拿不到票据就停下，把计划与 `pl_xxx` 交给用户批准。

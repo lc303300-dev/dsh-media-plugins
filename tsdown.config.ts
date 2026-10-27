@@ -24,6 +24,7 @@ export default defineConfig({
     'tool-dreamina-account': 'src/tool-dreamina-account.ts',
     'tool-canvas': 'src/tool-canvas.ts',
     'tool-creative': 'src/tool-creative.ts',
+    'launch-gate': 'src/shared/launch-gate.ts',
     'notify': 'src/notify.ts',
   },
   format: ['esm'],

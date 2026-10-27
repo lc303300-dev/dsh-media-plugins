@@ -26,6 +26,7 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { join } from 'node:path'
 import { appendSafeLog, resolvePrivateRoot } from './shared/private-runtime.ts'
+import { consumeLaunchTicket, launchGateGuidance } from './shared/launch-gate.ts'
 import { createAccountGate } from './shared/dreamina-account.ts'
 import {
   canvasRequestId,
@@ -185,6 +186,10 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           items: { type: 'string' },
           description: '额外位置参数（放在 action 之后）：如 model find 的名称、canvas create 的画布名、operation wait 的 submitId、resource download 的 resourceId。',
         },
+        launch_ticket: {
+          type: 'string',
+          description: '生成启动门票据（lt_xxx）：仅付费动作（--run / node run / node upscale）需要，由真人在终端 approve 生成；其余命令不需要也不接受该值透传。',
+        },
       },
       output: {
         schema: {
@@ -245,6 +250,26 @@ function apply(ctx: Context, config: ResolvedConfig): void {
 
         const workspaceRoot: string = exec.agent?.session?.header?.cwd ?? process.cwd()
         const privateRoot = resolvePrivateRoot(workspaceRoot, config.privateDir)
+        // 生成启动门（硬门）：付费动作（--run / node run / node upscale）除报价批准外，
+        // 还必须有真人在终端批准的一次性票据；票据在真正调用 CLI 前消费。
+        if (isSpendingCall(command, action, flags)) {
+          const ticketCheck = await consumeLaunchTicket(privateRoot, {
+            ticketId: String(args.launch_ticket ?? '').trim(),
+            tool: 'dreamina_canvas',
+            items: 1,
+            detail: `${command} ${action}`,
+          })
+          if (!ticketCheck.ok) {
+            return {
+              ok: false,
+              command,
+              action,
+              outcome: 'launch_ticket_required',
+              required_action: 'launch_gate',
+              message: `${ticketCheck.message}\n\n${launchGateGuidance(privateRoot)}`,
+            }
+          }
+        }
         const accountGate = createAccountGate(privateRoot, config.dreaminaAccount, async (info) => {
           await appendSafeLog(privateRoot, 'dreamina-canvas-tool', { action: 'auto-switch', ...info })
         })

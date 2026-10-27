@@ -16,3 +16,13 @@ whenToUse: 用户要生成图片、画图、文生图，或用一张或多张参
 8. 提交结果不确定（needs_review）时禁止自动重试或换供应商重试，提示用户人工核对后台。
 9. 参考图会自动做 EXIF 方向归一化与最长边 1920px 等比缩放后提交，绝不覆盖原图。
 10. **本线路只对数量与速度负责**：生成后不做质量检查——不逐张 `read_image`/`describe_image` 验收，不做审美、一致性或尺寸判断，不自动重生成。成功即按返回路径交付；只有工具返回失败或 `needs_review` 时才如实上报。
+
+## 生成启动门（硬门，不可跳过）
+
+`generate_video` / `generate_image` / `batch_image start` 这类付费提交都强制校验一次性票据 `launch_ticket`：
+
+1. 写计划并登记：`node scripts/launch-gate.mjs plan --json plan.json` → `pl_xxx`；
+2. 由用户本人在终端运行 `node scripts/launch-gate.mjs ask --plan pl_xxx`，输入「自动开始任务」→ `lt_xxx`；
+3. 带 `launch_ticket=lt_xxx` 调用生成工具。
+
+票据一次性、30 分钟过期、范围锁定（工具 / 项数 / 总时长），提交时消费。Agent 没有 TTY，**不得代批、不得复用、不得绕过**；拿不到票据就停下，把计划与 `pl_xxx` 交给用户批准。

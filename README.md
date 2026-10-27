@@ -136,6 +136,24 @@ batch_image(command="start", manifest={groups:[{id:"g1",prompt:"橘猫",candidat
 video_to_gif(video="D:\\out\\clip.mp4")
 ```
 
+## 生成启动门（付费必须人工批准）
+
+`generate_video` / `generate_image` / `batch_image start` / `dreamina_canvas`（`node run`、`--run`、`node upscale`）在工具层强制校验一次性票据 `launch_ticket`：没有票据直接拒绝，**绝不会**替你提交付费任务。
+
+票据只能由**真人在真实终端**里生成——`approve` 检查 `process.stdin.isTTY`，Agent、后台进程、管道喂确认词都会被拒：
+
+```text
+# 1) 登记计划（Agent 可执行；只写清单，不付费）
+node scripts/launch-gate.mjs plan --json plan.json
+# 2) 打开终端窗口，由用户本人输入「自动开始任务」
+node scripts/launch-gate.mjs ask --plan pl_xxx
+# 3) 带票提交
+generate_video(..., launch_ticket="lt_xxx")
+node scripts/launch-gate.mjs list     # 待批准计划 / 有效票据
+```
+
+票据**一次性**、默认 30 分钟过期（`--ttl-minutes` 可调）、范围锁定（工具 / 项数 / 总时长），**提交时消费**：此前的任何校验失败都不会烧票。改动提示词 / 素材 / 画布后旧票作废，必须重新登记并重新批准。
+
 ## 视频创作线路
 
 **默认只有一条创作线**；业务 Skill 线必须由用户显式启用：
