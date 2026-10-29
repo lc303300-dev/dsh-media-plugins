@@ -1,7 +1,7 @@
 # dsh-media-plugins
 
-DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 16 个工具、11 个技能与一个完成通知
-（**当前火山方舟通道已屏蔽，实际注册 15 个工具**，见 `describe_image` 一行），
+DSH Studio 媒体与业务能力组合包（bundle），一次安装带来 18 个工具、12 个技能与一个完成通知
+（**当前火山方舟通道已屏蔽，`describe_image` / `Ws_tool-vision` 未注册**，注册表见 `cordis.patch.yml`），
 覆盖 Codex_Wsstudio 指南（P0–P4 + 受约束修订系统 + Codex_IS 受治理图片业务 Skill 层）在 DSH 平台上的重建：
 
 | 功能 | 说明 | 底层 | 凭证 |
@@ -58,23 +58,50 @@ dreamina_account command=default name=ISUN                  # 设为管线默认
 
 ## 安装
 
-### 从 GitHub（源码）
+> **别用 `dsh plugin add` 装这个包。** 不论 `github:`、npm 包名还是 tarball，它都会把插件连同
+> 依赖装进 profile 的 `node_modules`。旧版本把 `@deepseek-ai/dsh-tools@0.2.0-rc.2` 这类内部包写在
+> `dependencies` 里，一旦落到 `profile/node_modules/@deepseek-ai`，DSH 自带的核心插件就会解析到
+> 这份旧副本（它缺 asar 内部依赖），`tools` / `agents` 服务无人注册，必需插件 `agent-loop`
+> 起不来，整个应用报 "The application could not start"（2026-10-27 事故）。
+>
+> 本包现在的 `dist/` 已自包含（`@deepseek-ai/*` 全部打进 bundle，不再出现在 `dependencies`），
+> 但安装方式仍建议 link：profile 里永远不要出现 `@deepseek-ai`。
+
+### 推荐：link 安装（profile 零污染）
 
 ```sh
-dsh plugin --profile <name> add github:lc303300-dev/dsh-media-plugins
+git clone https://github.com/lc303300-dev/dsh-media-plugins.git <代码目录>
+cd <代码目录> && pnpm install && pnpm build
 ```
 
-首次会因 pnpm 需要授权构建而失败，`dsh` 会提示把包名加进该 profile 的
-`pnpm-workspace.yaml` 的 `allowBuilds`，之后重新 `add`。
+把仓库挂进 profile（Windows 用 junction，等价于 `link:`）：
 
-### 从 npm / tarball（预构建，免授权）
+```powershell
+New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\<profile>\node_modules\dsh-media-plugins" -Target <代码目录>
+```
+
+再编辑 `$DSH_HOME\profiles\<profile>\package.json`：
+
+- `dependencies` 加 `"dsh-media-plugins": "link:<代码目录，正斜杠>"`
+- `dsh.profile.bundles` 加 `"dsh-media-plugins"`
+
+**装完必须自检**（结果为 `False` 才算干净）：
+
+```powershell
+Test-Path "$env:USERPROFILE\.dsh\profiles\<profile>\node_modules\@deepseek-ai"
+```
+
+### 不推荐：npm / tarball（仍会写进 profile）
 
 ```sh
-dsh plugin --profile <name> add dsh-media-plugins       # npm
-dsh plugin --profile <name> add ./dsh-media-plugins-0.2.0.tgz   # tarball
+dsh plugin --profile <name> add dsh-media-plugins                # npm
+dsh plugin --profile <name> add ./dsh-media-plugins-0.3.2.tgz    # tarball
 ```
+
+装完同样跑上面那条自检；一旦 `@deepseek-ai` 出现，立刻改名移走并冷启动。
 
 安装后 `dsh --profile <name> --dump-config` 应看到 `dsh-media-plugins` 层及其全部工具。
+
 
 ## 前置准备
 

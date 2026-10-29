@@ -66,8 +66,33 @@ if (-not $ffmpegFound) { $errors.Add("ffmpeg not found (set FFMPEG_PATH or insta
 # DSH 宿主侧
 $dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME ".dsh" }
 Require-Path (Join-Path $dshHome ".credentials.yaml") "DSH credentials file"
-$profileWeb = Join-Path $dshHome "profiles\web\package.json"
-if (-not (Test-Path $profileWeb)) { $errors.Add("web profile not found (run: dsh plugin --profile web add ...): $profileWeb") }
+
+# profile：桌面版通常只有 desktop，旧版脚本硬编码检查 web 会误报 "web profile not found"。
+# 这里只要求"至少存在一个带 package.json 的 profile"，并逐个报告名字。
+$profilesRoot = Join-Path $dshHome "profiles"
+$profileDirs = @()
+if (Test-Path -LiteralPath $profilesRoot -PathType Container) {
+    $profileDirs = @(Get-ChildItem -LiteralPath $profilesRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "package.json") -PathType Leaf })
+}
+if ($profileDirs.Count -eq 0) {
+    $errors.Add("no dsh profile found under $profilesRoot (install the bundle into a profile first)")
+} else {
+    Write-Host "  OK   dsh profiles: $($profileDirs.Name -join ', ')" -ForegroundColor Gray
+}
+
+# 宿主污染检查（2026-10-27 启动崩溃的根因）：
+# profile\node_modules\@deepseek-ai 会让 DSH 自带的核心插件解析到插件自带的旧版内部包，
+# 旧版缺 asar 内部依赖 -> tools/agents 服务无人注册 -> 必需插件 agent-loop 起不来。
+# 本包已把 @deepseek-ai/* 打进 dist（不再写进 dependencies），正常情况下这个目录不该存在；
+# 一旦出现，必须由用户改名移走，绝不静默继续。
+foreach ($profile in $profileDirs) {
+    $pollution = Join-Path $profile.FullName "node_modules\@deepseek-ai"
+    if (Test-Path -LiteralPath $pollution) {
+        $errors.Add("profile '$($profile.Name)' is polluted: $pollution — it shadows host core plugins and can crash startup; rename it away (e.g. @deepseek-ai.bak) and restart dsh")
+    }
+}
+
 # 已安装技能副本：DSH 从 $DSH_HOME\skills 发现技能，仓库 skills/ 改了不同步过去
 # 等于没改（2026-10 两次事故：副本比仓库旧、技能整个缺失）。
 # 洗图（image-repaint-cleanup）是硬性口径：副本必须存在，且必须带着"强制 Gemini"
@@ -88,7 +113,7 @@ if (Test-Path -LiteralPath $installedSkills -PathType Container) {
             $errors.Add("installed $repaintSkillId copy does not pin comfly-gemini-flash-preview")
         }
     }
-    foreach ($skill in @("default-image-generation", "default-video-generation", "batch-image-generation", "video-prompt-orchestrator", "video-director-prompt", "video-skill-router", "codex-cs-skill-curator", "video-to-gif", "image-skill-router", "image-skill-curator")) {
+    foreach ($skill in @("default-image-generation", "default-video-generation", "batch-image-generation", "video-prompt-orchestrator", "video-director-prompt", "video-skill-router", "codex-cs-skill-curator", "video-to-gif", "image-skill-router", "image-skill-curator", "drama-tvc-prompt", "image-repaint-cleanup")) {
         $repoSkill = Join-Path $RepositoryRoot "skills\$skill\SKILL.md"
         $installedSkill = Join-Path $installedSkills "$skill\SKILL.md"
         if (-not (Test-Path -LiteralPath $installedSkill -PathType Leaf)) {
@@ -104,7 +129,6 @@ if (Test-Path -LiteralPath $installedSkills -PathType Container) {
 # creative_writer 的 Comfly LLM provider：dsh-base 的 llm-pi-ai 默认「零路由」挂载，
 # profile 的 cordis.patch.yml 不写 provider 时，creative_writer 会直接报
 # `no adapter registered for provider "comfly"`。缺了就提示修复脚本，不阻断其它校验。
-$profilesRoot = Join-Path $dshHome "profiles"
 if (Test-Path -LiteralPath $profilesRoot -PathType Container) {
     $missingProvider = @()
     foreach ($profileDir in (Get-ChildItem -LiteralPath $profilesRoot -Directory -ErrorAction SilentlyContinue)) {

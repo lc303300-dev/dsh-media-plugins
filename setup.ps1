@@ -8,7 +8,10 @@
 #   3) 重启 dsh
 [CmdletBinding()]
 param(
-    [switch]$EnableVolcano
+    [switch]$EnableVolcano,
+    # 非交互模式（给 Agent / CI 用）：跳过所有 Read-Host（Key 输入、即梦登录确认），
+    # 只做能自动完成的部分（画布 CLI 检查、provider 注册、技能复制、ffmpeg 检查）。
+    [switch]$NonInteractive
 )
 $ErrorActionPreference = "Stop"
 
@@ -50,6 +53,7 @@ if (Test-Path $credFile) {
     }
 }
 function Read-Key([string]$name, [string]$prompt, [string]$current) {
+    if ($NonInteractive) { return $current }
     if ($current) {
         $answer = Read-Host "$prompt（已有 $($current.Substring(0,4))…，回车保留，输入 n 清空，输入新值覆盖）"
         if ($answer -eq '') { return $current }
@@ -140,9 +144,13 @@ Write-Host "[5/6] 即梦登录（生成线路，OAuth 设备授权）" -Foregrou
 Write-Host "  即将运行: $canvasCmd auth login" -ForegroundColor Gray
 Write-Host "  终端/浏览器会给出授权入口，请在已登录即梦账号的浏览器里完成授权。" -ForegroundColor Gray
 Write-Host "  即梦创作平台（会员/积分充值）：https://jimeng.jianying.com" -ForegroundColor Gray
-$doLogin = Read-Host "  现在登录？（y/n，回车=y）"
-if ($doLogin -eq '' -or $doLogin -eq 'y') {
-    & $canvasCmd auth login
+if ($NonInteractive) {
+    Write-Host "  [非交互] 跳过登录；需要时手动运行: `"$canvasCmd`" auth login" -ForegroundColor DarkGray
+} else {
+    $doLogin = Read-Host "  现在登录？（y/n，回车=y）"
+    if ($doLogin -eq '' -or $doLogin -eq 'y') {
+        & $canvasCmd auth login
+    }
 }
 
 # 6. 安装业务技能到 $DSH_HOME/skills（DSH 技能发现根，重启后生效）
@@ -172,9 +180,9 @@ if (-not $ffmpegFound -and -not (Test-Path "C:\Program Files\oopz\ffmpeg.exe")) 
 
 Write-Host ""
 Write-Host "== 完成 ==" -ForegroundColor Cyan
-Write-Host "  1. 用 dsh plugin add 安装本 bundle（见 README）。"
+Write-Host "  1. 用 link / junction 安装本 bundle（见 README「安装」）。不要用 dsh plugin add：它会把依赖装进 profile，可能让 DSH 启动崩溃。"
 Write-Host "  2. 生图需 VPN 代理：按需改 cordis.patch.yml 的 proxyUrl。"
-Write-Host "  3. 重启 dsh 后即可使用 generate_image / generate_video / skill_registry / project_pipeline / prompt_batch / batch_image / video_to_gif / image_preview / split_grid_sheet 与 Studio 技能。"
+Write-Host "  3. 重启 dsh 后即可使用 generate_image / generate_video / dreamina_canvas / creative_writer / batch_image / media_cost / skill_registry / project_pipeline / prompt_batch / video_to_gif / image_preview / split_grid_sheet 与 12 个 Studio 技能。"
 Write-Host "     （describe_image / 火山方舟通道当前已屏蔽；恢复：.\setup.ps1 -EnableVolcano + cordis.patch.yml 取消 Ws_tool-vision 注释 + 重启 dsh）" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  官方充值与 API 管理入口：" -ForegroundColor Cyan

@@ -12,6 +12,19 @@ $dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME ".dsh" }
 $credFile = Join-Path $dshHome ".credentials.yaml"
 New-Item -ItemType Directory -Force -Path $dshHome | Out-Null
 
+# 新版 DSH 的凭据库是 { version, refs, records } 结构，由凭据服务维护。
+# 本脚本只认识最简单的 YAML KV，整文件重写会把 refs/records 写坏，让已保存的
+# 凭据全部失效（2026-10 排查确认）。检测到结构化凭据库就直接拒绝，绝不改写。
+if (Test-Path -LiteralPath $credFile) {
+    $rawCreds = [System.IO.File]::ReadAllText($credFile, [System.Text.UTF8Encoding]::new($false))
+    if ($rawCreds -match '(?m)^refs:\s*$' -or $rawCreds -match '(?m)^records:\s*$') {
+        throw @"
+检测到新版凭据库（$credFile 含 refs/records 结构）：本脚本会整文件重写并破坏它，已拒绝执行。
+请在 DSH 的「设置 -> 模型/凭据」页写入 Key，或把 Key 写到 $dshHome\.env 的一行（COMFLY_API_KEY=...），重启 DSH 后生效。
+"@
+    }
+}
+
 # 读取现有条目（简单 YAML KV）
 $entries = @{}
 if (Test-Path -LiteralPath $credFile) {

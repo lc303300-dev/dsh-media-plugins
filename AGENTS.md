@@ -1,6 +1,6 @@
 # AGENTS.md
 
-DSH Studio 媒体能力包。一次安装提供 17 个工具、11 个技能与一个完成通知，是 Codex_Wsstudio
+DSH Studio 媒体能力包。一次安装提供 18 个工具、12 个技能与一个完成通知，是 Codex_Wsstudio
 能力指南在 DSH 平台上的重建。本文件给在此仓库工作的 Agent 一个最小但足够的上下文。
 
 > **火山方舟通道已屏蔽**：`cordis.patch.yml` 里 `Ws_tool-vision`（`describe_image`）的注册被注释，
@@ -23,9 +23,10 @@ DSH Studio 媒体能力包。一次安装提供 17 个工具、11 个技能与�
 > **为什么"曾经能用"**：升级后旧进程仍在跑（旧会话日志直到 10-18 01:45），重启才让新 dsh 生效；10-18 18:08 加
 > `Ws_tool-creative` 只是同期巧合，与本故障无关。
 >
-> **修复（已固化）**：`package.json` 增加 `"engines": { "dsh": ">=0.2.0-rc.2 <0.3.0" }`。`engines.dsh` 存在时优先且
-> 忽略 peer 检查；`0.2.0-rc.2` 与 `0.2.1-rc.2` 的实际用到的导出（`defineTool` / `createSystemMessage` /
-> `createUserMessage` / `credentialRef`）已逐一验证存在。
+> **修复（已固化）**：`package.json` 增加 `engines` 声明。`engines.dsh` 存在时优先且忽略 peer 检查。
+> **2026-10-29 起上界已放开**：`"dsh": ">=0.2.0-rc.2"`（原 `>=0.2.0-rc.2 <0.3.0` 会让 0.3.x 起整包静默禁用；
+> 用 DSH 0.2.1-rc.2 自带的 `evaluatePluginCompatibility` 对实际 manifest 复验，0.2.0-rc.2 ~ 1.0.0 全判 compatible）。
+> **不能直接删 `engines.dsh`**：缺失时会回退检查 `peerDependencies` 里锁死的 `@deepseek-ai/dsh-*`，反而重新被拦。
 >
 > **离线验证（无需重启）**：
 > `$env:ELECTRON_RUN_AS_NODE=1; & "D:\AI\DeepSeek Harness\DeepSeek Harness.exe" --expose-internals <script.mjs>`，
@@ -38,9 +39,31 @@ DSH Studio 媒体能力包。一次安装提供 17 个工具、11 个技能与�
 > （`Cannot find package 'detect-libc'` / `'@deepseek-ai/cosmokit'`）。链接模式下改 `package.json` / `cordis.patch.yml`
 > 无需同步；若必须复制，请整体保留 `.pnpm` 的 symlink 结构，或在 profile 里重跑 pnpm install 重建链接。
 >
-> **升级 dsh 后**：超出 `engines.dsh` 上界（如 0.3.x）会被禁用 —— 这是刻意设计，需重新验证 API。应急授权：在 profile 的
-> `compatibility.json` 写 `{ "dsh-media-plugins@0.3.2": ["<dsh 版本>"] }`（exact 版本；**缺文件 = 不授权**），或
-> `dsh plugin allow-version --accept-risk`。
+> **升级 dsh 后**：上界已放开，不再因版本号禁用；但插件仍可能因宿主 API 变化而运行时报错。应急手段：在 profile 的
+> `compatibility.json` 写 `{ "dsh-media-plugins@<版本>": ["<dsh 版本>"] }`（exact 版本；**缺文件 = 不授权**），或
+> `dsh plugin allow-version --accept-risk`；要恢复旧的门禁语义就 `git revert` 放开上界的那次提交。
+
+## 依赖打包（2026-10-29，根治安装期启动崩溃）
+
+> **插件已不再有任何 `@deepseek-ai/*` 运行时依赖**：`tsdown.config.ts` 用
+> `deps.alwaysBundle: [/^@deepseek-ai\//]` 把它们全部打进 `dist/`，`dependencies` 只剩 `sharp` / `undici`。
+>
+> **事故链（2026-10-27）**：旧版把它们写在 `dependencies`（锁 `0.2.0-rc.2`）。pnpm 一装就落到
+> `profile/node_modules/@deepseek-ai`，DSH 启动时**宿主核心插件**沿解析路径命中这份旧副本，
+> 旧副本又 import 了 asar 内部包（`dsh-scope` / `dsh-sandbox` 等）解析不到 → `tools` / `agents`
+> 服务无人注册 → 必需插件 `agent-loop` 起不来 → 整个应用 "The application could not start"。
+>
+> - **必须用 `alwaysBundle` 才会真的打包**：tsdown 默认把 `dependencies` 全部 externalize，
+>   只删 `neverBundle` 无效（实测输出与改前字节级一致）。`onlyBundle: false` 用于抑制
+>   "打包了未列白名单依赖"的警告。
+> - **验证方式**：临时把仓库 `node_modules/@deepseek-ai` 改名移走，遍历 `package.json` 全部 `dist`
+>   入口逐个 `import`，必须全部成功（改动前会 `ERR_MODULE_NOT_FOUND: Cannot find package
+>   '@deepseek-ai/schemastery'`）。实测 21 个入口 OK=21 FAIL=0。
+> - **为什么可以安全打包**：`defineTool` 返回普通对象（无 `instanceof` 校验）；`credentialRef` 走的
+>   `brandString` 是编译期类型品牌，运行时原样返回字符串（无 Symbol），所以不会出现双份类实例问题。
+> - **代价**：dist 从 724 KB 涨到约 1.06 MB（+340 KB）。
+> - **安装纪律**：profile 的 `node_modules` 里**永远不该出现 `@deepseek-ai`**；
+>   `scripts/verify-deployment.ps1` 现在把它当硬错误报出。装卸一律 link / junction，不要 `dsh plugin add`。
 
 ## 创意写作（`creative_writer`，comfly / gemini-4-argon）
 
