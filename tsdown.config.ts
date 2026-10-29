@@ -36,6 +36,12 @@ export default defineConfig({
   hash: false,
   fixedExtension: false,
   deps: {
-    neverBundle: [/^@deepseek-ai\//, /^node:/, /^undici$/, /^sharp$/],
+    // 宿主包必须打进 bundle：DSH 没有开 preserve-symlinks，插件一旦脱离 profile
+    // 就解析不到 @deepseek-ai/*（ERR_MODULE_NOT_FOUND），而把它们留在 dependencies
+    // 又会随 pnpm 被装进 profile，污染宿主核心插件的解析路径（2026-10-27 启动崩溃）。
+    // 全部打进 dist 后，插件不再需要任何 @deepseek-ai 运行时依赖。
+    neverBundle: [/^node:/, /^undici$/, /^sharp$/],
+    alwaysBundle: [/^@deepseek-ai\//],
+    onlyBundle: false,
   },
 })
