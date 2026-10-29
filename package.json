@@ -61,7 +61,7 @@
     "scripts/"
   ],
   "engines": {
-    "dsh": ">=0.2.0-rc.2 <0.3.0"
+    "dsh": ">=0.2.0-rc.2"
   },
   "dsh": {
     "bundle": {

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   确保每个 DSH profile 的 llm-pi-ai 配置里都有 creative_writer 需要的 Comfly provider。
 
