@@ -6,7 +6,7 @@
  * 本模块只负责把两边的语义翻译成命令与结构化判断，**不做任何 DSH/供应商接线**，
  * 因此可以被 `node --test` 直接覆盖；执行封装见 `createCanvasCli`。
  *
- * 契约事实（2026-10 实测 1.0.2 / 09e50ac，公开 cn 制品）：
+ * 契约事实（2026-10 实测 1.2.0 / cee4f27a，公开 cn 制品）：
  * - 所有命令支持全局 `--format json --non-interactive [--profile NAME] [--region cn]`；
  * - 输出统一 envelope：`{schemaVersion, ok, data|error, meta}`；
  * - 退出码：0 成功 / 2 参数 / 10 待积分确认 / 11 需登录 / 12,13 权限·权益·版本 /
@@ -53,6 +53,27 @@ export type CanvasImageMode = (typeof CANVAS_IMAGE_MODES)[number]
 /** 可恢复操作的状态。 */
 export const CANVAS_OPERATION_STATES = ['running', 'succeeded', 'failed', 'canceled', 'unknown'] as const
 export type CanvasOperationState = (typeof CANVAS_OPERATION_STATES)[number]
+
+/**
+ * 画布 CLI 的官方安装 / 升级入口（固化，免去每次临时检索）。
+ *
+ * 升级判定：先用 `dreamina-canvas version` 读本地版本，再拉 `versionJson` 比对
+ * `version` 字段；两者不一致就重跑对应的安装脚本，安装脚本会自带最新制品基址，
+ * 无需手填打包号。安装脚本同时会刷新 `~/.agents/skills/dreamina-canvas-cli`，
+ * 装完必须重新登录一次（`auth login`）。
+ */
+export const CANVAS_CLI_SOURCE = {
+  /** 当前解析到的制品基址（来自 install.ps1 的 `$DefaultDownloadBase`；打包号会随发版变化）。 */
+  artifactBase: 'https://jimeng.jianying.com/canvas-cli/install/1_0_0_53',
+  /** 制品元数据（含 version / releaseDate / releaseNotes）。 */
+  versionJson: 'https://jimeng.jianying.com/canvas-cli/install/1_0_0_53/version.json',
+  /** Windows PowerShell：`irm <installPs1> | iex`。 */
+  installPs1: 'https://jimeng.jianying.com/canvas-cli/install.ps1',
+  /** macOS / Linux：`curl -fsSL <installSh> | bash`。 */
+  installSh: 'https://jimeng.jianying.com/canvas-cli/install.sh',
+  /** Windows CMD：`curl.exe -fsSLO <installBat> && install.bat`。 */
+  installBat: 'https://jimeng.jianying.com/canvas-cli/install.bat',
+} as const
 
 /* ------------------------------------------------------------------ */
 /* Envelope 解析与退出码分类                                             */
