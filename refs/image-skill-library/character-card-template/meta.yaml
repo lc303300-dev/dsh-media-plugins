@@ -1,0 +1,48 @@
+schema: codex-flow-skill/v1
+name: character-card-template
+version: 1.0.0
+display-name-zh: 标准角色卡模板
+source: codex-flow
+release-tier: experimental
+primary-output: image
+intermediate-outputs:
+  - prompt
+workflow-profile: staged
+interaction-profile: conversation
+tags:
+  - character-card
+  - model-sheet
+  - three-view
+  - layout-template
+aliases:
+  - 标准角色卡模板
+  - 角色卡
+  - 人物卡
+  - 三视图角色卡
+  - 角色设定卡
+exclude-intents:
+  - 视频生成
+  - 分镜脚本
+  - 场景九宫格
+  - 建筑立面改造
+capabilities:
+  - image.generate
+  - image.batch-generate
+references:
+  layout_spec:
+    path: references/layout-spec.md
+    load-at:
+      - brief
+      - authoring
+  creative_guidance:
+    path: references/creative-guidance.md
+    load-at:
+      - authoring
+  failure_cases:
+    path: references/failure-cases.md
+    load-at:
+      - final-qc
+  examples:
+    path: references/examples.md
+    load-at:
+      - authoring

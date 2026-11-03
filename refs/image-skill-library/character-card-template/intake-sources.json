@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "name": "ref-source.png",
+      "sha256": "bc5ea6f630b71072a217ec18c80a502e31cd20c9b4bec77e5501a98af643bb65"
+    },
+    {
+      "name": "template-05-F.png",
+      "sha256": "69be51c47c24ac8ec06dc00d336e0962aaa564b06014e2e458e86d187475956d"
+    }
+  ]
+}
