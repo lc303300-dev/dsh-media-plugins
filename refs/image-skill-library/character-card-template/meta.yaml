@@ -1,6 +1,6 @@
 schema: codex-flow-skill/v1
 name: character-card-template
-version: 1.1.0
+version: 1.2.0
 display-name-zh: 标准角色卡模板
 source: codex-flow
 release-tier: experimental
