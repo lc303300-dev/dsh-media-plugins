@@ -1,7 +1,7 @@
 {
   "schema": "codex-flow-receipt/v1",
   "skill_id": "character-card-template",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "validator": "flow-1.0",
   "approved_by": "user",
   "sources": [
@@ -14,7 +14,7 @@
       "sha256": "69be51c47c24ac8ec06dc00d336e0962aaa564b06014e2e458e86d187475956d"
     }
   ],
-  "package_hash": "41169bb65371e485b47162f1cd4dc4b1361c2af6dfc026ce2bd7605be1f8d801",
-  "created_at": "2026-11-03T16:10:58.141Z",
+  "package_hash": "00262637861fa9fa40cc3d731820520eece1a04232d925965ee0ab0ff546d5bd",
+  "created_at": "2026-11-03T16:18:36.808Z",
   "validation": "passed"
 }
