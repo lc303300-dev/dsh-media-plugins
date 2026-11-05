@@ -178,14 +178,23 @@ function normalizeVideoDuration(value: unknown): number {
   return Number(match[1])
 }
 
-/** Dated canvas name: YYYY_MM_DD-<base>（沿用旧 video_group 的日期前缀语义）。 */
-function datedVideoGroup(name: string): string {
+/** 画布名里已经存在的日期前缀：`20261105-` / `2026-11-05-` / `2026_11_05-`（带了就不重复补）。 */
+const DATED_CANVAS_PREFIX = /^(?:\d{8}|\d{4}[-_]\d{2}[-_]\d{2})(?:[-_]|$)/
+
+/**
+ * Dated canvas name: `YYYYMMDD-<base>`（用户 2026-11-05 定的画布命名约定）。
+ *
+ * 推荐模板是「项目名_文件名」（如 `华发珠海湾_双十一MG广告`），但模板只做推荐、
+ * **不做格式校验**：短名、只给项目名、完全自定义都照用；名字本身已带日期前缀时
+ * 原样保留（不再重复加日期）。Exported for unit tests.
+ */
+export function datedVideoGroup(name: string, now: Date = new Date()): string {
   const base = name.trim()
-  if (base.length === 0 || base.length > 20 || /[\r\n]/.test(base)) {
-    throw mediaErrors.input('video_group base name must contain 1-20 characters on one line')
+  if (base.length === 0 || base.length > 40 || /[\r\n]/.test(base)) {
+    throw mediaErrors.input('video_group base name must contain 1-40 characters on one line')
   }
-  const now = new Date()
-  const ymd = `${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, '0')}_${String(now.getDate()).padStart(2, '0')}`
+  if (DATED_CANVAS_PREFIX.test(base)) return base
+  const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
   return `${ymd}-${base}`
 }
 
@@ -243,7 +252,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         '**创作门（视频）**：production / production_submit_only 要求本工作区 24h 内有 creative_writer 记录；'
         + '用户自带原文 / normalize-only，或 Gemini 失败后的 Agent 兜底：allow_manual_prompts=true + manual_prompts_reason（结果留痕）。'
         + '**节点与批准顺序（硬规则）**：画布与全部素材节点、视频节点必须**先建好**，再登记计划、由真人在终端批准，最后带 launch_ticket 提交；工具侧保证票据只在全部节点保存成功后才消费（建节点/上传失败不烧票）。图片素材会被挂成画布**图片节点**并用 `node:<nodeId>` 引用（保留上游连线、画布上看得见图），不是只做资产库 `res:` 引用。'
-        + '统一视频生成管线（即梦画布 CLI dreamina-canvas）：所有调用分解为 N 个隔离任务，每个任务在画布上是一个独立节点（多产物分节点，每节点 count=1），先并发提交，再（production 模式）统一等待终态并按 resourceId 精确取回。付费链路固定为「保存节点 → node quote 报价 → node confirm 批准（--credit-ceiling）→ node run（--submit-id）→ operation wait → resource download」，报价不等于授权，同一任务绝不换新 submit-id 重放。视频公开模式只有 t2v / first_last_frame / m2v（没有 i2v）：无参考=t2v；单图锁首帧或两张有序图片=first_last_frame；单图但要保留指定比例、或图片/视频/音频混合参考=m2v。默认模型 seedance_2.5、默认 480p、默认 16:9、默认 5 秒（比例/时长也可从 prompt 推断兜底）。非默认模型需 video_model_selection_source=user_explicit（绝不从语料/示例/容量/失败回退自动换模型）。正式 production 提交前要求确认门：须传 video_confirmation_model / video_confirmation_resolution / video_confirmation_duration（多时长批次用 video_confirmation_durations），且与最终值一致。video_execution_mode：production（提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（强制最低成本模型+720p，仅提交，须提供 video_group）。video_count（1-10）为「同一 prompt+参考生成 N 份」；tasks（数组）为「不同素材/不同 prompt 的 N 个任务」。video_group 指定画布名（自动加 YYYY_MM_DD- 前缀，复用或新建画布），省略则用固定画布 dsh-media；也可用 canvas_project_id 直接指定画布。任务状态持久化在私有运行目录。',
+        + '统一视频生成管线（即梦画布 CLI dreamina-canvas）：所有调用分解为 N 个隔离任务，每个任务在画布上是一个独立节点（多产物分节点，每节点 count=1），先并发提交，再（production 模式）统一等待终态并按 resourceId 精确取回。付费链路固定为「保存节点 → node quote 报价 → node confirm 批准（--credit-ceiling）→ node run（--submit-id）→ operation wait → resource download」，报价不等于授权，同一任务绝不换新 submit-id 重放。视频公开模式只有 t2v / first_last_frame / m2v（没有 i2v）：无参考=t2v；单图锁首帧或两张有序图片=first_last_frame；单图但要保留指定比例、或图片/视频/音频混合参考=m2v。默认模型 seedance_2.5、默认 480p、默认 16:9、默认 5 秒（比例/时长也可从 prompt 推断兜底）。非默认模型需 video_model_selection_source=user_explicit（绝不从语料/示例/容量/失败回退自动换模型）。正式 production 提交前要求确认门：须传 video_confirmation_model / video_confirmation_resolution / video_confirmation_duration（多时长批次用 video_confirmation_durations），且与最终值一致。video_execution_mode：production（提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（强制最低成本模型+720p，仅提交，须提供 video_group）。video_count（1-10）为「同一 prompt+参考生成 N 份」；tasks（数组）为「不同素材/不同 prompt 的 N 个任务」。video_group 指定画布名（推荐「项目名_文件名」；工具自动补 `YYYYMMDD-` 日期前缀，名字已带日期则不重复加；模板只做推荐、不校验格式；**新建画布前先问用户画布名**），复用或新建画布，省略则用固定画布 dsh-media；也可用 canvas_project_id 直接指定画布。任务状态持久化在私有运行目录。',
       parameters: {
         prompt: {
           type: 'string',
@@ -347,7 +356,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         },
         video_group: {
           type: 'string',
-          description: '可选：画布名（1-20 字符单行），自动加 YYYY_MM_DD- 日期前缀；复用同名画布或新建。省略时使用固定画布 dsh-media。test_submit_only 必须提供。',
+          description: '可选：画布名（推荐「项目名_文件名」，1-40 字符单行），工具自动补 YYYYMMDD- 日期前缀（名字已带日期则不重复加）；模板只是推荐、格式不校验。复用同名画布或新建；新建前先问用户画布名。省略时使用固定画布 dsh-media。test_submit_only 必须提供。',
         },
         canvas_project_id: {
           type: 'string',
