@@ -419,6 +419,7 @@ function fullChainRoutes(state) {
       state.uploads += 1
       return { stdout: ok({ resourceId: UUID_A, mediaType: 'image' }), stderr: '', exitCode: 0 }
     }],
+    ['node create image', () => ({ stdout: ok({ node: { nodeId: 'node_img1', type: 'image', status: 'success' } }), stderr: '', exitCode: 0 })],
     ['node quote', () => ({ stdout: ok({ items: [{ nodeId: 'node_x', maxCredits: 48 }], totalMaxCredits: 48, confirmable: true, confirmationRequired: false }), stderr: '', exitCode: 0 })],
     ['node confirm', (args) => {
       state.ceiling = args[args.indexOf('--credit-ceiling') + 1]

@@ -279,9 +279,11 @@ export function launchGateGuidance(privateRoot: string): string {
   return [
     '生成启动门：视频提交需要一次性票据，票据只能由真人在真实终端里输入确认词生成。',
     '（图片线路——generate_image / batch_image / upscale——不受此门限制。）',
-    '步骤 1（Agent）写计划：node scripts/launch-gate.mjs plan --json plan.json',
-    '步骤 2（用户）在终端批准：node scripts/launch-gate.mjs approve --plan <plan_id>，按提示输入「自动开始任务」',
-    '步骤 3（Agent）带 launch_ticket=<ticket_id> 重新调用本工具。',
+    '顺序硬规则：先把画布和**全部节点**建好（素材必须是画布节点，图片素材用图片节点，不要只留 resourceId），再写计划、登记、批准。',
+    '步骤 1（Agent）建画布 + 全部素材/视频节点（只保存，不提交、不花钱）',
+    '步骤 2（Agent）写计划并在 summary 里列出已建好的 node id：node scripts/launch-gate.mjs plan --json plan.json',
+    '步骤 3（用户）在终端批准：node scripts/launch-gate.mjs approve --plan <plan_id>，按提示输入「自动开始任务」',
+    '步骤 4（Agent）带 launch_ticket=<ticket_id> 提交；票据在该批节点全部就绪后才消费，建节点失败不会烧票。',
     `状态文件：${launchGateStatePath(privateRoot)}`,
   ].join('\n')
 }

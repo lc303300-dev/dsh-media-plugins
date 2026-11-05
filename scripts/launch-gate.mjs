@@ -141,6 +141,7 @@ function cmdPlan() {
     for (const line of record.summary) say(`  - ${line}`)
   }
   say('')
+  say('登记前提：画布与全部节点应已建好（summary 里列出 node id）；本步只登记，不花钱、不提交。')
   say('下一步（必须由用户本人执行）：')
   say(`  node "${SELF}" ask --plan ${record.id}`)
   say('  （会弹出一个终端窗口；也可以自己开终端运行 approve --plan ' + record.id + '）')

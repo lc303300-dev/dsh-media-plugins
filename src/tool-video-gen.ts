@@ -242,6 +242,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
       description:
         '**创作门（视频）**：production / production_submit_only 要求本工作区 24h 内有 creative_writer 记录；'
         + '用户自带原文 / normalize-only，或 Gemini 失败后的 Agent 兜底：allow_manual_prompts=true + manual_prompts_reason（结果留痕）。'
+        + '**节点与批准顺序（硬规则）**：画布与全部素材节点、视频节点必须**先建好**，再登记计划、由真人在终端批准，最后带 launch_ticket 提交；工具侧保证票据只在全部节点保存成功后才消费（建节点/上传失败不烧票）。图片素材会被挂成画布**图片节点**并用 `node:<nodeId>` 引用（保留上游连线、画布上看得见图），不是只做资产库 `res:` 引用。'
         + '统一视频生成管线（即梦画布 CLI dreamina-canvas）：所有调用分解为 N 个隔离任务，每个任务在画布上是一个独立节点（多产物分节点，每节点 count=1），先并发提交，再（production 模式）统一等待终态并按 resourceId 精确取回。付费链路固定为「保存节点 → node quote 报价 → node confirm 批准（--credit-ceiling）→ node run（--submit-id）→ operation wait → resource download」，报价不等于授权，同一任务绝不换新 submit-id 重放。视频公开模式只有 t2v / first_last_frame / m2v（没有 i2v）：无参考=t2v；单图锁首帧或两张有序图片=first_last_frame；单图但要保留指定比例、或图片/视频/音频混合参考=m2v。默认模型 seedance_2.5、默认 480p、默认 16:9、默认 5 秒（比例/时长也可从 prompt 推断兜底）。非默认模型需 video_model_selection_source=user_explicit（绝不从语料/示例/容量/失败回退自动换模型）。正式 production 提交前要求确认门：须传 video_confirmation_model / video_confirmation_resolution / video_confirmation_duration（多时长批次用 video_confirmation_durations），且与最终值一致。video_execution_mode：production（提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（强制最低成本模型+720p，仅提交，须提供 video_group）。video_count（1-10）为「同一 prompt+参考生成 N 份」；tasks（数组）为「不同素材/不同 prompt 的 N 个任务」。video_group 指定画布名（自动加 YYYY_MM_DD- 前缀，复用或新建画布），省略则用固定画布 dsh-media；也可用 canvas_project_id 直接指定画布。任务状态持久化在私有运行目录。',
       parameters: {
         prompt: {
@@ -608,16 +609,20 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
 
         // ---- 生成启动门（硬门）：付费提交必须有真人终端批准的一次性票据 ----
-        // 在这里（所有校验通过、即将建任务/提交前）才消费票据，之前的失败不会烧掉它。
-        const ticketCheck = await consumeLaunchTicket(privateRoot, {
-          ticketId: String(args.launch_ticket ?? '').trim(),
-          tool: 'generate_video',
-          items: specs.length,
-          durationSeconds: specDurations.reduce((sum: number, value: number) => sum + value, 0),
-          detail: `${mode} ${model} ${resolution} ${specs.length} task(s)`,
-        })
-        if (!ticketCheck.ok) {
-          throw mediaErrors.input(`${ticketCheck.message}\n\n${launchGateGuidance(privateRoot)}`)
+        // 票据**只在全部节点建好之后**才消费（挂在 runCanvasVideoBatch 的
+        // beforePaidSubmit 上）：建节点/上传素材失败时票还没动，不会为一次没发生的
+        // 提交白烧掉一整天只能批一次的授权。
+        const consumeTicket = async (): Promise<void> => {
+          const ticketCheck = await consumeLaunchTicket(privateRoot, {
+            ticketId: String(args.launch_ticket ?? '').trim(),
+            tool: 'generate_video',
+            items: specs.length,
+            durationSeconds: specDurations.reduce((sum: number, value: number) => sum + value, 0),
+            detail: `${mode} ${model} ${resolution} ${specs.length} task(s)`,
+          })
+          if (!ticketCheck.ok) {
+            throw mediaErrors.input(`${ticketCheck.message}\n\n${launchGateGuidance(privateRoot)}`)
+          }
         }
 
         // ---- per-task isolation: its own dir, its own persisted identity ----
@@ -677,6 +682,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             creditCeiling,
             submitOnly: mode !== 'production',
             concurrency: capacity,
+            beforePaidSubmit: consumeTicket,
             log: (event, payload) => appendSafeLog(privateRoot, 'generate_video', { batchId, event, ...payload }),
             signal: exec.signal,
           },

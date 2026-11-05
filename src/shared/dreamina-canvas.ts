@@ -522,6 +522,33 @@ export function buildImageNodeArgs(spec: ImageNodeSpec): string[] {
   return args
 }
 
+export interface ImageImportSpec {
+  projectId: string
+  title: string
+  /** 已用 `resource upload` 登记过的资源 UUID。 */
+  resourceId: string
+  importKind?: 'local_upload' | 'external_generated'
+}
+
+/**
+ * `node create image --resource-id … --import-kind local_upload`：把已登记的素材
+ * **挂成画布上的图片节点**（不是重新生成）。
+ *
+ * 为什么必须建节点而不是只留 resourceId：视频节点的 `--ref res:<uuid>` 只是资产库
+ * 引用，画布上不会出现图片、也不会有连线；用户在画布上看到的是一张空视频节点，
+ * 上游关系（`upstreamNodeIds`）为空。用 `node:<nodeId>` 才能保留上游连线，
+ * 这也是官方 CLI 对「画布已有来源节点」的推荐形态。
+ */
+export function buildImageImportArgs(spec: ImageImportSpec): string[] {
+  return [
+    'node', 'create', 'image',
+    '--project-id', spec.projectId,
+    '--title', spec.title,
+    '--resource-id', assertCanonicalResourceId(spec.resourceId),
+    '--import-kind', spec.importKind ?? 'local_upload',
+  ]
+}
+
 /* ------------------------------------------------------------------ */
 /* 结果解析                                                             */
 /* ------------------------------------------------------------------ */

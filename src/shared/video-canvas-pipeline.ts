@@ -4,7 +4,8 @@
  * 旧管线是「每任务一条一次性命令 + query_result --download_dir」；新画布 CLI
  * 的付费链路是显式的四段式，本模块把这四段固定下来，任何一步都不允许被跳过：
  *
- *   1. `resource upload`      本地素材登记到画布 → resourceId（引用必须用 res:）
+ *   1. `resource upload`      本地素材登记到画布 → resourceId
+ *   1.5 `node create image`   图片素材挂成**画布图片节点** → nodeId（引用用 node:，保留连线）
  *   2. `node create video`    保存节点（不生成）→ nodeId
  *   3. `node quote`           服务端报价（报价 ≠ 授权）
  *   4. `node confirm`         取 creditConfirmationToken（上限 = 报价或用户显式 ceiling）
@@ -17,6 +18,12 @@
  * - **失败即停**：每个任务只走一次提交，失败或不确定就标 `needs_review`，
  *   绝不自动重放（付费不可回滚）；
  * - **引用顺序固定**为 图片 → 视频 → 音频，与 prompt 里的裸标签编号一致；
+ * - **图片素材必须是画布节点**：`res:` 只是资产库引用，画布上没有图片、没有连线；
+ *   图片一律先 `resource upload` 再 `node create image --resource-id`，视频节点用
+ *   `node:<nodeId>` 引用，上游关系才成立（2026-11-05 实测事故：只传 res: 的节点
+ *   `upstreamNodeIds` 为空，用户在画布上看到的是空节点）；
+ * - **先建完全部节点，再进入付费段**：节点保存不花钱，报价/批准/运行才花钱。
+ *   批量入口因此分成「建节点」与「付费提交」两段，票据只在第二段前消费。
  * - 每个任务独占自己的下载目录，落地产物只从该目录取，避免张冠李戴。
  *
  * @module dsh-media-plugins/shared/video-canvas-pipeline
@@ -25,6 +32,7 @@
 import { basename, join } from 'node:path'
 import { readdir, stat } from 'node:fs/promises'
 import {
+  buildImageImportArgs,
   buildVideoNodeArgs,
   canvasRequestId,
   parseCanvasCreditConfirmation,
@@ -102,6 +110,12 @@ export interface CanvasVideoBatchOptions {
   log?: (event: string, payload: Record<string, unknown>) => Promise<void> | void
   /** 只提交不轮询（`production_submit_only`）。 */
   submitOnly?: boolean
+  /**
+   * 付费段开始前的**一次性闸门**。批量入口在所有节点都保存好之后才调用它
+   * （消费真人票据 / 任何一次性授权）：节点建失败时它还没被调用，票不会被白烧。
+   * 抛错即中止，一个付费提交都不会发出。
+   */
+  beforePaidSubmit?: () => Promise<void>
   /** 同时在跑的提交数（`videoCapacity`）；超出的任务排队而不是失败。 */
   concurrency?: number
   /** 交付根目录：产物最终会被移动到这里（保持可点击可分享）。 */
@@ -163,24 +177,67 @@ export async function uploadTaskRefs(
   cli: CanvasCli,
   projectId: string,
   task: Pick<CanvasVideoTask, 'images' | 'videos' | 'audios'>,
+  /** 同一批次内复用图片节点（同一张图不重复建节点）。key = 规范化后的本地路径。 */
+  imageNodeCache?: Map<string, string>,
 ): Promise<CanvasNodeRef[]> {
   const refs: CanvasNodeRef[] = []
-  for (const p of task.images) refs.push({ kind: 'res', id: (await uploadCanvasResource(cli, projectId, 'image', p)).resourceId })
+  for (const p of task.images) {
+    const cached = imageNodeCache?.get(p)
+    if (cached) {
+      refs.push({ kind: 'node', id: cached })
+      continue
+    }
+    const { resourceId } = await uploadCanvasResource(cli, projectId, 'image', p)
+    const nodeId = await createImageNodeFromResource(cli, projectId, resourceId, basename(p))
+    imageNodeCache?.set(p, nodeId)
+    refs.push({ kind: 'node', id: nodeId })
+  }
+  // 视频/音频参考没有对应的「素材导入节点」构造，官方只支持资产库引用（res:）。
   for (const p of task.videos) refs.push({ kind: 'res', id: (await uploadCanvasResource(cli, projectId, 'video', p)).resourceId })
   for (const p of task.audios) refs.push({ kind: 'res', id: (await uploadCanvasResource(cli, projectId, 'audio', p)).resourceId })
   return refs
 }
 
 /**
- * 提交一个任务：保存 → 报价 → 批准 → 运行。任一步失败都抛错，由调用方标记
- * `failed`（绝不自动重试）。
+ * 把已登记的图片资源挂成**画布图片节点**，返回 nodeId。
+ *
+ * 只登记 `resource upload` 而不建节点时，视频节点里的 `{{res:...}}` 不会形成上游
+ * 连线：画布上看不到素材，`upstreamNodeIds` 为空（2026-11-05 实测事故）。
  */
-export async function submitCanvasVideoTask(
+export async function createImageNodeFromResource(
+  cli: CanvasCli,
+  projectId: string,
+  resourceId: string,
+  title: string,
+): Promise<string> {
+  const created = await cli.runOrThrow(buildImageImportArgs({ projectId, title, resourceId }), {
+    timeoutMs: 120_000,
+    label: 'node create image (import)',
+  })
+  const handle = parseCanvasNodeHandle(created.envelope)
+  if (!handle) throw new Error(`dreamina-canvas node create image 未返回 nodeId: ${created.raw.slice(0, 300)}`)
+  return handle.nodeId
+}
+
+/** 一个已保存（未运行）的视频节点。 */
+export interface PreparedCanvasVideoNode {
+  nodeId: string
+  mode: CanvasVideoMode
+}
+
+/**
+ * 第 1 段（**不花钱**）：选模式并保存视频节点。
+ *
+ * 单独拆出这一段是为了守住「先建完全部节点，再进入付费段」：保存节点不报价、
+ * 不扣费，所以批量提交可以先把所有节点和连线铺到画布上，再去消费票据、报价、
+ * 批准、运行。建节点阶段失败时票据还没动过，不会白烧一张票。
+ */
+export async function prepareCanvasVideoNode(
   options: CanvasVideoBatchOptions,
   task: CanvasVideoTask,
   refs: CanvasNodeRef[],
   submitId: string,
-): Promise<{ nodeId: string; submitId: string; resourceIds: string[]; quotedCredits?: number; mode: CanvasVideoMode; paused?: boolean; pausedReason?: string }> {
+): Promise<PreparedCanvasVideoNode> {
   const { cli } = options
   const mode = selectCanvasVideoMode({
     images: task.images.length,
@@ -191,7 +248,6 @@ export async function submitCanvasVideoTask(
     explicitRatio: task.explicitRatio,
   })
 
-  // 1) 保存节点（不生成）
   const created = await cli.runOrThrow(
     buildVideoNodeArgs({
       projectId: options.projectId,
@@ -211,6 +267,33 @@ export async function submitCanvasVideoTask(
   )
   const handle = parseCanvasNodeHandle(created.envelope)
   if (!handle) throw new Error(`dreamina-canvas node create video 未返回 nodeId: ${created.raw.slice(0, 300)}`)
+  return { nodeId: handle.nodeId, mode }
+}
+
+/** 组合入口（旧签名）：建节点后立刻进入付费段。批量入口不用它，见 `runCanvasVideoBatch`。 */
+export async function submitCanvasVideoTask(
+  options: CanvasVideoBatchOptions,
+  task: CanvasVideoTask,
+  refs: CanvasNodeRef[],
+  submitId: string,
+): Promise<{ nodeId: string; submitId: string; resourceIds: string[]; quotedCredits?: number; mode: CanvasVideoMode; paused?: boolean; pausedReason?: string }> {
+  const prepared = await prepareCanvasVideoNode(options, task, refs, submitId)
+  return runPreparedCanvasVideoNode(options, task, prepared, submitId)
+}
+
+/**
+ * 第 2 段（**花钱**）：报价 → 批准 → 运行 → 受理回执。任一步失败都抛错，由调用方
+ * 标记 `failed`（绝不自动重试）。
+ */
+export async function runPreparedCanvasVideoNode(
+  options: CanvasVideoBatchOptions,
+  task: CanvasVideoTask,
+  prepared: PreparedCanvasVideoNode,
+  submitId: string,
+): Promise<{ nodeId: string; submitId: string; resourceIds: string[]; quotedCredits?: number; mode: CanvasVideoMode; paused?: boolean; pausedReason?: string }> {
+  const { cli } = options
+  const { mode } = prepared
+  const handle = { nodeId: prepared.nodeId }
 
   // 2) 报价（报价 ≠ 授权）
   const quoted = await cli.runOrThrow(
@@ -416,10 +499,15 @@ export async function pickDownloadedFromDir(dir: string): Promise<string | undef
 }
 
 /**
- * 跑完整批次：并发提交（每个任务独立身份），production 下再等终态并下载。
+ * 跑完整批次，分成**不花钱**与**花钱**两段，中间夹一次性闸门：
  *
- * 并发提交不等于并发付费失控：涨价、上限、身份都由上面 `submitCanvasVideoTask`
+ *   阶段 1  上传素材 + 保存全部节点（图片素材挂成画布节点，视频节点用 node: 引用）
+ *   闸门    所有节点就绪后才调 `beforePaidSubmit()`（消费真人票据）
+ *   阶段 3  报价 → 批准 → 运行 →（production）等终态与下载
+ *
+ * 并发提交不等于并发付费失控：涨价、上限、身份都由 `runPreparedCanvasVideoNode`
  * 逐任务走完报价→批准，因此这里只控制「同时在跑的 CLI 调用数」。
+ * 建节点阶段失败时闸门不会触发，票据原封不动。
  */
 export async function runCanvasVideoBatch(
   options: CanvasVideoBatchOptions,
@@ -432,10 +520,23 @@ export async function runCanvasVideoBatch(
     throw new Error('tasks / taskDirs / submitIds 长度必须一致')
   }
 
-  // 上传 + 提交（有界并发；每个任务一条独立身份链）
+  // 阶段 1（不花钱）：素材入画布 + 保存全部视频节点。同一张图在一个批次里只建一个节点。
+  const imageNodeCache = new Map<string, string>()
+  const prepared = await mapWithConcurrency(tasks, options.concurrency ?? tasks.length, async (task, index) => {
+    const refs = await uploadTaskRefs(options.cli, options.projectId, task, imageNodeCache)
+    return prepareCanvasVideoNode(options, task, refs, submitIds[index])
+  })
+
+  // 闸门：节点都建好了才允许进入付费段（票据/一次性授权在这里才被消费）。
+  if (prepared.some((item) => item.status === 'fulfilled')) {
+    await options.beforePaidSubmit?.()
+  }
+
+  // 阶段 3（花钱）：报价 → 批准 → 运行（有界并发；每个任务一条独立身份链）
   const submitted = await mapWithConcurrency(tasks, options.concurrency ?? tasks.length, async (task, index) => {
-    const refs = await uploadTaskRefs(options.cli, options.projectId, task)
-    return submitCanvasVideoTask(options, task, refs, submitIds[index])
+    const node = prepared[index]
+    if (node.status === 'rejected') throw node.reason
+    return runPreparedCanvasVideoNode(options, task, node.value, submitIds[index])
   })
 
   const results: CanvasVideoTaskResult[] = tasks.map((task, index) => {
