@@ -26,7 +26,7 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { join } from 'node:path'
 import { appendSafeLog, resolvePrivateRoot } from './shared/private-runtime.ts'
-import { consumeLaunchTicket, launchGateGuidance } from './shared/launch-gate.ts'
+import { inspectLaunchTicket, launchGateGuidance } from './shared/launch-gate.ts'
 import { createAccountGate } from './shared/dreamina-account.ts'
 import {
   canvasRequestId,
@@ -266,11 +266,19 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const workspaceRoot: string = exec.agent?.session?.header?.cwd ?? process.cwd()
         const privateRoot = resolvePrivateRoot(workspaceRoot, config.privateDir)
         // 生成启动门（硬门，仅视频提交）：`node run` / `--run` 除报价批准外，
-        // 还必须有真人在终端批准的一次性票据；票据在真正调用 CLI 前消费。
-        // `upscale` 与图片节点属于图片线路，不拦（见 isVideoSubmitCall）。
+        // 还必须有真人在终端批准的一次性票据。
+        //
+        // 门的位置（2026-11-05 修正）：这里只做**只读校验**，票据的**消费**交给执行层的
+        // 守卫（scripts/canvas-guard.mjs）。原因是门禁必须跟着「可执行层」走——
+        // 只要 Agent 能绕开本工具直调 `dreamina-canvas.exe`，装在工具层的门就等于不存在
+        // （真实事故：Agent 用 PowerShell 直调 CLI 连扣 3 次，工具层门禁一次都没触发）。
+        // 守卫通过环境变量拿票据 id，先消费再转发给真二进制；直调 CLI 的人拿不到这个
+        // 环境变量，也没有票据 id，会在守卫处被拒。
+        let launchTicketEnv: Record<string, string> | undefined
         if (isVideoSubmitCall(command, action, flags)) {
-          const ticketCheck = await consumeLaunchTicket(privateRoot, {
-            ticketId: String(args.launch_ticket ?? '').trim(),
+          const ticketId = String(args.launch_ticket ?? '').trim()
+          const ticketCheck = await inspectLaunchTicket(privateRoot, {
+            ticketId,
             tool: 'dreamina_canvas',
             items: 1,
             detail: `${command} ${action}`,
@@ -284,6 +292,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
               required_action: 'launch_gate',
               message: `${ticketCheck.message}\n\n${launchGateGuidance(privateRoot)}`,
             }
+          }
+          launchTicketEnv = {
+            DSH_LAUNCH_TICKET: ticketId,
+            DSH_LAUNCH_TOOL: 'dreamina_canvas',
+            DSH_LAUNCH_PRIVATE_ROOT: privateRoot,
           }
         }
         const accountGate = createAccountGate(privateRoot, config.dreaminaAccount, async (info) => {
@@ -306,7 +319,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         const argv = [root, ...canvasPositionals(command, action, positionals), ...toCliFlags(flags)]
         let result: CanvasRunResult
         try {
-          result = await cli.run(argv, { timeoutMs: config.timeoutMs })
+          result = await cli.run(argv, { timeoutMs: config.timeoutMs, env: launchTicketEnv })
         } catch (error: any) {
           return { ok: false, command, action, outcome: 'unknown', message: String(error?.message ?? error).slice(0, 400) }
         }

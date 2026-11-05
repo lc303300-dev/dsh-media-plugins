@@ -831,7 +831,7 @@ export interface CanvasCliOptions {
 export interface CanvasCli {
   run(args: string[], options?: { timeoutMs?: number }): Promise<CanvasRunResult>
   /** 便捷：要求 outcome === 'ok'，否则抛结构化错误。 */
-  runOrThrow(args: string[], options?: { timeoutMs?: number; label?: string }): Promise<CanvasRunResult>
+  runOrThrow(args: string[], options?: { timeoutMs?: number; label?: string; env?: Record<string, string> }): Promise<CanvasRunResult>
 }
 
 /**
@@ -843,9 +843,16 @@ export interface CanvasCli {
 export function createCanvasCli(options: CanvasCliOptions): CanvasCli {
   const timeoutMs = options.timeoutMs ?? 180_000
 
-  const run = async (args: string[], runOptions: { timeoutMs?: number } = {}): Promise<CanvasRunResult> => {
+  const run = async (
+    args: string[],
+    runOptions: { timeoutMs?: number; env?: Record<string, string> } = {},
+  ): Promise<CanvasRunResult> => {
     if (options.ensureAccount) await options.ensureAccount()
     const full = [...canvasGlobalArgs({ profile: options.profile, region: options.region }), ...args]
+    // per-call env：启动票据 id 只能经由环境变量交给执行层的守卫（见 scripts/canvas-guard.mjs），
+    // 不作为 CLI 参数出现，避免真 CLI 因未知 flag 报错。
+    const callEnv = { ...(options.env ?? {}), ...(runOptions.env ?? {}) }
+    const hasCallEnv = Object.keys(callEnv).length > 0
     const exec =
       options.exec ??
       (async (binary: string, argv: string[], budget: number) => {
@@ -853,11 +860,15 @@ export function createCanvasCli(options: CanvasCliOptions): CanvasCli {
         const { promisify } = await import('node:util')
         const execFileAsync = promisify(execFile)
         try {
-          const { stdout, stderr } = await execFileAsync(binary, argv, {
+          // .cmd/.bat（守卫入口）在 Windows 上不能直接 execFile，必须经 cmd.exe /c。
+          const isScriptShim = /[.](cmd|bat)$/i.test(binary)
+          const spawnBinary = isScriptShim ? (process.env.ComSpec || 'cmd.exe') : binary
+          const spawnArgv = isScriptShim ? ['/d', '/s', '/c', binary, ...argv] : argv
+          const { stdout, stderr } = await execFileAsync(spawnBinary, spawnArgv, {
             timeout: budget,
             maxBuffer: 32 * 1024 * 1024,
             windowsHide: true,
-            env: options.env ? { ...process.env, ...options.env } : process.env,
+            env: hasCallEnv ? { ...process.env, ...callEnv } : process.env,
           })
           return { stdout: String(stdout), stderr: String(stderr ?? ''), exitCode: 0 }
         } catch (error: any) {
@@ -878,7 +889,10 @@ export function createCanvasCli(options: CanvasCliOptions): CanvasCli {
     }
   }
 
-  const runOrThrow = async (args: string[], runOptions: { timeoutMs?: number; label?: string } = {}): Promise<CanvasRunResult> => {
+  const runOrThrow = async (
+    args: string[],
+    runOptions: { timeoutMs?: number; label?: string; env?: Record<string, string> } = {},
+  ): Promise<CanvasRunResult> => {
     const result = await run(args, runOptions)
     if (result.classification.outcome !== 'ok') {
       const label = runOptions.label ?? args.slice(0, 2).join(' ')
@@ -925,7 +939,15 @@ export async function resolveCanvasBinary(configured?: string): Promise<string> 
   const { homedir } = await import('node:os')
   const { packageRootOf } = await import('./pkg-root.ts')
   const name = canvasBinaryName()
-  const candidates = [join(packageRootOf(import.meta.url), 'bin', name), join(homedir(), 'bin', name)]
+  // 守卫入口（dreamina-canvas.cmd）优先于裸名：装过 install-canvas-guard.ps1 后
+  // ~/bin/dreamina-canvas.exe 已改名为 .real.exe，只剩 .cmd，必须显式命中它，
+  // 否则回退裸名在 Windows 上跑不了 .cmd（execFile 不会补 PATHEXT）。
+  const guardName = name.replace(/\.exe$/i, '') + '.cmd'
+  const candidates = [
+    join(packageRootOf(import.meta.url), 'bin', name),
+    join(homedir(), 'bin', name),
+    join(homedir(), 'bin', guardName),
+  ]
   for (const candidate of candidates) {
     try {
       await access(candidate)
