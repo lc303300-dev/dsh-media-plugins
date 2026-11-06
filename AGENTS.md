@@ -228,7 +228,7 @@ node run   --node-id <id> --submit-id <uuid> --credit-token <token>
 > **只要用了 `batch_image`，就一定有审阅页** —— 这是工具的固定行为，不依赖使用者记得手动调用。
 
 - **自动生成**：`batch_image` 任务结算（scheduler 收尾）后自动写审阅页 `<outputDir>/contact-<jobKey>.html`；显式 `contact_sheet` 命令复用同一实现（`writeReviewPage` in `src/tool-batch-image.ts`）。
-- **图片必须内嵌**：审阅页用 data URI（`data:image/jpeg;base64,…`）嵌入缩略图，并用自适应 CSS grid 排版。`file://` 或相对路径的 `img src` 会被沙箱查看器拦成坏图 —— 不要退回外部路径引用（回归测试：`tests/batch-review-page.test.mjs`）。
+- **图片必须内嵌（所有交付给用户的 HTML，不只审阅页）**：缩略图一律 data URI（`data:image/jpeg;base64,…`）嵌入，并用自适应 CSS grid 排版。根因：**DSH 侧边栏的 HTML 预览器不加载相对图片资源** —— 静态模式只保留行内样式与 `data:` 图片（脚本、外链、`href` 全被剥离），交互模式只解析相对的 `.js`/`.css` 依赖；因此 `<img src="相对路径">` 或 `file://` 在该预览器里**一定**显示成坏图（用本地浏览器打开反而正常，极易误判为"页面没问题"）。内嵌失败或预览缺失时渲染 `.rv-miss` 占位（"预览缺失"），**绝不退回路径**。这条同样约束 agent 手写的索引页 / 报告页 / 对比页，而不只是三个内置审阅页。回归测试：`tests/batch-review-page.test.mjs`（`/<img src="(?!data:)/` 断言）、`tests/prompt-batch-core.test.mjs`。
 - **一任务一页**：页面只含该次任务的图（含未落地槽位占位），不累积历史批次、**不渲染参考图** —— `original_image` / `reference_images` 即使传入也被忽略（旧的 “slot 0 = 原始／参考图” 行为已移除）。
 - **原图另行交付**：审阅页内是缩略图；原始分辨率的成品图按原尺寸交付，不缩小。
 - **审阅页必带勾选与复制名称（全管线）**：三张审阅表（`batch_image` 联系表、`split_grid_sheet` 拆格审阅页、`prompt_batch` 参考图审阅页）共用 `src/shared/review-ui.ts` 的勾选组件 —— 每张图一个复选框，粘性工具栏显示"已选 N / 共 M"并提供 **复制勾选名称** / **复制勾选路径** / 全选 / 清空。复制走 `navigator.clipboard` → `execCommand` → 预选中 textarea 三级兜底（`file://` 查看器拦截脚本复制时仍可 Ctrl+C）。改审阅页 HTML 时不得退回"只有文件名、没有勾选"的旧形态。

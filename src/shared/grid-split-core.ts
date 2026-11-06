@@ -695,14 +695,22 @@ async function buildReviewPage(
   base: string,
 ): Promise<string> {
   const thumb = async (p: string, edge: number): Promise<string> => {
-    const buf = await sharp(p, { failOn: 'none' }).rotate().resize({ width: edge, height: edge, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer()
-    return `data:image/jpeg;base64,${buf.toString('base64')}`
+    try {
+      const buf = await sharp(p, { failOn: 'none' }).rotate().resize({ width: edge, height: edge, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer()
+      return `data:image/jpeg;base64,${buf.toString('base64')}`
+    } catch {
+      // No relative <img src> fallback: the DSH sidebar preview does not load
+      // relative image resources, so an unembedded panel would show as a broken
+      // image. An unreadable panel renders an explicit placeholder instead.
+      return ''
+    }
   }
   const cells: string[] = []
   for (const p of panels) {
     const t = await thumb(p.path, 360)
+    const img = t ? `<img src="${t}" alt="${p.id}">` : '<div class="miss">预览缺失</div>'
     cells.push(
-      `<td class="rv-card">${reviewPickHtml({ name: basename(p.path), path: p.path, tag: `${p.width}×${p.height}` })}<img src="${t}" alt="${p.id}"><div class="slot">${p.id} · ${p.width}×${p.height} · 白占比 ${(p.whiteRatio * 100).toFixed(0)}%</div></td>`,
+      `<td class="rv-card">${reviewPickHtml({ name: basename(p.path), path: p.path, tag: `${p.width}×${p.height}` })}${img}<div class="slot">${p.id} · ${p.width}×${p.height} · 白占比 ${(p.whiteRatio * 100).toFixed(0)}%</div></td>`,
     )
   }
   const warnHtml = warnings.length
@@ -713,7 +721,7 @@ async function buildReviewPage(
     : `横格线(px): ${hLines.join(', ')}；纵格线(px): ${vLines.join(', ')}`
   const html = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>拆格审阅 ${base}</title>
 ${reviewUiStyleHtml()}
-<style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse;margin:12px 0}td{border:1px solid #ccc;padding:6px;text-align:center;vertical-align:top}img{max-width:320px;width:100%;height:auto;display:block}.slot{font-size:12px;color:#555;margin-top:4px}h3{margin-bottom:4px}</style>
+<style>body{font-family:system-ui;margin:24px}table{border-collapse:collapse;margin:12px 0}td{border:1px solid #ccc;padding:6px;text-align:center;vertical-align:top}img{max-width:320px;width:100%;height:auto;display:block}.slot{font-size:12px;color:#555;margin-top:4px}h3{margin-bottom:4px}.miss{padding:24px 12px;border:1px dashed #b9a06a;border-radius:8px;background:#fbf6ea;color:#8a6a1f;font-size:12px}</style>
 </head><body class="rv-flat-page">
 <h1>拆格审阅：${base}</h1>
 <p>源图：<code>${escapeReviewHtml(sheet)}</code>（${fullW}×${fullH}）· 方法：${method} · ${lineInfo}</p>

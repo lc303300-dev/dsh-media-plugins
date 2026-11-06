@@ -44,16 +44,16 @@ export function escapeHtml(text: string): string {
 }
 
 /**
- * Compute the `src` for a preview from its absolute path. The review page
- * lives in `<batch>/review/index.html` while previews live in
- * `<batch>/previews/`, so the correct relative reference is
- * `../previews/<basename>` — never a repo-root-relative path, which would
- * resolve to `<batch>/review/…` and break every thumbnail.
+ * Why the page never links previews by path: the DSH sidebar HTML preview does
+ * not load relative image resources. Its static renderer keeps only inline
+ * styles and `data:` images (scripts, external resources and links are
+ * stripped); its interactive renderer resolves only relative `.js` / `.css`
+ * dependencies. A `<img src="../previews/<name>">` therefore renders as a
+ * broken image in the place users actually open this page. Every thumbnail has
+ * to be a data URI, and when embedding fails we render an explicit placeholder
+ * rather than an unloadable path.
  */
-export function previewSrc(previewPath: string): string {
-  const name = String(previewPath ?? '').replace(/\\/g, '/').split('/').pop() ?? ''
-  return name ? `../previews/${name}` : ''
-}
+const MISSING_PREVIEW = '<span class="rv-miss">预览缺失</span>'
 
 /**
  * Copy-friendly names for a set of image paths: the file name, prefixed with its
@@ -75,7 +75,9 @@ export function reviewImageNames(paths: Array<string | undefined>): string[] {
 /**
  * Build review/index.html: every segment renders ALL of its reference images
  * (primary + extras, in `--image` order) labelled 图片1..图片N, followed by
- * the Chinese prompt. Relative preview paths point at `../previews/`.
+ * the Chinese prompt. Thumbnails are embedded as data URIs only; a reference
+ * whose preview could not be embedded renders a placeholder, never a relative
+ * `src` (the DSH sidebar preview would show that as a broken image).
  *
  * Every image carries a checkbox with its copy-friendly name, so a binding can
  * be confirmed (and quoted back) without retyping file names.
@@ -93,8 +95,9 @@ export function buildReviewHtml(manifest: ManifestLike, items: ReviewItem[]): st
       const imgs = it.images && it.images.length > 0 ? it.images : [{ path: it.material, preview: it.preview }]
       const cells = imgs
         .map((img, i) => {
-          const src = img.dataUri && img.dataUri.length > 0 ? img.dataUri : previewSrc(img.preview)
-          const imgTag = src ? `<img src="${src}" width="240" loading="lazy" alt="图片${i + 1}" title="${escapeHtml(img.path)}">` : '—'
+          const imgTag = img.dataUri && img.dataUri.length > 0
+            ? `<img src="${img.dataUri}" width="240" loading="lazy" alt="图片${i + 1}" title="${escapeHtml(img.path)}">`
+            : MISSING_PREVIEW
           const pick = reviewPickHtml({ name: names[cursor++] ?? '', path: img.path, tag: `图片${i + 1}` })
           return `<figure class="rv-card" style="margin:0 10px 6px 0">${pick}${imgTag}<figcaption style="font-size:12px;color:#777">图片${i + 1}</figcaption></figure>`
         })

@@ -60,7 +60,11 @@ export const REVIEW_UI_CSS = `*{box-sizing:border-box}
 .rv-fallback{margin:10px 0 0;padding:10px 12px;border:1px solid #7a5a1e;border-radius:10px;background:#2a2418}
 .rv-fallback[hidden]{display:none}
 .rv-fallback textarea{width:100%;min-height:96px;font-family:ui-monospace,Consolas,monospace;font-size:12px;background:#14161a;color:#e9e9ec;border:1px solid #3a3f47;border-radius:8px;padding:8px}
-.rv-fallback p{margin:0 0 6px;font-size:12.5px;color:#ffbf6b}`
+.rv-fallback p{margin:0 0 6px;font-size:12.5px;color:#ffbf6b}
+/* Thumbnail that could not be embedded (never a relative <img src>: the DSH
+   sidebar preview does not load relative image resources and would show it as
+   a broken image). */
+.rv-miss{display:inline-flex;align-items:center;justify-content:center;min-width:120px;min-height:72px;padding:10px 14px;border:1px dashed #b9a06a;border-radius:8px;background:#fbf6ea;color:#8a6a1f;font-size:12px}`
 
 /** Stylesheet tag for `<head>`. */
 export function reviewUiStyleHtml(): string {
