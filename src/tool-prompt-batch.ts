@@ -537,19 +537,27 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             }
             await atomicWriteJson(join(dir, 'previews.json'), previews)
             const items = buildReviewItems(manifest, previews)
-            // Embed every reference thumbnail as a data URI — the sandboxed viewer blocks
-            // file:// and relative <img src> (same contract as batch_image's contact sheet).
+            // Embed every reference thumbnail as a data URI — the DSH sidebar HTML
+            // preview never loads relative <img src> (its static mode keeps only
+            // inline styles + `data:` images, its interactive mode resolves only
+            // relative .js/.css), so a path-based thumbnail would render broken.
+            let total = 0
+            let embeddedCount = 0
             for (const item of items) {
               for (const img of item.images) {
+                total += 1
                 img.dataUri = await previewDataUri(img.preview)
+                if ((img.dataUri ?? '').length > 0) embeddedCount += 1
               }
             }
             const reviewDir = await ensureDir(join(dir, 'review'))
             const html = buildReviewHtml(manifest, items)
             await writeFile(join(reviewDir, 'index.html'), html, 'utf8')
             await atomicWriteJson(join(dir, 'review.json'), items)
-            const embedded = items.reduce((n, it) => n + it.images.length, 0)
-            return { ok: true, message: `review page ready (${embedded} reference image(s) embedded, one per 图片N slot): ${join(reviewDir, 'index.html')}`, batch_id: batchId, review_path: join(reviewDir, 'index.html') }
+            const missNote = embeddedCount === total
+              ? ''
+              : `，其中 ${total - embeddedCount} 张预览未能内嵌（页面显示「预览缺失」占位，原图仍在素材目录）`
+            return { ok: true, message: `review page ready (${embeddedCount}/${total} reference image(s) embedded${missNote}, one per 图片N slot): ${join(reviewDir, 'index.html')}`, batch_id: batchId, review_path: join(reviewDir, 'index.html') }
           }
           case 'get_manifest':
             return { ok: true, message: `manifest for ${batchId}`, manifest }
