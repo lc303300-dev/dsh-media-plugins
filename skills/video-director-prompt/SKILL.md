@@ -36,15 +36,15 @@ whenToUse: 需要把故事/脚本/画面创意/参考素材写成可执行中文
 - 需要特殊视角、高速动作、复杂转场、极端 FOV 或社区实战技巧时，读 [社区与实验技巧](references/community-techniques.md)。
 - [即梦模板速查](references/structure-guide.md) 只作快速落笔用，内容与正本重复时以正本为准。
 
-## 创意正文生产（Gemini 4）
+## 创作分工（Gemini 4 只做两件事）
 
-本技能是"怎样拍"的知识层；**创意正文由 `creative_writer` 生产，Agent 不手写**。
+本技能是"怎样拍"的知识层。**分工（2026-11-10 用户定）：**
 
-- Agent 先按 [创意 Brief 契约](references/creative-brief-contract.md) 组 brief：事实、镜头表、模板、要写的区块、语料结构摘要、约束、验收。
-- 调用：`creative_writer(kind=prompt, thinking=base, length=medium, brief=<brief>, context=<事实+语料摘要>, images=[参考图路径])`。
-  **提示词默认 `base`**（快 10–20 倍）；只有剧本/分镜/导演阐述才用 `thinking=high`。
-- **有实景/参考图就传 `images`**：Gemini 4 直接读图；每张会 EXIF 归一化并按**最长边 1920px**（`maxImageEdge` 可配）等比缩放、JPEG q85 后提交，不覆盖原图。图是事实源，文字只补图中看不到的事实；无图时才完全文字化。
-- Gemini 只写指定区块（画面内容、逐镜语言、布光/背景、风格措辞）；**镜数/时长/景别/机位、素材编号、常量块、音频默认句由 Agent 保留**。
+- **Gemini 只负责两样**：① **导演脚本**（小说体，按故事大纲写）；② **布光／风格锁定**（看图写整体锁＋分时段模块）。
+- **其余全部由 Agent 自己做**：执行脚本（九列分镜表＋生成任务分组）、即梦提示词脚本（11 区块装配、素材绑定、常量块、逐镜画面与镜头行）。**这两层不调用 `creative_writer`。**
+- 调用 Gemini 时按 [创意 Brief 契约](references/creative-brief-contract.md) 组 brief；**brief 只给「片子基本事实 ＋ 图序 ＋ 输出要求」**——Gemini 每次都是第一次接触，塞元规则、既有规则解释、要点清单只会让它混乱。
+- 调用式：`creative_writer(kind=script|prompt, thinking=base, brief=..., images=[参考图路径])`；**有图必传**，Agent 不描述图内容、不代写。
+- 提示词层的画面内容与镜头行**直接由执行脚本改写成提示词语言**，保证两层镜号一一对应、不被模型改写。
 - 不适用：用户明确说"不修改提示词"（normalize-only），或已给定完整提示词并要求原样提交。
 
 ## 证据与适用性
