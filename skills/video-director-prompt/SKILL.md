@@ -30,6 +30,7 @@ whenToUse: 需要把故事/脚本/画面创意/参考素材写成可执行中文
 - **三层脚本工作流**（见 [三层脚本工作流](references/three-script-workflow.md)）：**① 导演脚本 → ② 执行脚本（九列分镜表） → ③ 即梦提示词脚本**。写导演脚本时按第一层要求：**小说体、以画面感描述为主、整篇一起写完不拆段**，不写景别焦段机位。
 - **再读 [创意 Brief 契约](references/creative-brief-contract.md)**：所有视频提示词创意类管线（导演单条/批次、短剧、Skill 线）共用的唯一字段契约——谁产什么、brief 结构、调用参数、输出与验收全在这里。
 - **再读 [即梦提示词模板集](references/jimeng-standard-template.md)**：它是模板选择、素材角色、编号映射与允许/禁止写法的**唯一真源**。
+- **需要【布光锁定】（整体风格锁定 ＋ 分时段模块）时，读 [布光锁定](references/lighting-lock.md)**：硬规则「先要图 → Gemini 一次看图写完 → Agent 只校准事实与拼接」，brief 只给片子基本事实／图序／输出要求三样，附拼接公式、brief 模板与常见错误。
 - 每次创作都读 [导演方法](references/directing-methods.md)，用于可视化表达、场面调度、表演、光色、物理与声音。
 - 需要确定要素语义、素材语义、风格分布或转场写法时，读 [提示词结构](references/prompt-structure.md)。
 - 需要特殊视角、高速动作、复杂转场、极端 FOV 或社区实战技巧时，读 [社区与实验技巧](references/community-techniques.md)。
