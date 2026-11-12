@@ -103,8 +103,10 @@ export function reviewPickHtml(opts: { name: string; path?: string; tag?: string
 
 /**
  * Behaviour for the widget: selection count, select-all/clear, and copy with a
- * two-step fallback (`navigator.clipboard` → hidden textarea + `execCommand`,
- * then a pre-selected textarea). Emits a `<script>` tag; place it at the end of
+ * two-step ladder that starts with the *synchronous* `execCommand` path (still
+ * inside the click gesture, so it also works from `file://` and restricted
+ * iframes), falls back to `navigator.clipboard`, and finally exposes a
+ * pre-selected textarea. Emits a `<script>` tag; place it at the end of
  * `<body>`.
  */
 export function reviewUiScriptHtml(): string {
@@ -158,8 +160,13 @@ export function reviewUiScriptHtml(): string {
       ta.setAttribute('readonly', 'readonly');
       ta.style.position = 'fixed';
       ta.style.top = '-1000px';
+      ta.style.left = '-9999px';
       document.body.appendChild(ta);
+      // select() 前必须 focus()：无焦点的 textarea 不是当前选区，
+      // execCommand('copy') 会复制空内容并返回 false（"复制按钮没反应"的死因之一）。
+      ta.focus();
       ta.select();
+      try { ta.setSelectionRange(0, text.length); } catch (e2) { /* 只读框在个别浏览器不支持 */ }
       var ok = document.execCommand && document.execCommand('copy');
       document.body.removeChild(ta);
       return !!ok;
@@ -171,13 +178,17 @@ export function reviewUiScriptHtml(): string {
       if (ok) { if (fbEl) fbEl.hidden = true; say('已复制 ' + text.split('\\n').length + ' 项'); }
       else manual(text);
     };
+    // 顺序很关键：先在用户点击的同步调用栈里试 execCommand。
+    // 先走 clipboard API 时，file:// 与受限 iframe 会 reject，而 reject 回调
+    // 已脱离用户手势，此后再调 execCommand 同样被拒 —— 用户看到的就是"点了没反应"。
+    if (legacyCopy(text)) { done(true); return; }
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(legacyCopy(text)); });
+        navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
         return;
       }
-    } catch (e) { /* fall through to the legacy path */ }
-    done(legacyCopy(text));
+    } catch (e) { /* fall through to the fallback box */ }
+    done(false);
   }
 
   boxes.forEach(function (b) { b.addEventListener('change', refresh); });
