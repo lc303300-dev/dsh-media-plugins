@@ -28,13 +28,15 @@ export const Config: z<{
   fxRmbPerUsd?: number
   proxyUrl?: string
   litellmUrl?: string
+  /** @deprecated 后台刷新已移除（会阻止 Host 干净退出）；保留仅为兼容旧配置，值被忽略。 */
   refreshMs?: number
   windows?: readonly TimeWindow[]
 }> = z.object({
   fxRmbPerUsd: z.number().default(DEFAULT_FX_RMB_PER_USD),
   proxyUrl: z.string().default(''),
   litellmUrl: z.string().default(DEFAULT_LITELLM_URL),
-  refreshMs: z.number().default(21_600_000),
+  /** @deprecated 见上；只为让旧 cordis.patch.yml 继续通过配置校验。 */
+  refreshMs: z.number().default(0),
   windows: z.array(z.object({
     startMinute: z.number(),
     endMinute: z.number(),
@@ -92,8 +94,14 @@ function foldSteps(events: readonly unknown[]): Step[] {
   return steps
 }
 
+/** Live per-(model, instant) resolver plus the resources it owns. */
+interface PriceResolver {
+  priceAt: (model: string | undefined, ts: number) => CostPrice
+  dispose: () => void
+}
+
 /** Live per-(model, instant) resolver: litellm over the proxy + fallback. */
-function makePriceAt(config: ResolvedConfig): (model: string | undefined, ts: number) => CostPrice {
+function makePriceAt(config: ResolvedConfig): PriceResolver {
   let table: Record<string, LitellmPriceRow> = {}
   let agent: ProxyAgent | undefined
   const fx = config.fxRmbPerUsd ?? DEFAULT_FX_RMB_PER_USD
@@ -115,11 +123,13 @@ function makePriceAt(config: ResolvedConfig): (model: string | undefined, ts: nu
       // Keep the previous table (or bundled fallback); never fail the agent.
     }
   }
+  // One startup pull only. There is deliberately no periodic refresh: a
+  // recurring timer here is a host-lifetime resource, and the desktop update
+  // gate only installs an update after the Host exits by itself following its
+  // shutdown acknowledgement. A ref'd interval makes that impossible.
   void refresh()
-  const refreshMs = config.refreshMs ?? 0
-  if (refreshMs > 0) setInterval(() => { void refresh() }, refreshMs)
 
-  return (model, timestampMs) => {
+  const priceAt = (model: string | undefined, timestampMs: number): CostPrice => {
     const canonical = MODEL_ALIASES[model ?? ''] ?? model
     // Official DeepSeek prices take precedence over the (sometimes misleading)
     // litellm provider rows; fall back to litellm, then the bundled default.
@@ -137,10 +147,19 @@ function makePriceAt(config: ResolvedConfig): (model: string | undefined, ts: nu
     }
     return priceAtTs(base, timestampMs, windows)
   }
+
+  const dispose = (): void => {
+    // Release the proxy pool without awaiting it, so plugin disposal can never
+    // hang the process on network teardown. No timer is owned here any more.
+    void agent?.destroy()
+  }
+
+  return { priceAt, dispose }
 }
 
 function apply(ctx: Context, config: ResolvedConfig): void {
-  const priceAt = makePriceAt(config)
+  const { priceAt, dispose } = makePriceAt(config)
+  ctx.effect(() => dispose)
   ctx.tools.register(
     defineTool({
       name: 'media_cost',

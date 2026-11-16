@@ -50,6 +50,8 @@
     "./Ws_tool-creative": "./dist/tool-creative.js",
     "./notify": "./dist/notify.js",
     "./Ws_completion-notify": "./dist/notify.js",
+    "./host-exit-guard": "./dist/host-exit-guard.js",
+    "./Ws_host-exit-guard": "./dist/host-exit-guard.js",
     "./package.json": "./package.json"
   },
   "files": [

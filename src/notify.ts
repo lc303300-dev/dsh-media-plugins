@@ -80,7 +80,7 @@ function extractAnswerText(agent: AgentLike): string {
 function showToast(text: string): void {
   const excerpt = text.slice(0, 60)
   const encoded = Buffer.from(excerpt, 'utf8').toString('base64')
-  execFile(
+  const child = execFile(
     'powershell.exe',
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', TOAST_SCRIPT],
     { env: { ...process.env, NOTIFY_TEXT: encoded }, windowsHide: false },
@@ -89,6 +89,9 @@ function showToast(text: string): void {
       else void debugLog({ event: 'spawn-completed' })
     },
   )
+  // A completion toast must never outlive the Host: an un-unref'd powershell
+  // handle keeps the process alive and would block the desktop update handoff.
+  child.unref()
 }
 
 export function apply(ctx: Context): void {

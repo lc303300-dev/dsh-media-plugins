@@ -243,7 +243,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           proxyOpen = await new Promise((resolve) => {
             const socket = createConnection({ host: '127.0.0.1', port: 7897, timeout: 3000 })
             socket.once('connect', () => { socket.destroy(); resolve(true) })
-            socket.once('error', () => resolve(false))
+            socket.once('error', () => { socket.destroy(); resolve(false) })
             socket.once('timeout', () => { socket.destroy(); resolve(false) })
           })
         } catch {

@@ -15,12 +15,11 @@
  * @module dsh-media-plugins/shared/gif-core
  */
 
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { execFileTracked } from './host-resources.ts'
 import { access, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
-const execFileAsync = promisify(execFile)
+const execFileAsync = execFileTracked
 
 /** Candidate (width, fps) stages, highest quality first. */
 export const QUALITY_STAGES: Array<{ width: number; fps: number }> = [

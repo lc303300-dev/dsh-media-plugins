@@ -28,6 +28,7 @@
 
 import { createHash } from 'node:crypto'
 import type { RegRunner } from './dreamina-keychain.ts'
+import { execFileTracked } from './host-resources.ts'
 
 /* ------------------------------------------------------------------ */
 /* 常量：制品与本地身份                                                  */
@@ -856,15 +857,14 @@ export function createCanvasCli(options: CanvasCliOptions): CanvasCli {
     const exec =
       options.exec ??
       (async (binary: string, argv: string[], budget: number) => {
-        const { execFile } = await import('node:child_process')
-        const { promisify } = await import('node:util')
-        const execFileAsync = promisify(execFile)
         try {
           // .cmd/.bat（守卫入口）在 Windows 上不能直接 execFile，必须经 cmd.exe /c。
           const isScriptShim = /[.](cmd|bat)$/i.test(binary)
           const spawnBinary = isScriptShim ? (process.env.ComSpec || 'cmd.exe') : binary
           const spawnArgv = isScriptShim ? ['/d', '/s', '/c', binary, ...argv] : argv
-          const { stdout, stderr } = await execFileAsync(spawnBinary, spawnArgv, {
+          // Tracked variant: a Host shutdown stops this CLI child instead of
+          // letting it hold the process open past the update gate's deadline.
+          const { stdout, stderr } = await execFileTracked(spawnBinary, spawnArgv, {
             timeout: budget,
             maxBuffer: 32 * 1024 * 1024,
             windowsHide: true,

@@ -11,6 +11,13 @@
 # - video_to_gif 需要 ffmpeg（FFMPEG_PATH 或 PATH 或常见安装路径）。
 # - 所有任务/锁/日志/注册库/项目状态写入 <workspace>/.dsh-media-private/。
 - insert:
+    # 桌面更新交接的退出保险：任何插件残留的 ref'd 句柄（定时器/子进程/socket）
+    # 都会让 Host 在 shutdown 后不退出，桌面壳等 10 秒强杀 → 弹「未能安全停止任务，
+    # 更新尚未安装」。这里在确认 shutdown-complete 后 7 秒兜底以 0 退出，详见
+    # src/host-exit-guard.ts。
+    - id: Ws_host-exit-guard
+      name: dsh-media-plugins/host-exit-guard
+
     # 【已屏蔽】火山方舟看图通道（describe_image）。恢复：取消下面两行注释 +
     # `.\setup.ps1 -EnableVolcano` + 重启 dsh。
     # - id: Ws_tool-vision
@@ -105,9 +112,9 @@
     - id: Ws_tool-cost
       name: dsh-media-plugins/Ws_tool-cost
       config:
-        # 外网（litellm 价表）走本机代理；每 6 小时自动刷新一次官方价。
+        # 外网（litellm 价表）走本机代理；只在插件加载时拉取一次，不后台轮询
+        # （后台定时器会阻止 Host 干净退出，导致桌面更新失败）。
         proxyUrl: 'http://127.0.0.1:7897'
-        refreshMs: 21600000
 
     # 创意写作子 Agent：写提示词 / 剧本分镜 / 文章 / 文案 / 故事时一次性成稿，
     # 主 Agent 不必自己逐字创作。provider=comfly 由 llm-pi-ai 提供，
