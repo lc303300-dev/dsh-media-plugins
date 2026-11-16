@@ -23,7 +23,7 @@ import { buildReviewHtml, buildReviewItems } from './shared/prompt-batch-core.ts
 import { normalizeReferenceLabels, classifyVideoPromptCompleteness } from './shared/video-pipeline.ts'
 import { parseLedger, segmentEvidence } from './shared/corpus-ledger.ts'
 import { CREATIVE_LEDGER_FILE, decideCreativeGate, parseCreativeLedger } from './shared/creative-ledger.ts'
-import { DEFAULT_VIDEO_CAPACITY, promptDurationLabel } from './shared/video-policy.ts'
+import { DEFAULT_VIDEO_CAPACITY, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RESOLUTION, isUserExplicitSelection, promptDurationLabel, resolutionEquals } from './shared/video-policy.ts'
 import sharp from 'sharp'
 
 function sleep(ms: number): Promise<void> {
@@ -104,9 +104,12 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         name: { type: 'string', description: 'new_batch 用：短描述后缀（YYYYMMDD-HHMM-<name>）。' },
         duration: { type: 'integer', description: 'init/new_batch 用：视频时长 4-30 秒。' },
         ratio: { type: 'string', description: 'init/new_batch 用：视频比例。' },
-        model: { type: 'string', description: 'init/new_batch 用：模型选择证据（如 seedance2.5）。' },
+        model: { type: 'string', description: 'init/new_batch 用：模型（**默认 seedance_2.5**）。改用其它模型必须是用户明确要求，并把选择依据写进 model_selection_evidence。' },
         model_selection_evidence: { type: 'string', description: 'init/new_batch 用：模型选择的证据说明（如 cli_option）。' },
         model_user_text: { type: 'string', description: 'init/new_batch 用：用户点名模型的原文（selection_source=user_explicit 时记录）。' },
+        video_resolution: { type: 'string', description: 'init/new_batch 用：分辨率（**默认 480p**）。非 480p 必须是用户明确要求，并同时传 video_resolution_selection_source=user_explicit。' },
+        video_resolution_selection_source: { type: 'string', enum: ['user_explicit'], description: 'init/new_batch 用：仅在用户明确要求非默认分辨率（非 480p）时传 user_explicit；绝不自行升级画质档位。' },
+        video_resolution_user_text: { type: 'string', description: 'init/new_batch 用：用户点名分辨率的原文（selection_source=user_explicit 时记录）。' },
         photo_types: { type: 'array', items: { type: 'string' }, description: 'init/new_batch 用：按素材顺序的 photo_type（如 main_scene / reference / first_frame）。' },
         user_requirements: { type: 'string', description: 'init/new_batch 用：用户运镜/镜头/时长要求。' },
         user_request: { type: 'string', description: 'new_batch 用：原始用户请求（写入 request.json）。' },
@@ -181,10 +184,10 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             batch_id: batchId,
             duration: Number(args.duration ?? 5),
             ratio,
-            model: args.model ?? 'seedance2.5',
-            model_evidence: args.model ?? 'seedance2.5',
+            model: args.model ?? DEFAULT_VIDEO_MODEL,
+            model_evidence: args.model ?? DEFAULT_VIDEO_MODEL,
             model_selection: {
-              requested: args.model ?? 'seedance2.5',
+              requested: args.model ?? DEFAULT_VIDEO_MODEL,
               selection_source: args.model ? 'user_explicit' : 'default',
               selection_evidence: args.model_selection_evidence ?? '',
               user_text: args.model_user_text ?? '',
@@ -193,7 +196,12 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             surface: 'jimeng-zh',
             mode: 'first-frame',
             preview_max_long_edge: 1920,
-            video_resolution: '480p',
+            video_resolution: args.video_resolution ?? DEFAULT_VIDEO_RESOLUTION,
+            video_resolution_selection: {
+              requested: args.video_resolution ?? DEFAULT_VIDEO_RESOLUTION,
+              selection_source: isUserExplicitSelection(args.video_resolution_selection_source) ? 'user_explicit' : 'default',
+              user_text: args.video_resolution_user_text ?? '',
+            },
             materials,
             prompts: [] as Array<{ material: string; prompt: string }>,
             created_at: new Date().toISOString(),
@@ -277,6 +285,18 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             if (!args.confirm) return { ok: false, message: `run_batch requires confirm=true; ${ready}/${plan.length} ready`, plan }
             const missing = plan.filter((item: any) => !item.ready)
             if (missing.length > 0) return { ok: false, message: `${missing.length} material(s) lack a confirmed prompt`, plan }
+            // 用户 2026-11-13 定：默认即梦 2.5 + 480p。批次改了档位就必须是用户明确要求，
+            // 否则在这里早失败（而不是等 generate_video 的硬门拒掉）。
+            const resolution = String(manifest.video_resolution ?? DEFAULT_VIDEO_RESOLUTION)
+            const resolutionSelectionSource = manifest.video_resolution_selection?.selection_source === 'user_explicit' ? 'user_explicit' : undefined
+            if (!resolutionEquals(resolution, DEFAULT_VIDEO_RESOLUTION) && resolutionSelectionSource !== 'user_explicit') {
+              return {
+                ok: false,
+                message: `批次分辨率 ${resolution} 不是默认 ${DEFAULT_VIDEO_RESOLUTION}（默认模型 ${DEFAULT_VIDEO_MODEL}）：必须是用户明确要求的档位，`
+                  + '重建批次时传 video_resolution + video_resolution_selection_source=user_explicit，否则不生成提交计划。',
+                plan,
+              }
+            }
             // 管线容量：一次 generate_video 调用装满 capacity 个任务，每个任务自带 duration
             // —— **绝不按时长拆分批次**（用户约定 2026-10-06）。
             const capacity = Math.max(1, Math.floor(DEFAULT_VIDEO_CAPACITY))
@@ -299,9 +319,12 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             const shared = {
               ratio: manifest.ratio,
               model_version: manifest.model,
-              video_resolution: manifest.video_resolution ?? '480p',
+              video_resolution: resolution,
               video_confirmation_model: manifest.model,
-              video_confirmation_resolution: manifest.video_resolution ?? '480p',
+              video_confirmation_resolution: resolution,
+              // 非默认模型 / 非默认分辨率必须带用户显式选择标记（generate_video 硬门）。
+              ...(manifest.model_selection?.selection_source === 'user_explicit' ? { video_model_selection_source: 'user_explicit' } : {}),
+              ...(resolutionSelectionSource === 'user_explicit' ? { video_resolution_selection_source: 'user_explicit' } : {}),
               // one distinct duration → legacy single-value gate; N durations → the
               // exact set (generate_video hard-gates on video_confirmation_durations)
               ...(uniqueDurations.length === 1
@@ -327,7 +350,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             }
             return {
               ok: true,
-              message: `submission plan ready (${plan.length} task(s), durations ${uniqueDurations.join('/')}s) in ${calls.length} generate_video call(s) of ≤${capacity} task(s): submit with tasks_path="${submissionPaths[0]}" — zero transcription, fill each call to capacity, never split by duration`,
+              message: `submission plan ready (${plan.length} task(s), durations ${uniqueDurations.join('/')}s) in ${calls.length} generate_video call(s) of ≤${capacity} task(s): call generate_video with tasks_path="${submissionPaths[0]}" (default = create image/video nodes only, user starts generation manually on the canvas; pass auto_start=true + auto_start_reason + launch_ticket only when the user explicitly asked for automatic start) — zero transcription, fill each call to capacity, never split by duration`,
               submission,
               submission_paths: submissionPaths,
               plan,

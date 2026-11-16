@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { toCliFlags, canvasPositionals, isSpendingCall, CANVAS_COMMANDS } from '../src/tool-canvas.ts'
+import { toCliFlags, canvasPositionals, isSpendingCall, withVideoDefaults, CANVAS_COMMANDS } from '../src/tool-canvas.ts'
+import { DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RESOLUTION } from '../src/shared/video-policy.ts'
 
 /* ------------------------------------------------------------------ */
 /* flag 透传：下划线 → 连字符、数组重复、布尔开关                          */
@@ -91,4 +92,32 @@ test('isSpendingCall: --dry-run is never spending, read commands are never spend
 
 test('command surface stays aligned with the documented CLI command set', () => {
   assert.deepEqual([...CANVAS_COMMANDS], ['catalog', 'canvas', 'node', 'operation', 'resource', 'voice', 'schema', 'version'])
+})
+
+/* ------------------------------------------------------------------ */
+/* 视频默认档位：node create video 未传 model/resolution → 即梦 2.5 + 480p   */
+/* ------------------------------------------------------------------ */
+
+test('withVideoDefaults: node create video fills the 2.5 + 480p default only when missing', () => {
+  const filled = withVideoDefaults('node', 'create video', { mode: 't2v', ratio: '16:9', duration: 5 })
+  assert.equal(filled.model, DEFAULT_VIDEO_MODEL)
+  assert.equal(filled.resolution, DEFAULT_VIDEO_RESOLUTION)
+  assert.equal(filled.ratio, '16:9')
+  // 用户明确要求的其它档位原样保留（不覆盖显式值）
+  const explicit = withVideoDefaults('node', 'create video', { model: 'seedance_2.0_vip', resolution: '1080p' })
+  assert.equal(explicit.model, 'seedance_2.0_vip')
+  assert.equal(explicit.resolution, '1080p')
+  // 空串 / null 视为未传
+  const blank = withVideoDefaults('node', 'create video', { model: '  ', resolution: null })
+  assert.equal(blank.model, DEFAULT_VIDEO_MODEL)
+  assert.equal(blank.resolution, DEFAULT_VIDEO_RESOLUTION)
+})
+
+test('withVideoDefaults: only node create video is touched (edit/run/other commands pass through)', () => {
+  assert.deepEqual(withVideoDefaults('node', 'create image', { ratio: '1:1' }), { ratio: '1:1' })
+  assert.deepEqual(withVideoDefaults('node', 'edit video', { node_id: 'node_x' }), { node_id: 'node_x' })
+  assert.deepEqual(withVideoDefaults('node', 'run', { submit_id: 's' }), { submit_id: 's' })
+  assert.deepEqual(withVideoDefaults('canvas', 'create', {}), {})
+  // undefined flags stay safe
+  assert.deepEqual(withVideoDefaults('node', 'run', undefined), {})
 })

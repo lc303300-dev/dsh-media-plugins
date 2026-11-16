@@ -37,6 +37,7 @@ import {
   type CanvasRunResult,
 } from './shared/dreamina-canvas.ts'
 import { openCanvasInBrowser, resolveBrowserBinary } from './shared/canvas-browser.ts'
+import { DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RESOLUTION } from './shared/video-policy.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'Ws_tool-canvas'
@@ -174,12 +175,31 @@ export function isVideoSubmitCall(command: string, action: string, args: Record<
   return true
 }
 
+/**
+ * 视频节点默认档位注入（用户 2026-11-13 定）：`node create video` 未显式给
+ * `model` / `resolution` 时，补成默认的**即梦 seedance_2.5 + 480p**。
+ *
+ * 只补缺省值、不改调用方显式传的值（`node edit video` 不注入：编辑沿用节点原值，
+ * 注入会改变已建节点的档位）。显式传 720p/1080p 属于「用户明确要求的其它档位」，
+ * 由生成启动门（计划里写明模型/分辨率、真人批准）承担确认责任。
+ */
+export function withVideoDefaults(command: string, action: string, flags: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out = { ...(flags ?? {}) }
+  if (command !== 'node') return out
+  const act = String(action ?? '').trim().toLowerCase()
+  if (!/^create\s+video$/.test(act)) return out
+  const blank = (v: unknown): boolean => v === undefined || v === null || String(v).trim() === ''
+  if (blank(out.model)) out.model = DEFAULT_VIDEO_MODEL
+  if (blank(out.resolution)) out.resolution = DEFAULT_VIDEO_RESOLUTION
+  return out
+}
+
 function apply(ctx: Context, config: ResolvedConfig): void {
   ctx.tools.register(
     defineTool({
       name: 'dreamina_canvas',
       description:
-        '即梦画布 CLI（dreamina-canvas）的通用能力入口，对齐官方完整命令面：catalog（model list/find）、voice（voice list 音色目录）、canvas（create/ls）、node（create|edit image/video/audio/text/element/timeline、show、find、quote、confirm、run、upscale）、operation（status/wait）、resource（upload/get/download）、schema、version。**调用前先用 command=schema + action（如 "node create video"）查询当前制品的真实 flag 与枚举，绝不凭记忆猜参数**。付费纪律：任何花钱的动作（--run、node run、node upscale）必须在同一次调用里显式带 credit_ceiling 或 credit_token，否则直接拒绝（报价不等于授权）；返回结构化字段 outcome / required_action / request_id / partial_items / credit_confirmation，失败时原样带出 partialData 里的 nodeId+submitId，供调用方用**同一 submit ID** 续跑（换新 ID 等于第二次运行、会再扣一次钱）。',
+        '即梦画布 CLI（dreamina-canvas）的通用能力入口，对齐官方完整命令面：catalog（model list/find）、voice（voice list 音色目录）、canvas（create/ls）、node（create|edit image/video/audio/text/element/timeline、show、find、quote、confirm、run、upscale）、operation（status/wait）、resource（upload/get/download）、schema、version。**调用前先用 command=schema + action（如 "node create video"）查询当前制品的真实 flag 与枚举，绝不凭记忆猜参数**。**视频默认档位（用户 2026-11-13 定）：即梦 seedance_2.5 + 480p** —— `node create video` 未传 model/resolution 时自动补这两个默认值；改用其它模型或分辨率必须是用户本人明确要求（并在启动计划里写明），绝不自行升级画质档位。付费纪律：任何花钱的动作（--run、node run、node upscale）必须在同一次调用里显式带 credit_ceiling 或 credit_token，否则直接拒绝（报价不等于授权）；返回结构化字段 outcome / required_action / request_id / partial_items / credit_confirmation，失败时原样带出 partialData 里的 nodeId+submitId，供调用方用**同一 submit ID** 续跑（换新 ID 等于第二次运行、会再扣一次钱）。',
       parameters: {
         command: {
           type: 'string',
@@ -246,7 +266,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           return { ok: false, outcome: 'input_error', message: `不支持的 command: ${command}（可选：${CANVAS_COMMANDS.join(' / ')}）` }
         }
         const action = String(args.action ?? '').trim()
-        const flags = (args.args ?? {}) as Record<string, unknown>
+        const flags = withVideoDefaults(command, action, (args.args ?? {}) as Record<string, unknown>)
         const positionals = Array.isArray(args.positional) ? args.positional.map((p: unknown) => String(p)) : []
 
         // 付费门：报价不等于授权，工具绝不允许"顺手花掉"。

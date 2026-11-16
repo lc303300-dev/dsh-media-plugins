@@ -8,10 +8,13 @@
  *
  * 本模块保留「策略」职责：
  * - 用户写法 → canonical 模型名（别名表）；
- * - default model seedance_2.5 / default resolution 480p；
+ * - default model seedance_2.5 / default resolution 480p（用户 2026-11-13 定：
+ *   默认就用即梦 2.5 + 480p，**改用其它模型或分辨率必须用户本人明确要求**）；
  * - test 通道强制最低成本模型 + 720p 且只提交不轮询；
  * - 非默认模型必须由用户显式选择（`video_model_selection_source=user_explicit`），
- *   绝不从语料/示例/容量/失败回退自动降级；
+ *   非默认分辨率同样必须由用户显式选择
+ *   （`video_resolution_selection_source=user_explicit`），
+ *   绝不从语料/示例/容量/失败回退自动升级或降级；
  * - prompt 里的比例/时长提示作为兜底。
  *
  * 实时规格（比例/分辨率/时长/参考上限）以 `model list` 下发为准，本文件的
@@ -44,8 +47,16 @@ export const TEST_CHANNEL_MODEL = 'seedance_2.0_mini'
 /** test 通道固定分辨率。 */
 export const TEST_CHANNEL_RESOLUTION = '720p'
 
-/** 默认模型（画布 CLI canonical 名）。 */
+/** 默认模型（画布 CLI canonical 名）：即梦 2.5。 */
 export const DEFAULT_VIDEO_MODEL = 'seedance_2.5'
+
+/**
+ * 默认分辨率：480p（用户 2026-11-13 定的管线默认档位）。
+ *
+ * 默认档 = 不花钱试错/常规生成的档位；720p / 1080p 等更高档位属于「其它」，
+ * 必须由用户本人明确要求才能用（见 `requiresExplicitResolutionSource`）。
+ */
+export const DEFAULT_VIDEO_RESOLUTION = '480p'
 
 /** Model alias -> 画布 CLI canonical model id. */
 export const MODEL_ALIASES: Record<string, string> = {
@@ -218,6 +229,23 @@ export function resolveVideoResolution(
 /** A non-default model requires an explicit user selection marker. */
 export function requiresExplicitSelectionSource(model: string, mode: VideoExecutionMode): boolean {
   return mode !== 'test_submit_only' && model !== DEFAULT_VIDEO_MODEL
+}
+
+/**
+ * A non-default resolution requires an explicit user selection marker.
+ *
+ * 与模型规则对称：只有 480p 是默认档；720p / 1080p / 4k 等必须由用户本人
+ * 明确要求（`video_resolution_selection_source=user_explicit`），Agent 不得
+ * 为了"画质更好"自行升级。test 通道固定 720p，不受此门约束。
+ */
+export function requiresExplicitResolutionSource(resolution: string, mode: VideoExecutionMode): boolean {
+  if (mode === 'test_submit_only') return false
+  return !resolutionEquals(resolution, DEFAULT_VIDEO_RESOLUTION)
+}
+
+/** 统一的选择来源判定：只有 `user_explicit` 算用户明确要求。 */
+export function isUserExplicitSelection(value: unknown): boolean {
+  return String(value ?? '').trim() === 'user_explicit'
 }
 
 /** 首尾帧语义触发词（用于单图/双图时判断是否走 first_last_frame）。 */

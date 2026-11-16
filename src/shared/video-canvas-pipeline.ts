@@ -24,6 +24,9 @@
  *   `upstreamNodeIds` 为空，用户在画布上看到的是空节点）；
  * - **先建完全部节点，再进入付费段**：节点保存不花钱，报价/批准/运行才花钱。
  *   批量入口因此分成「建节点」与「付费提交」两段，票据只在第二段前消费。
+ * - **默认只建节点（用户 2026-11-13 定）**：自动开始改为手动触发——`prepareOnly`
+ *   跑完建节点段就返回 `nodes_ready`，由用户在画布手动点开始；只有用户明确要求
+ *   自动生成时（工具层 auto_start=true）才进入报价/批准/运行段。
  * - 每个任务独占自己的下载目录，落地产物只从该目录取，避免张冠李戴。
  *
  * @module dsh-media-plugins/shared/video-canvas-pipeline
@@ -72,7 +75,11 @@ export interface CanvasVideoTask {
 /** 单任务结果。 */
 export interface CanvasVideoTaskResult {
   taskId: string
-  status: 'success' | 'submitted' | 'failed' | 'needs_review'
+  /**
+   * `nodes_ready`：只建了节点、没有提交（默认手动开始模式）。节点与连线已在画布上，
+   * 等用户在画布点开始；此时没有任何扣费，也不需要启动票据。
+   */
+  status: 'success' | 'submitted' | 'nodes_ready' | 'failed' | 'needs_review'
   mode?: CanvasVideoMode
   nodeId?: string
   submitId?: string
@@ -110,6 +117,14 @@ export interface CanvasVideoBatchOptions {
   log?: (event: string, payload: Record<string, unknown>) => Promise<void> | void
   /** 只提交不轮询（`production_submit_only`）。 */
   submitOnly?: boolean
+  /**
+   * **只建节点、不提交**（用户 2026-11-13 定：自动开始改为手动触发）。
+   *
+   * 跑完阶段 1（素材挂图片节点 + 保存视频节点）就返回 `nodes_ready`，不消费票据、
+   * 不报价、不确认、不运行 —— 由用户在画布上手动点开始生成。默认流程走这个分支；
+   * 只有用户明确要求「自动开始/自动生成」时才传 false 进入付费段。
+   */
+  prepareOnly?: boolean
   /**
    * 付费段开始前的**一次性闸门**。批量入口在所有节点都保存好之后才调用它
    * （消费真人票据 / 任何一次性授权）：节点建失败时它还没被调用，票不会被白烧。
@@ -502,7 +517,8 @@ export async function pickDownloadedFromDir(dir: string): Promise<string | undef
  * 跑完整批次，分成**不花钱**与**花钱**两段，中间夹一次性闸门：
  *
  *   阶段 1  上传素材 + 保存全部节点（图片素材挂成画布节点，视频节点用 node: 引用）
- *   闸门    所有节点就绪后才调 `beforePaidSubmit()`（消费真人票据）
+ *   （默认）prepareOnly：到此为止，返回 nodes_ready，等用户在画布手动开始
+ *   闸门    自动开始模式下：所有节点就绪后才调 `beforePaidSubmit()`（消费真人票据）
  *   阶段 3  报价 → 批准 → 运行 →（production）等终态与下载
  *
  * 并发提交不等于并发付费失控：涨价、上限、身份都由 `runPreparedCanvasVideoNode`
@@ -526,6 +542,17 @@ export async function runCanvasVideoBatch(
     const refs = await uploadTaskRefs(options.cli, options.projectId, task, imageNodeCache)
     return prepareCanvasVideoNode(options, task, refs, submitIds[index])
   })
+
+  // 默认手动开始：节点铺好就收工——不消费票据、不报价、不运行。
+  if (options.prepareOnly) {
+    return tasks.map((task, index) => {
+      const node = prepared[index]
+      if (node.status === 'rejected') {
+        return { taskId: task.taskId, status: 'failed', error: String((node.reason as any)?.message ?? node.reason).slice(0, 400) }
+      }
+      return { taskId: task.taskId, status: 'nodes_ready', mode: node.value.mode, nodeId: node.value.nodeId }
+    })
+  }
 
   // 闸门：节点都建好了才允许进入付费段（票据/一次性授权在这里才被消费）。
   if (prepared.some((item) => item.status === 'fulfilled')) {

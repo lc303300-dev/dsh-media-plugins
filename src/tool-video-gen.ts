@@ -67,12 +67,16 @@ import {
   FIRST_LAST_PATTERN,
   promptPreferences,
   isSupportedVideoModel,
+  isUserExplicitSelection,
   requiresExplicitSelectionSource,
+  requiresExplicitResolutionSource,
   resolveVideoModel,
   resolveVideoResolution,
   resolutionEquals,
   normalizeModel,
   limitsFor,
+  DEFAULT_VIDEO_MODEL,
+  DEFAULT_VIDEO_RESOLUTION,
   DEFAULT_VIDEO_CAPACITY,
   type VideoExecutionMode,
 } from './shared/video-policy.ts'
@@ -124,8 +128,8 @@ export interface Config {
 export const Config: z<Config> = z.object({
   dreaminaPath: z.string().default(''),
   dreaminaProfile: z.string().default(''),
-  model: z.string().default('seedance_2.5'),
-  resolution: z.string().default('480p'),
+  model: z.string().default(DEFAULT_VIDEO_MODEL),
+  resolution: z.string().default(DEFAULT_VIDEO_RESOLUTION),
   outputDir: z.string().default('outputs'),
   privateDir: z.string().default(''),
   pollTimeoutMs: z.number().default(900000),
@@ -251,8 +255,9 @@ function apply(ctx: Context, config: ResolvedConfig): void {
       description:
         '**创作门（视频）**：production / production_submit_only 要求本工作区 24h 内有 creative_writer 记录；'
         + '用户自带原文 / normalize-only，或 Gemini 失败后的 Agent 兜底：allow_manual_prompts=true + manual_prompts_reason（结果留痕）。'
-        + '**节点与批准顺序（硬规则）**：画布与全部素材节点、视频节点必须**先建好**，再登记计划、由真人在终端批准，最后带 launch_ticket 提交；工具侧保证票据只在全部节点保存成功后才消费（建节点/上传失败不烧票）。图片素材会被挂成画布**图片节点**并用 `node:<nodeId>` 引用（保留上游连线、画布上看得见图），不是只做资产库 `res:` 引用。'
-        + '统一视频生成管线（即梦画布 CLI dreamina-canvas）：所有调用分解为 N 个隔离任务，每个任务在画布上是一个独立节点（多产物分节点，每节点 count=1），先并发提交，再（production 模式）统一等待终态并按 resourceId 精确取回。付费链路固定为「保存节点 → node quote 报价 → node confirm 批准（--credit-ceiling）→ node run（--submit-id）→ operation wait → resource download」，报价不等于授权，同一任务绝不换新 submit-id 重放。视频公开模式只有 t2v / first_last_frame / m2v（没有 i2v）：无参考=t2v；单图锁首帧或两张有序图片=first_last_frame；单图但要保留指定比例、或图片/视频/音频混合参考=m2v。默认模型 seedance_2.5、默认 480p、默认 16:9、默认 5 秒（比例/时长也可从 prompt 推断兜底）。非默认模型需 video_model_selection_source=user_explicit（绝不从语料/示例/容量/失败回退自动换模型）。正式 production 提交前要求确认门：须传 video_confirmation_model / video_confirmation_resolution / video_confirmation_duration（多时长批次用 video_confirmation_durations），且与最终值一致。video_execution_mode：production（提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（强制最低成本模型+720p，仅提交，须提供 video_group）。video_count（1-10）为「同一 prompt+参考生成 N 份」；tasks（数组）为「不同素材/不同 prompt 的 N 个任务」。video_group 指定画布名（推荐「项目名_文件名」；工具自动补 `YYYYMMDD-` 日期前缀，名字已带日期则不重复加；模板只做推荐、不校验格式；**新建画布前先问用户画布名**），复用或新建画布，省略则用固定画布 dsh-media；也可用 canvas_project_id 直接指定画布。任务状态持久化在私有运行目录。',
+        + '**节点顺序（硬规则）**：默认把画布与全部素材节点、视频节点**建好就停**（不提交）；只有用户明确要求自动开始时，才在节点全部建好后登记计划、由真人在终端批准，最后带 launch_ticket 提交；工具侧保证票据只在全部节点保存成功后才消费（建节点/上传失败不烧票）。图片素材会被挂成画布**图片节点**并用 `node:<nodeId>` 引用（保留上游连线、画布上看得见图），不是只做资产库 `res:` 引用。'
+        + '**默认只建节点、不自动开始（用户 2026-11-13 定，硬规则）**：不传 auto_start 时本工具只做「上传参考素材 → 建图片节点 → 保存视频节点」，把节点和连线铺到画布上就停——**不报价、不确认、不运行、不扣费、不需要 launch_ticket**，由用户在画布上手动点「开始生成」。**只有用户明确表示「自动开始 / 自动生成 / 直接提交」时才传 auto_start=true**，且必须同时传 auto_start_reason（记录用户原话）并带 launch_ticket；自动开始路径的确认门要求 video_confirmation_model / video_confirmation_resolution / video_confirmation_duration（多时长批次用 video_confirmation_durations）与最终值一致。'
+        + '统一视频生成管线（即梦画布 CLI dreamina-canvas）：所有调用分解为 N 个隔离任务，每个任务在画布上是一个独立节点（多产物分节点，每节点 count=1），先并发提交，再（production 模式）统一等待终态并按 resourceId 精确取回。付费链路固定为「保存节点 → node quote 报价 → node confirm 批准（--credit-ceiling）→ node run（--submit-id）→ operation wait → resource download」，报价不等于授权，同一任务绝不换新 submit-id 重放。视频公开模式只有 t2v / first_last_frame / m2v（没有 i2v）：无参考=t2v；单图锁首帧或两张有序图片=first_last_frame；单图但要保留指定比例、或图片/视频/音频混合参考=m2v。**默认档位（用户 2026-11-13 定）：即梦 seedance_2.5 + 480p**（另默认 16:9、5 秒，比例/时长可从 prompt 推断兜底）。**改用其它模型或其它分辨率必须用户本人明确要求**：非默认模型要 video_model_selection_source=user_explicit，非默认分辨率（非 480p）要 video_resolution_selection_source=user_explicit；绝不从语料/示例/容量/失败回退或为"提高画质"自动切换或升级。video_execution_mode：production（提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（强制最低成本模型+720p，仅提交，须提供 video_group）——仅在 auto_start=true 时才有意义。video_count（1-10）为「同一 prompt+参考生成 N 份」；tasks（数组）为「不同素材/不同 prompt 的 N 个任务」。video_group 指定画布名（推荐「项目名_文件名」；工具自动补 `YYYYMMDD-` 日期前缀，名字已带日期则不重复加；模板只做推荐、不校验格式；**新建画布前先问用户画布名**），复用或新建画布，省略则用固定画布 dsh-media；也可用 canvas_project_id 直接指定画布。任务状态持久化在私有运行目录。',
       parameters: {
         prompt: {
           type: 'string',
@@ -293,7 +298,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         },
         video_resolution: {
           type: 'string',
-          description: '分辨率：seedance_2.5 支持 480p/720p/1080p；seedance_2.0_vip 支持 720p/1080p/4k；seedance_2.0_fast_vip / _mini 仅 720p；wan_3.0 / happyhorse_1.1 为 720P/1080P。默认 480p（test 模式固定 720p）。',
+          description: '分辨率：**默认 480p**（即梦 2.5 默认档；test 模式固定 720p）。seedance_2.5 支持 480p/720p/1080p；seedance_2.0_vip 支持 720p/1080p/4k；seedance_2.0_fast_vip / _mini 仅 720p；wan_3.0 / happyhorse_1.1 为 720P/1080P。非 480p 必须是用户明确要求，并同时传 video_resolution_selection_source=user_explicit。',
         },
         model_version: {
           type: 'string',
@@ -304,10 +309,23 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           enum: ['user_explicit'],
           description: '仅当使用非默认模型（非 seedance_2.5）时必填（=user_explicit），表示用户明确选择了该模型；绝不从语料/示例/容量/失败回退自动选。',
         },
+        video_resolution_selection_source: {
+          type: 'string',
+          enum: ['user_explicit'],
+          description: '仅当使用非默认分辨率（非 480p）时必填（=user_explicit），表示用户明确要求了该分辨率；绝不自行升级画质档位。',
+        },
         video_execution_mode: {
           type: 'string',
           enum: [...VIDEO_EXECUTION_MODES],
-          description: '执行模式：production（默认，提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（测试通道，强制最低成本模型+720p，仅提交不轮询，须提供 video_group）。',
+          description: '执行模式：production（默认，提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（测试通道，强制最低成本模型+720p，仅提交不轮询，须提供 video_group）。**仅在 auto_start=true（用户明确要求自动开始）时才有意义**；默认手动开始模式不提交，忽略本项。test_submit_only 自身即提交语义（不需要 auto_start_reason），但仍要 launch_ticket。',
+        },
+        auto_start: {
+          type: 'boolean',
+          description: '**默认 false：只创建图片节点和视频节点，不提交、不扣费，由用户在画布上手动点开始。** 只有用户明确表示「自动开始 / 自动生成 / 直接提交」时才传 true；传 true 必须同时给出 auto_start_reason 并带 launch_ticket。绝不由 Agent 自行脑补。',
+        },
+        auto_start_reason: {
+          type: 'string',
+          description: 'auto_start=true 时必填（test_submit_only 除外）：记录用户明确要求自动生成的原文/说明，写入日志留痕。没有用户明确要求不得填。',
         },
         allow_manual_prompts: {
           type: 'boolean',
@@ -319,7 +337,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         },
         launch_ticket: {
           type: 'string',
-          description: '生成启动门票据（lt_xxx）：付费提交必须带一次性票据。票据只能由真人在真实终端运行 `node scripts/launch-gate.mjs approve --plan <plan_id>` 并输入「自动开始任务」生成；缺失/过期/范围不符会被拒绝，绝不由工具自动补票。',
+          description: '生成启动门票据（lt_xxx）：**仅 auto_start=true（用户明确要求自动开始）时**的付费提交必须带一次性票据。票据只能由真人在真实终端运行 `node scripts/launch-gate.mjs approve --plan <plan_id>` 并输入「自动开始任务」生成；缺失/过期/范围不符会被拒绝，绝不由工具自动补票。默认手动开始模式（只建节点）不需要票据。',
         },
         video_count: {
           type: 'integer',
@@ -336,19 +354,19 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         },
         video_confirmation_model: {
           type: 'string',
-          description: '确认门：正式 production 提交前必须传入已确认的模型，且须与最终模型一致。',
+          description: '确认门（仅 auto_start=true 时）：正式提交前必须传入已确认的模型，且须与最终模型一致。',
         },
         video_confirmation_resolution: {
           type: 'string',
-          description: '确认门：正式 production 提交前必须传入已确认的分辨率，且须与最终分辨率一致。',
+          description: '确认门（仅 auto_start=true 时）：正式提交前必须传入已确认的分辨率，且须与最终分辨率一致。',
         },
         video_confirmation_duration: {
           type: 'integer',
-          description: '确认门：正式 production 提交前必须传入已确认的时长（单一时长时使用；多时长批次改用 video_confirmation_durations）。',
+          description: '确认门（仅 auto_start=true 时）：正式提交前必须传入已确认的时长（单一时长时使用；多时长批次改用 video_confirmation_durations）。',
         },
         video_confirmation_durations: {
           type: 'string',
-          description: '确认门（多时长批次）：当 tasks[] 自带不同 duration 时必填，逗号分隔的时长集合，须与最终集合完全一致（如 "12,15,15"）。',
+          description: '确认门（仅 auto_start=true 时，多时长批次）：当 tasks[] 自带不同 duration 时必填，逗号分隔的时长集合，须与最终集合完全一致（如 "12,15,15"）。',
         },
         video_credit_ceiling: {
           type: 'integer',
@@ -375,6 +393,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             path: { type: 'string' },
             submit_id: { type: 'string' },
             done: { type: 'boolean', required: true },
+            auto_started: { type: 'boolean' },
             execution_mode: { type: 'string' },
             model: { type: 'string' },
             status: { type: 'string' },
@@ -390,6 +409,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           },
         },
         render(_args: unknown, value: any) {
+          if (value.status === 'nodes_ready') {
+            const n = Array.isArray(value.results) ? value.results.length : 1
+            const canvas = typeof value.canvas_web_url === 'string' ? ` canvas=${value.canvas_web_url}` : ''
+            return [{ type: 'text', text: `${n} 个视频节点已建好（图片节点+视频节点），**未提交、未扣费**：请到画布上手动点「开始生成」。${canvas}` }]
+          }
           if (Array.isArray(value.results)) {
             const ok = value.results.filter((r: any) => r.status === 'success' || r.status === 'submitted').length
             const group = value.video_group !== undefined ? `, canvas=${value.video_group}` : ''
@@ -397,6 +421,10 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           }
           if (value.done && value.path !== undefined) {
             return [{ type: 'text', text: `generated video: ${value.path}` }]
+          }
+          if (value.node_id !== undefined && value.auto_started === false) {
+            const canvas = typeof value.canvas_web_url === 'string' ? ` canvas=${value.canvas_web_url}` : ''
+            return [{ type: 'text', text: `视频节点已建好（node_id=${value.node_id}），未提交、未扣费：请到画布手动点「开始生成」。${canvas}` }]
           }
           return [{ type: 'text', text: `video task submitted; submit_id=${value.submit_id ?? 'unknown'} (${value.execution_mode ?? 'production'}). Check progress on the canvas.` }]
         },
@@ -407,6 +435,17 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         if (boundaryIssue) throw mediaErrors.input(boundaryIssue)
         const mode: VideoExecutionMode = args.video_execution_mode ?? config.executionMode
         if (!VIDEO_EXECUTION_MODES.includes(mode)) throw mediaErrors.input(`unsupported video_execution_mode: ${mode}`)
+
+        // 用户 2026-11-13 定：**自动开始改为手动触发**。默认只建节点、不提交：
+        // 图片节点 + 视频节点铺到画布上后就停，由用户在画布点开始生成。只有用户
+        // 明确说要「自动开始 / 自动生成」时才传 auto_start=true（并留原文 + 票据）。
+        const autoStart = args.auto_start === true || mode === 'test_submit_only'
+        if (autoStart && mode !== 'test_submit_only' && String(args.auto_start_reason ?? '').trim().length === 0) {
+          throw mediaErrors.input(
+            '自动开始必须由用户明确要求：auto_start=true 要同时传 auto_start_reason（记录用户原话），并带 launch_ticket。'
+            + '默认流程只创建图片/视频节点、不提交不扣费，由用户在画布手动点开始。',
+          )
+        }
 
         // Video creative gate: production submissions need a fresh creative_writer
         // record in this workspace. User-supplied / normalize-only prompts opt out
@@ -436,7 +475,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         if (!isSupportedVideoModel(model)) {
           throw mediaErrors.input(`不支持的视频模型 ${model}，可选：${[...SUPPORTED_VIDEO_MODELS].join(' / ')}`)
         }
-        if (requiresExplicitSelectionSource(model, mode) && String(args.video_model_selection_source ?? '').trim() !== 'user_explicit') {
+        // 用户 2026-11-13 定：默认即梦 2.5 + 480p；改用其它档位必须用户本人明确要求。
+        // 三层判据：① 调用参数显式带 selection_source=user_explicit；② 插件配置里的人
+        // 设定（cordis config 改了默认档 = 用户本人改的，不再要求逐次声明）。
+        const configuredModelIsNonDefault = args.model_version === undefined && normalizeModel(config.model) !== DEFAULT_VIDEO_MODEL
+        if (requiresExplicitSelectionSource(model, mode) && !isUserExplicitSelection(args.video_model_selection_source) && !configuredModelIsNonDefault) {
           throw mediaErrors.input('非默认视频模型要求 video_model_selection_source=user_explicit（必须是用户明确选择，绝不从语料/示例/容量/失败回退自动选）')
         }
 
@@ -446,6 +489,15 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
         if (!limits.resolutions.some((r) => resolutionEquals(r, resolution))) {
           throw mediaErrors.input(`（${model}）不支持分辨率 ${resolution}，可选：${limits.resolutions.join(' / ')}。`)
+        }
+        // 与模型门对称，避免 Agent 为"画质更好"自行把 480p 升到 720p/1080p。
+        const configuredResolutionIsNonDefault =
+          args.video_resolution === undefined && !resolutionEquals(config.resolution, DEFAULT_VIDEO_RESOLUTION)
+        if (requiresExplicitResolutionSource(resolution, mode) && !isUserExplicitSelection(args.video_resolution_selection_source) && !configuredResolutionIsNonDefault) {
+          throw mediaErrors.input(
+            `默认视频分辨率是 ${DEFAULT_VIDEO_RESOLUTION}（模型 ${DEFAULT_VIDEO_MODEL}）；改用 ${resolution} 必须是用户明确要求，`
+            + '并传 video_resolution_selection_source=user_explicit（绝不自行升级分辨率）',
+          )
         }
 
         // ---- task decomposition (unified: N tasks always) ----
@@ -534,18 +586,22 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
 
         // ---- per-task durations + confirmation gate ----
+        // 确认门只盖「自动开始」：手动模式不提交，用户是在画布上自己确认后点开始，
+        // 工具不该在这里要求 video_confirmation_*（否则默认流程会被无谓拦下）。
         const specDurations = specs.map((spec) => spec.duration ?? duration)
         const uniqueDurations = [...new Set(specDurations)].sort((a, b) => a - b)
-        const gateErr = confirmationGateErrorForDurations(
-          mode,
-          { model, resolution, durations: uniqueDurations },
-          {
-            model: String(args.video_confirmation_model ?? '').trim() || undefined,
-            resolution: String(args.video_confirmation_resolution ?? '').trim() || undefined,
-            duration: args.video_confirmation_duration,
-            durations: args.video_confirmation_durations,
-          },
-        )
+        const gateErr = autoStart
+          ? confirmationGateErrorForDurations(
+            mode,
+            { model, resolution, durations: uniqueDurations },
+            {
+              model: String(args.video_confirmation_model ?? '').trim() || undefined,
+              resolution: String(args.video_confirmation_resolution ?? '').trim() || undefined,
+              duration: args.video_confirmation_duration,
+              durations: args.video_confirmation_durations,
+            },
+          )
+          : null
         if (gateErr) throw mediaErrors.input(gateErr)
 
         const creditCeiling = args.video_credit_ceiling === undefined ? undefined : Number(args.video_credit_ceiling)
@@ -679,6 +735,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
 
         // ---- 容量闸门：一次调用装满容量个并发提交 ----
+        // autoStart=false（默认）→ prepareOnly：只建节点，不报价、不运行、不消费票据。
         const results = await runCanvasVideoBatch(
           {
             cli,
@@ -690,8 +747,9 @@ function apply(ctx: Context, config: ResolvedConfig): void {
             pollIntervalMs: 5000,
             creditCeiling,
             submitOnly: mode !== 'production',
+            prepareOnly: !autoStart,
             concurrency: capacity,
-            beforePaidSubmit: consumeTicket,
+            beforePaidSubmit: autoStart ? consumeTicket : undefined,
             log: (event, payload) => appendSafeLog(privateRoot, 'generate_video', { batchId, event, ...payload }),
             signal: exec.signal,
           },
@@ -707,6 +765,15 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         for (let i = 0; i < results.length; i += 1) {
           const result = results[i]
           const taskId = taskIds[i]
+          // 默认手动模式：节点已铺到画布，等用户点开始 —— 没有提交、没有扣费。
+          if (result.status === 'nodes_ready') {
+            await store.saveResult(batchId, taskId, { status: 'nodes_ready', nodeId: result.nodeId })
+            await store.transition(batchId, taskId, 'needs_review', {
+              nodeId: result.nodeId,
+              nextAction: 'manual_start_on_canvas',
+            })
+            continue
+          }
           if (result.status === 'success' && result.path) {
             let finalPath = result.path
             if (count === 1 && requested.length > 0) {
@@ -741,19 +808,36 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           event: 'finished',
           count,
           canvas: project.projectId,
-          status: results.every((r) => r.status === 'success') ? 'success' : results.some((r) => r.status === 'failed') ? 'partial' : 'submitted',
+          autoStart,
+          ...(autoStart && String(args.auto_start_reason ?? '').trim() ? { autoStartReason: String(args.auto_start_reason).trim() } : {}),
+          status: results.some((r) => r.status === 'nodes_ready')
+            ? 'nodes_ready'
+            : results.every((r) => r.status === 'success') ? 'success' : results.some((r) => r.status === 'failed') ? 'partial' : 'submitted',
         })
 
         const canvasFields: Record<string, unknown> = { canvas_project_id: project.projectId, canvas_web_url: canvasWebUrl }
         if (resolvedGroupName) canvasFields.video_group = resolvedGroupName
 
+        const nodesOnly = !autoStart
+
         if (count === 1) {
           const only = results[0]
+          if (only.status === 'nodes_ready') {
+            return jsonSafe({
+              done: false,
+              auto_started: false,
+              node_id: only.nodeId,
+              status: 'nodes_ready',
+              execution_mode: mode,
+              model,
+              ...canvasFields,
+            })
+          }
           if (only.status === 'success' && only.path) {
-            return jsonSafe({ path: only.path, submit_id: only.submitId, done: true, execution_mode: mode, model, node_id: only.nodeId, ...canvasFields })
+            return jsonSafe({ path: only.path, submit_id: only.submitId, done: true, auto_started: true, execution_mode: mode, model, node_id: only.nodeId, ...canvasFields })
           }
           if (only.status === 'failed') throw mediaErrors.provider(`dreamina-canvas task failed: ${only.error ?? 'unknown reason'}`)
-          return jsonSafe({ submit_id: only.submitId, done: false, execution_mode: mode, model, node_id: only.nodeId, ...canvasFields })
+          return jsonSafe({ submit_id: only.submitId, done: false, auto_started: true, execution_mode: mode, model, node_id: only.nodeId, ...canvasFields })
         }
 
         const mapped = results.map((result, index) => ({
@@ -770,8 +854,11 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           execution_mode: mode,
         }))
         const statuses = new Set(mapped.map((r) => r.status))
-        const aggregate = statuses.size === 1 && statuses.has('success') ? 'success' : statuses.size === 1 && statuses.has('failed') ? 'failed' : 'partial'
-        return jsonSafe({ status: aggregate, count, results: mapped, done: false, execution_mode: mode, model, ...canvasFields })
+        const single = (s: string): boolean => statuses.size === 1 && statuses.has(s)
+        const aggregate = nodesOnly
+          ? (single('nodes_ready') ? 'nodes_ready' : 'partial')
+          : single('success') ? 'success' : single('failed') ? 'failed' : single('nodes_ready') ? 'nodes_ready' : 'partial'
+        return jsonSafe({ status: aggregate, count, results: mapped, done: false, auto_started: autoStart, execution_mode: mode, model, ...canvasFields })
       },
       presentCall(args: any) {
         const requested = args?.output?.trim()

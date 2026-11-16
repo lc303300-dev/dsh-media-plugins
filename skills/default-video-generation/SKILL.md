@@ -10,13 +10,18 @@ whenToUse: 用户要生成视频、文生视频、图片生视频、多图/参�
 
 generate_video 是**一条统一管线**，不区分单条与批量：任何一次调用都会分解成 N 个隔离任务（各占独立下载目录），先并发提交，再（production 模式）统一轮询、按各自 submit_id 精确取回视频，绝不会把 A 任务的视频当成 B 任务的结果。
 
-1. **默认与边界**：默认模型 `seedance_2.5`、默认分辨率 `480p`、默认比例 `16:9`、默认时长 `5` 秒。seedance_2.5 支持 `480p/720p/1080p`、4-30 秒；seedance_2.0_vip 支持 `480p/720p/1080p/4k`。只有当前用户明确要求时才能使用 seedance2.0 系列（普通显式 2.0 会归一化为 `seedance_2.0_vip`）。
+> **默认不是"生成"，而是"建节点"（用户 2026-11-13 定）**：不传 `auto_start` 时，`generate_video` 只上传素材、建图片节点、保存视频节点，**不报价、不确认、不运行、不扣费、不要票据**；建完返回 `node_id` 与画布链接，由**用户在画布上手动点「开始生成」**。只有用户明确表示「自动开始 / 自动生成 / 直接提交」时，才传 `auto_start=true` + `auto_start_reason`（用户原话）+ `launch_ticket` 走自动开始链路。
+
+1. **默认与边界**：**默认就是即梦 2.5 + 480p**（默认模型 `seedance_2.5`、默认分辨率 `480p`、默认比例 `16:9`、默认时长 `5` 秒）。seedance_2.5 支持 `480p/720p/1080p`、4-30 秒；seedance_2.0_vip 支持 `480p/720p/1080p/4k`。
+   - **改用其它档位必须用户本人明确要求**（用户 2026-11-13 定，硬门）：非默认模型要传 `video_model_selection_source=user_explicit`；非默认分辨率（非 480p）要传 `video_resolution_selection_source=user_explicit`。不得为了"画质更好"或"先试一下"自行升级，也不得从语料/示例/容量/失败回退自动换档。
+   - 只有当前用户明确要求时才使用 seedance2.0 系列（普通显式 2.0 会归一化为 `seedance_2.0_vip`）。`test_submit_only` 测试通道强制最低成本模型 + 720p，仅用于测试，不交付内容。
+   - 画布直调同一条默认：`node create video` 未传 model/resolution 时工具自动补 `seedance_2.5` + `480p`；显式改档必须在启动计划里写明，由真人批准。
 2. **参考模式**：只传 `prompt` → text2video；传任意 `images`/`videos`/`audios` 参考 → 全能参考模式 multimodal2video。`multiframe2video` 是禁用的遗留命令，不得选择或提交。素材顺序即素材编号，prompt 中用中文裸标签（图片1、视频1、音频1）引用素材，序号对应该类素材传入顺序。
    - **默认就是全能参考（m2v）**：只要有参考素材就走 m2v，**不得**因为"一张起点图 + 一张终点图"就自动改成首尾帧。`first_last_frame` 只在用户明确要求时使用。
    - **画布直调同一个默认**：`--mode m2v`；纯文字才 `t2v`；`first_last_frame` 只吃图片、且只在用户点名时使用。
    - **一条 vs 多条**：用户给的是一个整体时长（"一条 15 秒"）就只建**一个**视频节点、一次生成；分段写进同一条提示词内部，不拆节点。真要多条时说明原因。
-3. **确认门（正式提交前必须）**：production / production_submit_only 提交前，用户须明确确认**模型、分辨率、时长**，并把三者以 `video_confirmation_model`、`video_confirmation_resolution`、`video_confirmation_duration` 传入，且必须与最终解析值完全一致，否则工具拒绝提交。test_submit_only 跳过确认门。
-4. **执行模式**：普通请求用默认 `production`（提交+轮询+下载）；仅当用户明确要求"只提交/测试通道"时用 `production_submit_only` 或 `test_submit_only`（测试通道返回 submit_id 后请用户到即梦后台查看，绝不自动轮询下载；测试通道必须提供 `video_group`，且只允许 1 个任务）。
+3. **确认门（仅自动开始时）**：`auto_start=true` 的 production / production_submit_only 提交前，用户须明确确认**模型、分辨率、时长**，并把三者以 `video_confirmation_model`、`video_confirmation_resolution`、`video_confirmation_duration` 传入，且必须与最终解析值完全一致，否则工具拒绝提交。确认门不替代选择门：若最终档位不是默认的 `seedance_2.5 + 480p`，还必须带对应的 `video_model_selection_source` / `video_resolution_selection_source=user_explicit`。默认手动模式（只建节点）不提交，不需要确认门；test_submit_only 跳过确认门。
+4. **执行模式**：`video_execution_mode` 只在 `auto_start=true` 时有意义——普通自动开始用 `production`（提交+轮询+下载）；仅当用户明确要求"只提交/测试通道"时用 `production_submit_only` 或 `test_submit_only`（测试通道返回 submit_id 后请用户到即梦后台查看，绝不自动轮询下载；测试通道必须提供 `video_group`，且只允许 1 个任务）。**默认手动模式忽略 `video_execution_mode`。**
 5. **多份/多任务**：
    - 同一 prompt+参考生成 N 份：`video_count`（1-10）。
    - 不同素材/不同 prompt 的 N 个任务：`tasks` 数组 `[{prompt, image?, images?, videos?, audios?}]`（提供时忽略 video_count；模型/分辨率/时长/比例在调用级共享）。两种都走同一条管线，一次提交、一次轮询。
@@ -49,13 +54,15 @@ generate_video 是**一条统一管线**，不区分单条与批量：任何一�
 5. **例外**：原项目不可用时（无权限、已删除、状态异常）先报告原因，再新建。
 6. **不要混淆**：这里指的是**即梦画布项目**（canvas project）；Skill 线的 `project_pipeline` 项目是治理层状态机，两者不是一回事。
 
-## 生成启动门（硬门，不可跳过）
+## 生成启动门（只盖自动开始，硬门，不可跳过）
 
-视频提交（`generate_video`，以及 `dreamina_canvas` 的 `node run` / `--run`）强制校验一次性票据 `launch_ticket`：
+**默认流程不提交**：不带 `auto_start` 时只建节点，不扣费、不需要票据，用户到画布手动点开始。
 
-1. 写计划并登记：`node scripts/launch-gate.mjs plan --json plan.json` → `pl_xxx`；
+**自动开始才过门**（`generate_video` 的 `auto_start=true`，以及 `dreamina_canvas` 的 `node run` / `--run`）强制校验一次性票据 `launch_ticket`：
+
+1. 写计划并登记：`node scripts/launch-gate.mjs plan --json plan.json` → `pl_xxx`（summary 逐条列 node id、提示词摘要、模型、比例、时长）；
 2. 由用户本人在终端运行 `node scripts/launch-gate.mjs ask --plan pl_xxx`，输入「自动开始任务」→ `lt_xxx`；
-3. 带 `launch_ticket=lt_xxx` 调用 `generate_video`。
+3. 带 `auto_start=true` + `auto_start_reason`（用户原话）+ `launch_ticket=lt_xxx` 调用 `generate_video`。
 
-票据一次性、30 分钟过期、范围锁定（工具 / 项数 / 总时长），提交时消费。Agent 没有 TTY，**不得代批、不得复用、不得绕过**；拿不到票据就停下，把计划与 `pl_xxx` 交给用户批准。
+票据一次性、30 分钟过期、范围锁定（工具 / 项数 / 总时长），提交时消费。Agent 没有 TTY，**不得代批、不得复用、不得绕过**；拿不到票据就停下，把计划与 `pl_xxx` 交给用户批准。用户没说自动开始时，建完节点就停，把 `node_id` 与画布链接交给用户手动开始。
 图片线路（`generate_image` / `batch_image` / upscale / 图片节点）不过门。

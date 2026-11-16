@@ -4,6 +4,8 @@ import {
   VIDEO_EXECUTION_MODES,
   VIDEO_COMMANDS,
   TEST_CHANNEL_MODEL,
+  DEFAULT_VIDEO_MODEL,
+  DEFAULT_VIDEO_RESOLUTION,
   resolveVideoModel,
   resolveVideoResolution,
   limitsFor,
@@ -12,6 +14,8 @@ import {
   selectVideoCommand,
   promptPreferences,
   requiresExplicitSelectionSource,
+  requiresExplicitResolutionSource,
+  isUserExplicitSelection,
   isSupportedVideoModel,
 } from '../src/shared/video-policy.ts'
 
@@ -121,6 +125,33 @@ test('requiresExplicitSelectionSource: any non-default model requires user_expli
   assert.equal(requiresExplicitSelectionSource('seedance_2.0_vip', 'production'), true)
   assert.equal(requiresExplicitSelectionSource('wan_3.0', 'production'), true)
   assert.equal(requiresExplicitSelectionSource('seedance_2.0_vip', 'test_submit_only'), false)
+})
+
+test('defaults are 即梦 2.5 + 480p (user instruction 2026-11-13)', () => {
+  assert.equal(DEFAULT_VIDEO_MODEL, 'seedance_2.5')
+  assert.equal(DEFAULT_VIDEO_RESOLUTION, '480p')
+  // 不传 = 默认档位（模型别名归一化后仍是默认）
+  assert.equal(resolveVideoModel('production', DEFAULT_VIDEO_MODEL), DEFAULT_VIDEO_MODEL)
+  assert.equal(resolveVideoResolution('production', undefined, DEFAULT_VIDEO_RESOLUTION), DEFAULT_VIDEO_RESOLUTION)
+})
+
+test('requiresExplicitResolutionSource: any non-480p resolution requires user_explicit', () => {
+  assert.equal(requiresExplicitResolutionSource('480p', 'production'), false)
+  // 目录里同一档位的大小写两种写法都算默认
+  assert.equal(requiresExplicitResolutionSource('480P', 'production'), false)
+  assert.equal(requiresExplicitResolutionSource('720p', 'production'), true)
+  assert.equal(requiresExplicitResolutionSource('1080p', 'production'), true)
+  assert.equal(requiresExplicitResolutionSource('4k', 'production'), true)
+  // test 通道固定 720p，由通道自身决定，不算用户改档
+  assert.equal(requiresExplicitResolutionSource('720p', 'test_submit_only'), false)
+})
+
+test('isUserExplicitSelection: only the literal user_explicit marker counts', () => {
+  assert.equal(isUserExplicitSelection('user_explicit'), true)
+  assert.equal(isUserExplicitSelection(' user_explicit '), true)
+  assert.equal(isUserExplicitSelection('default'), false)
+  assert.equal(isUserExplicitSelection(undefined), false)
+  assert.equal(isUserExplicitSelection('user'), false)
 })
 
 test('isSupportedVideoModel: only the models the canvas catalog actually exposes', () => {
