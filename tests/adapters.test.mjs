@@ -59,7 +59,7 @@ test('geminiSizeFor is 2K-only: the withdrawn 1K/4K classes are input_error at t
 })
 
 test('gptImage2SizeFor derives the 2048-px long edge the GPT Image 2 route renders (aspect_ratio mode)', () => {
-  assert.equal(GPT_IMAGE_2_4K_MODEL, 'gpt-image-2-4k')
+  assert.equal(GPT_IMAGE_2_4K_MODEL, 'gpt-image-2')
   assert.equal(GPT_IMAGE_2_4K_RESOLUTION, '2K', 'the GPT Image 2 route reports the 2K class')
   assert.equal(GPT_IMAGE_2_4K_LONG_EDGE, 2048, 'aspect_ratio mode renders a 2048-px long edge')
   assert.equal(gptImage2SizeFor('16:9'), '2048x1152', 'measured output for 16:9')
@@ -160,7 +160,7 @@ test('defaultAdapters puts the GPT Image 2 route first (default image route)', (
   }
   const all = defaultAdapters(cfg)
   assert.deepEqual(all.map((a) => a.id), ['comfly-gpt-image-2-4k', 'comfly-gemini-flash-preview', 'dreamina-image'])
-  assert.equal(all[0].model, 'gpt-image-2-4k')
+  assert.equal(all[0].model, 'gpt-image-2')
   const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gemini-flash-preview'] })
   assert.equal(filtered.length, 1)
   assert.equal(filtered[0].id, 'comfly-gemini-flash-preview')
@@ -188,7 +188,7 @@ test('legacy adapter id aliases: both former GPT spellings select the GPT Image 
     const filtered = defaultAdapters({ ...cfg, enabled: [legacy] })
     assert.equal(filtered.length, 1)
     assert.equal(filtered[0].id, 'comfly-gpt-image-2-4k')
-    assert.equal(filtered[0].model, 'gpt-image-2-4k')
+    assert.equal(filtered[0].model, 'gpt-image-2')
   }
 })
 

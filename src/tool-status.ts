@@ -251,7 +251,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         }
 
         const providers = {
-          'comfly-gpt-image-2-4k': { ready: creds.COMFLY_API_KEY, reason: creds.COMFLY_API_KEY ? 'ok' : 'missing COMFLY_API_KEY', model: 'gpt-image-2-4k (aspect_ratio 模式，实测输出 2048 长边；不传 size)', default_resolution: '2K', default_image_route: true },
+          'comfly-gpt-image-2-4k': { ready: creds.COMFLY_API_KEY, reason: creds.COMFLY_API_KEY ? 'ok' : 'missing COMFLY_API_KEY', model: 'gpt-image-2 (aspect_ratio 模式，实测输出 2048 长边；不传 size)', default_resolution: '2K', default_image_route: true },
           'comfly-gemini-flash-preview': { ready: creds.COMFLY_API_KEY, reason: creds.COMFLY_API_KEY ? 'ok' : 'missing COMFLY_API_KEY', model: 'gemini-3.1-flash-image-preview-2k (2K-only；1K/4K 请求钳制为 2K)', default_resolution: '2K' },
           'dreamina-image': { ready: canvasReady, reason: canvasReady ? 'ok' : 'dreamina-canvas 未就绪（图片共享容量池）', model: 'seedream_4.5 (画布节点生成；1K 请求按 2K 执行)', default_resolution: '2K' },
           'dreamina-video': { ready: canvasReady, reason: canvasReady ? 'ok' : 'dreamina-canvas 未就绪' },

@@ -135,7 +135,7 @@ export const REPAINT_PROVIDER_GATE_NOTE =
   `repaint 缺省（不传 / false）时行为完全不变。`
 
 /** Comfly GPT Image 2 model id (default image route). */
-export const GPT_IMAGE_2_4K_MODEL = 'gpt-image-2-4k'
+export const GPT_IMAGE_2_4K_MODEL = 'gpt-image-2'
 
 /**
  * The GPT Image 2 route outputs the 2K class: submitted with an

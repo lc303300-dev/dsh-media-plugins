@@ -1,5 +1,5 @@
 /**
- * Offline contract tests for the Comfly GPT Image 2 (`gpt-image-2-4k`) image
+ * Offline contract tests for the Comfly GPT Image 2 (`gpt-image-2`) image
  * route: a local mock provider captures the exact request the route sends, so
  * the wire contract is verified without any paid call.
  *
@@ -70,7 +70,7 @@ test('GPT Image 2 text-to-image body: model + aspect_ratio + n only; never a pix
     const payload = await openAiImageResult({
       baseURL,
       apiKey: 'test-key',
-      model: 'gpt-image-2-4k',
+      model: 'gpt-image-2',
       prompt: '一只坐在窗边的橘猫',
       aspectRatio: '16:9',
       timeoutMs: 5000,
@@ -81,7 +81,7 @@ test('GPT Image 2 text-to-image body: model + aspect_ratio + n only; never a pix
     assert.match(String(captured[0].headers['content-type']), /application\/json; charset=utf-8/)
     const body = JSON.parse(captured[0].body.toString('utf8'))
     assert.deepEqual(Object.keys(body).sort(), ['aspect_ratio', 'model', 'n', 'prompt'])
-    assert.equal(body.model, 'gpt-image-2-4k')
+    assert.equal(body.model, 'gpt-image-2')
     assert.equal(body.aspect_ratio, '16:9')
     assert.equal(body.n, 1)
     assert.equal('size' in body, false, 'a size-based request is routed to a quota-less channel (HTTP 503)')
@@ -103,7 +103,7 @@ test('GPT Image 2 image edit body: multipart carries aspect_ratio and repeats ea
       const payload = await openAiImageResult({
         baseURL,
         apiKey: 'test-key',
-        model: 'gpt-image-2-4k',
+        model: 'gpt-image-2',
         prompt: '把背景换成夜晚',
         aspectRatio: '9:16',
         images: [ref1, ref2],
@@ -112,7 +112,7 @@ test('GPT Image 2 image edit body: multipart carries aspect_ratio and repeats ea
       assert.equal(captured[0].url, '/v1/images/edits')
       assert.match(String(captured[0].headers['content-type']), /multipart\/form-data; boundary=/)
       const text = captured[0].body.toString('latin1')
-      assert.match(text, /name="model"\r\n\r\ngpt-image-2-4k/)
+      assert.match(text, /name="model"\r\n\r\ngpt-image-2/)
       assert.match(text, /name="aspect_ratio"\r\n\r\n9:16/)
       assert.match(text, /name="n"\r\n\r\n1/)
       assert.equal((text.match(/name="image"; filename=/g) ?? []).length, 2, 'one image field per reference')
@@ -189,7 +189,7 @@ test('router: GPT Image 2 is the default route — ratio submitted as aspect_rat
       // the user asked for 1920x1080 and 2K: convert the ratio, report the 2K class
       const outcome = await runImageRouter({ ...base, ratio: '1920x1080', resolution: '2K' })
       assert.equal(outcome.provider, 'comfly-gpt-image-2-4k', 'GPT Image 2 is the default route')
-      assert.equal(outcome.model, 'gpt-image-2-4k')
+      assert.equal(outcome.model, 'gpt-image-2')
       assert.equal(outcome.resolution, '2K', 'the route reports the 2K class it actually renders')
       assert.equal(outcome.size, '2048x1152', 'the reported size is measured from the delivered file')
       assert.ok(existsSync(outcome.outputPath), 'the downloaded url payload is staged on disk')
