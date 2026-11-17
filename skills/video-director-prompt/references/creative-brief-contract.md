@@ -21,10 +21,10 @@
 
 | 角色 | 负责 | 不得越界 |
 |---|---|---|
-| **Agent** | 事实清单、素材文字化、镜头表（镜数/时长/景别/机位）、模板选择、素材绑定与编号、常量块（【风格】【参考】【设定】【特殊要求】【导演】【一致性】【限定】）、验收、提交 | 不手写创意正文；不把"套模板/抄语料原句"当创作 |
-| **Gemini 4**（`creative_writer`） | 指定创意区块的正文：画面内容、逐镜语言、布光/背景（按需）、风格措辞（限定字段内） | 不改镜数/时长/景别/机位；不增删镜头；不改编号；不编造事实或台词；不加技术尾巴；不输出解释 |
+| **Agent** | 事实清单、素材文字化、镜头表（镜数/时长/景别/机位）、模板选择、素材绑定与编号、常量块（【风格】【参考】【设定】【特殊要求】【导演】【一致性】【限定】）、**画面内容与逐镜行**（2026-11-10 起）、验收、提交 | 不套模板/抄语料原句充当创作 |
+| **Gemini 4**（`creative_writer`） | 只写需要「看图想象」的区块：**布光／风格锁定、导演脚本定调、故事背景**（按需） | 不写画面内容与逐镜行（2026-11-10 起由 Agent 写）；不改镜数/时长/景别/机位；不增删镜头；不改编号；不编造事实或台词；不加技术尾巴；不输出解释 |
 
-**一句话判据**：这个区块是否需要"看着真实素材去想象画面"？需要 → Gemini 4；只涉及事实映射/结构/标签 → Agent。
+**一句话判据（2026-11-10）**：需要「看着真实素材去想象画面」且属于布光/导演定调/故事背景 → Gemini 4；画面内容、逐镜行、事实映射、结构、标签 → Agent。
 
 ---
 
@@ -41,7 +41,7 @@ Brief 是 Agent 写给 Gemini 的任务书；事实材料放 `context`。字段�
 | `facts` | 是 | 角色与换装点、场景实景（材质/家私/光位/色调）、道具状态、人物关系与站位、连续性锚点；**有图时以图为准，文字只补图中看不到的事实** |
 | `shots` | 是 | 逐镜：镜号、起-止秒、景别、机位、动作要点（只写"发生什么"，描写交给 Gemini）；镜数/时长是硬约束 |
 | `template` | 是 | `T1 镜头N` / `T2 时间轴` / `T3 单一镜头内部时间轴` / `T4 一镜到底` / `T5 视频驱动`，同一层只用一种分段手段 |
-| `blocks` | 是 | 本次要 Gemini 写的区块清单（如 `画面内容`、`镜头`、`布光锁定`、`故事背景`） |
+| `blocks` | 是 | 本次要 Gemini 写的区块清单（**只放布光／风格锁定、导演定调、故事背景**；画面内容与镜头行由 Agent 写，不进 blocks） |
 | `corpus` | 否 | 语料只给**可迁移结构**摘要（编号/方法/适用条件），**禁止贴原文**；模型版本只作 provenance |
 | `constraints` | 是 | 必须成立与绝不出现的事项（文案/事实/安全/平台禁用项） |
 | `output` | 是 | 语言、分段格式、每段字数预算、标签形态、时间戳规则 |
@@ -68,7 +68,7 @@ shots:
 - 镜2 2.0-5.5s 近景 35mm 缓慢推近：<动作要点>
 
 template: T1
-blocks: 画面内容, 镜头
+blocks: 布光锁定, 故事背景
 corpus:
 - <可迁移结构 1>（来源只作 provenance）
 constraints:
@@ -140,12 +140,12 @@ Gemini 只返回 `blocks` 指定的区块正文：
 
 | 线路 | 粒度 | blocks | 调用参数 | 门禁 |
 |---|---|---|---|---|
-| 导演线·单条 | 1 次/条 | 画面内容 + 镜头（按需布光/背景） | base / medium | `search_corpus`→`authoring_gate`（纪律）→ creative → 校验 → `generate_video` |
+| 导演线·单条 | 1 次/条 | 布光/背景（画面内容、镜头由 Agent 写） | base / medium | `search_corpus`→`authoring_gate`（纪律）→ creative → 校验 → `generate_video` |
 | 导演线·批次 | 1 次/段 | 同上 | base / short-medium | 每段 `search_corpus`→`authoring_gate(segment)`→ creative → `set_prompts`（凭证+创作台账+标签门） |
-| 短剧线 | 1 次/≤10 段 | 画面内容 + 镜头（+布光/背景） | base / long；剧本/分镜 high | manifest 契约（`drama-tvc-prompt/references/creative-manifest.md`）是其批处理特化 |
+| 短剧线 | 1 次/≤10 段 | 布光/背景（画面内容、镜头由 Agent 从执行脚本改写） | base / long；剧本/分镜 high | manifest 契约（`drama-tvc-prompt/references/creative-manifest.md`）是其批处理特化 |
 | Skill 线 V1 | 1 次/条 | 按业务 Skill 要求 | base / medium | 业务 Skill 知识加载完 → creative → 校验 → `set_prompt` |
 
-**顺序固定**：语料检索 → `authoring_gate`（拿许可，不写正文）→ 组装 brief → `creative_writer` → Agent 验收/装配 → `set_prompts` / `set_prompt` / `generate_video`。
+**顺序固定（2026-11-10）**：语料检索 → `authoring_gate`（拿许可，不写正文）→ 组装 brief → `creative_writer`（**只写布光/导演定调/背景**）→ **Agent 写画面内容与逐镜行** → 验收 → `set_prompts` / `set_prompt` / `generate_video`。
 `authoring_gate` 只校验检索凭证，不校验文本质量；创作台账由 `creative_writer` 成功调用写入，`set_prompts` 据此放行。
 
 **图片**：导演单条/批次、Skill 线凡有实景参考图，都把路径放进 `images`（≤8 张，按素材顺序，最长边 1920px 归一化）；短剧整片 manifest 仍以文字资产为主（多场景图容易互相污染），单场精修可传该场图。

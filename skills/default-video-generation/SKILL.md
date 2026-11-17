@@ -33,7 +33,7 @@ generate_video 是**一条统一管线**，不区分单条与批量：任何一�
 
 > `generate_video` 在 **production / production_submit_only** 提交前会检查本工作区最近 24 小时是否有 `creative_writer` 记录（`kind ∈ {prompt, script, story, copy}`）；没有就**拒绝提交**。图片提示词不在此门范围。
 
-- **正常路径**：先按契约调 `creative_writer` 产出提示词，再提交，记录自动满足。
+- **正常路径（2026-11-10 分工）**：提示词由 **Agent 自己写**（从执行脚本/素材改写，画面内容与逐镜行不外包给 Gemini）；提交时传 `allow_manual_prompts: true` + `manual_prompts_reason`（如「2026-11-10 分工：提示词层由 Agent 改写」）留痕。
 - **用户自带提示词 / 明确要求不改写（normalize-only）**：传 `allow_manual_prompts: true`，并**必须**传 `manual_prompts_reason`（如“用户自带提示词，要求原样提交”）；结果会回 `manual_prompts: true` 留痕。缺 reason 会被拒绝。
 - **Agent 自写是最终兜底**：`creative_writer` 不可用、或失败一次后，Agent 可以直接写提示词并提交，但必须走同一条豁免（`allow_manual_prompts: true` + reason 说明“Gemini 失败后的 Agent 兜底”）。**不得静默手写**。
 - **test_submit_only**：豁免（测试通道不交付内容）。
