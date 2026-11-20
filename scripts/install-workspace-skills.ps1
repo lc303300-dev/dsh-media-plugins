@@ -1,26 +1,30 @@
-﻿# install-workspace-skills.ps1 —— 把仓库 skills/ 安装到某个工作目录的 .dsh/skills
+﻿# install-workspace-skills.ps1 —— 把仓库 skills/ 安装到某个技能根
 #
 # 为什么需要：DSH 的 @deepseek-ai/dsh-skill-filesystem 按 rank 扫描技能根——
 #   rank 100  <projectRoot>/.dsh/skills      （项目级，优先级最高）
 #   rank 200  <projectRoot>/.agents/skills
 #   rank 400  $DSH_HOME/skills               （用户级，setup.ps1 / release.ps1 装这里）
 #   rank 500  ~/.agents/skills
-# setup.ps1 只装用户级；本脚本补项目级：技能随工作目录走、同名覆盖用户级旧版，
-# 适合给一个具体项目（如短剧项目、某个客户片子）钉住技能版本。
+# 默认目标是项目级 `.dsh/skills`：技能随工作目录走、同名覆盖用户级旧版，适合给一个
+# 具体项目钉住技能版本；`-SkillsRoot` 可直接指向任意技能根（如用户级
+# `$DSH_HOME\skills`），用来把本机用户级技能对齐到仓库版本。
 #
 # projectRoot 是「最近的含 .git 的祖先目录」，没有 .git 时取工作目录本身。
 # 脚本会自动定位并提示；若工作目录在 git 仓库子目录里，请把 -Workspace 指向 git 根。
 #
 # 用法:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-workspace-skills.ps1
-#   [-Workspace <工作目录>] [-Skills drama-mode,drama-prompt] [-Mirror] [-DryRun]
+#   [-Workspace <工作目录>] [-SkillsRoot <技能根>] [-Skills a,b] [-PruneNested] [-Mirror] [-DryRun]
 #
 # 默认：Workspace = 当前目录；安装仓库 skills/ 下全部技能；只覆盖不删除。
+# -PruneNested 会删掉 <技能>/<技能>/ 这层历史残留副本（旧安装脚本留下的），-DryRun 只打印。
 # -Mirror 会删除目标端「源里没有」的技能目录（有确认提示，-DryRun 只打印）。
 [CmdletBinding()]
 param(
     [string]$Workspace = (Get-Location).Path,
+    [string]$SkillsRoot,
     [string[]]$Skills,
+    [switch]$PruneNested,
     [switch]$Mirror,
     [switch]$DryRun
 )
@@ -47,13 +51,19 @@ Step '前置检查'
 if (-not (Test-Path $srcRoot)) { throw "仓库 skills/ 不存在: $srcRoot" }
 if (-not (Test-Path $Workspace)) { throw "工作目录不存在: $Workspace" }
 $Workspace = (Resolve-Path $Workspace).Path
-$dstRoot = Join-Path $Workspace '.dsh\skills'
-$projectRoot = Find-ProjectRoot $Workspace
-Info "源  : $srcRoot"
-Info "目标: $dstRoot"
-if ($projectRoot -ne $Workspace) {
-    Warn "该工作目录位于 git 仓库内，DSH 的 projectRoot 会是 $projectRoot"
-    Warn "技能根应放在 $projectRoot\.dsh\skills；否则不会被扫描（用 -Workspace $projectRoot 重跑）"
+if ($SkillsRoot) {
+    $dstRoot = $SkillsRoot
+    Info "源  : $srcRoot"
+    Info "目标: 指定技能根 $dstRoot"
+} else {
+    $dstRoot = Join-Path $Workspace '.dsh\skills'
+    $projectRoot = Find-ProjectRoot $Workspace
+    Info "源  : $srcRoot"
+    Info "目标: $dstRoot"
+    if ($projectRoot -ne $Workspace) {
+        Warn "该工作目录位于 git 仓库内，DSH 的 projectRoot 会是 $projectRoot"
+        Warn "技能根应放在 $projectRoot\.dsh\skills；否则不会被扫描（用 -Workspace $projectRoot 重跑）"
+    }
 }
 if (-not $DryRun -and -not (Test-Path $dstRoot)) { New-Item -ItemType Directory -Force -Path $dstRoot | Out-Null }
 
@@ -95,7 +105,22 @@ foreach ($dir in $selected) {
     $changed++
 }
 
-# 3. Mirror（可选：删掉目标端源里没有的技能目录）
+# 3. PruneNested（可选：删掉 <技能>/<技能>/ 这层历史残留副本）
+$pruned = 0
+if ($PruneNested -and (Test-Path $dstRoot)) {
+    Step '清理同名嵌套残留 (-PruneNested)'
+    foreach ($d in Get-ChildItem $dstRoot -Directory) {
+        $inner = Join-Path $d.FullName $d.Name
+        if (-not (Test-Path (Join-Path $inner 'SKILL.md'))) { continue }
+        if ($DryRun) { Warn "[dry] 删除 $($d.Name)/$($d.Name)/"; $pruned++; continue }
+        Remove-Item $inner -Recurse -Force
+        Warn "删除 $($d.Name)/$($d.Name)/"
+        $pruned++
+    }
+    if ($pruned -eq 0) { Info '没有嵌套残留' }
+}
+
+# 4. Mirror（可选：删掉目标端源里没有的技能目录）
 $removed = 0
 if ($Mirror -and (Test-Path $dstRoot)) {
     Step '清理目标端多余技能 (-Mirror)'
@@ -111,12 +136,12 @@ if ($Mirror -and (Test-Path $dstRoot)) {
     if ($removed -eq 0) { Info '没有多余技能' }
 }
 
-# 4. 摘要
+# 5. 摘要
 Step '完成'
 if ($DryRun) {
-    Info "DRY RUN：将安装 $changed 个、未变 $same 个、将删除 $removed 个"
+    Info "DRY RUN：将安装 $changed 个、未变 $same 个、嵌套清理 $pruned 个、将删除 $removed 个"
 } else {
-    Info "安装 $changed 个、未变 $same 个、删除 $removed 个"
+    Info "安装 $changed 个、未变 $same 个、嵌套清理 $pruned 个、删除 $removed 个"
 }
 Write-Host "  技能根: $dstRoot（rank 100，同名覆盖 $HOME\.dsh\skills）" -ForegroundColor DarkGray
 Write-Host "  DSH 会自动发现并刷新技能目录，无需重启；新开会话即可看到。" -ForegroundColor DarkGray

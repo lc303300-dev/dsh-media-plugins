@@ -166,6 +166,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-workspace-
 ... -Mirror
 ```
 
+把**本机用户级技能**对齐到仓库版本（覆盖旧版、补齐缺失，顺手清掉 `<技能>/<技能>/` 历史残留）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-workspace-skills.ps1 `
+  -SkillsRoot "$env:USERPROFILE\.dsh\skills" -PruneNested
+```
+
+`-SkillsRoot` 直接指定目标技能根（不再按 `<Workspace>/.dsh/skills` 推算），`-PruneNested` 删除
+旧安装脚本留下的同名嵌套副本（顶层 `SKILL.md` 不受影响）。
+
 DSH 的 `dsh-skill-filesystem` 按 rank 扫描技能根：
 `<projectRoot>/.dsh/skills`（100）→ `<projectRoot>/.agents/skills`（200）→
 `$DSH_HOME/skills`（400）→ `~/.agents/skills`（500），rank 小者优先；`projectRoot` 是最近的含
