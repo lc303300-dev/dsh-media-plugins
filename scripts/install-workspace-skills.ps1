@@ -143,5 +143,9 @@ if ($DryRun) {
 } else {
     Info "安装 $changed 个、未变 $same 个、嵌套清理 $pruned 个、删除 $removed 个"
 }
-Write-Host "  技能根: $dstRoot（rank 100，同名覆盖 $HOME\.dsh\skills）" -ForegroundColor DarkGray
+if ($SkillsRoot) {
+    Write-Host "  技能根: $dstRoot（指定根，通常是用户级 rank 400；项目级 .dsh/skills 的 rank 100 仍会覆盖同名技能）" -ForegroundColor DarkGray
+} else {
+    Write-Host "  技能根: $dstRoot（rank 100，同名覆盖 $HOME\.dsh\skills）" -ForegroundColor DarkGray
+}
 Write-Host "  DSH 会自动发现并刷新技能目录，无需重启；新开会话即可看到。" -ForegroundColor DarkGray
