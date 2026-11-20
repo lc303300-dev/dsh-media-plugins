@@ -69,6 +69,7 @@ export const SUPPORTED_RESOLUTIONS: readonly string[] = ['1K', '2K', '4K'] as co
 /** Public image route ids accepted by `image_provider` (DSH canonical ids, default route first). */
 export const SUPPORTED_IMAGE_PROVIDERS: readonly string[] = [
   'comfly-gpt-image-2-4k',
+  'comfly-gpt-image-2-all',
   'comfly-gemini-flash-preview',
   'dreamina-image',
 ] as const
@@ -147,6 +148,14 @@ export const GPT_IMAGE_2_4K_RESOLUTION = '2K'
 
 /** Long edge the GPT Image 2 route renders in `aspect_ratio` mode. */
 export const GPT_IMAGE_2_4K_LONG_EDGE = 2048
+
+/**
+ * Comfly `gpt-image-2-all` route: the user-requested alternative GPT Image 2
+ * channel (re-enabled 2026-11-17 by explicit request). Same request shape as
+ * the default route (aspect_ratio only, never a pixel size), different
+ * upstream model id.
+ */
+export const GPT_IMAGE_2_ALL_MODEL = 'gpt-image-2-all'
 
 /** Pixel-size spelling accepted in `image_ratio` (e.g. 1920x1080 / 1920×1080 / 1920*1080). */
 const PIXEL_SIZE_PATTERN = /^(\d{2,5})\s*[x×*]\s*(\d{2,5})$/i
@@ -576,6 +585,7 @@ export function defaultAdapters(cfg: RouterConfig): ImageAdapter[] {
     comflyAdapter('comfly-gpt-image-2-4k', GPT_IMAGE_2_4K_MODEL, cfg, 'gpt'),
     comflyAdapter('comfly-gemini-flash-preview', GEMINI_MODELS_BY_RESOLUTION[GEMINI_IMAGE_RESOLUTION], cfg, 'gemini'),
     dreaminaImageAdapter(cfg),
+    comflyAdapter('comfly-gpt-image-2-all', GPT_IMAGE_2_ALL_MODEL, cfg, 'gpt'),
   ]
   if (!cfg.enabled || cfg.enabled.length === 0) return chain
   const enabledIds = new Set(cfg.enabled.map((id) => ADAPTER_ALIASES[id] ?? id))

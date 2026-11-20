@@ -13,9 +13,9 @@ test('SUPPORTED_RATIOS is exactly the 8 contract values', () => {
 
 test('SUPPORTED_RESOLUTIONS and SUPPORTED_IMAGE_PROVIDERS match the contract', () => {
   assert.deepEqual(SUPPORTED_RESOLUTIONS, ['1K', '2K', '4K'])
-  assert.deepEqual(SUPPORTED_IMAGE_PROVIDERS, ['comfly-gpt-image-2-4k', 'comfly-gemini-flash-preview', 'dreamina-image'])
+  assert.deepEqual(SUPPORTED_IMAGE_PROVIDERS, ['comfly-gpt-image-2-4k', 'comfly-gpt-image-2-all', 'comfly-gemini-flash-preview', 'dreamina-image'])
   assert.equal(SUPPORTED_IMAGE_PROVIDERS[0], 'comfly-gpt-image-2-4k', 'the GPT Image 2 route is the default image route')
-  assert.ok(!SUPPORTED_IMAGE_PROVIDERS.includes('comfly-gpt-image-2-all'), 'retired comfly-gpt-image-2-all must not be a public route')
+  assert.ok(SUPPORTED_IMAGE_PROVIDERS.includes('comfly-gpt-image-2-all'), 'comfly-gpt-image-2-all is an explicit selectable route')
 })
 
 test('ratioToSize maps all 8 ratios and rejects others with input_error', () => {
@@ -159,8 +159,9 @@ test('defaultAdapters puts the GPT Image 2 route first (default image route)', (
     maxConcurrency: 6, providerTimeoutMs: 90000, taskTimeoutMs: 90000, outputDir: 'o', enabled: [],
   }
   const all = defaultAdapters(cfg)
-  assert.deepEqual(all.map((a) => a.id), ['comfly-gpt-image-2-4k', 'comfly-gemini-flash-preview', 'dreamina-image'])
+  assert.deepEqual(all.map((a) => a.id), ['comfly-gpt-image-2-4k', 'comfly-gemini-flash-preview', 'dreamina-image', 'comfly-gpt-image-2-all'])
   assert.equal(all[0].model, 'gpt-image-2')
+  assert.equal(all[3].model, 'gpt-image-2-all', 'the -all route ships its own upstream model id')
   const filtered = defaultAdapters({ ...cfg, enabled: ['comfly-gemini-flash-preview'] })
   assert.equal(filtered.length, 1)
   assert.equal(filtered[0].id, 'comfly-gemini-flash-preview')
@@ -198,7 +199,7 @@ test('every image route leases ONE shared image pool; video capacity is never im
     maxConcurrency: DEFAULT_IMAGE_CONCURRENCY, providerTimeoutMs: 90000, taskTimeoutMs: 90000, outputDir: 'o', enabled: [],
   }
   const chain = defaultAdapters(cfg)
-  assert.equal(chain.length, 3, 'GPT Image 2 -> Gemini 2K -> Dreamina')
+  assert.equal(chain.length, 4, 'GPT Image 2 -> Gemini 2K -> Dreamina -> GPT Image 2 (all channel)')
   assert.deepEqual([...new Set(chain.map((a) => a.capacityKey))], [IMAGE_CAPACITY_KEY], 'all image routes share the single pool')
   assert.equal(IMAGE_CAPACITY_KEY, 'image')
   assert.equal(DEFAULT_IMAGE_CONCURRENCY, 10, 'the shared image pool is 10 concurrent images')
