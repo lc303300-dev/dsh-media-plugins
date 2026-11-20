@@ -148,6 +148,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 > `scripts/ensure-llm-provider.ps1` 把 `comfly` provider 补进每个 profile 的 `llm-pi-ai` 配置。
 > 单独补配置：`powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\ensure-llm-provider.ps1`（已有配置时跳过，**重启 DSH** 后生效）。
 
+### 工作区级安装（技能随项目走）
+
+`setup.ps1` / `scripts/release.ps1` 只装用户级 `$DSH_HOME\skills`。要让某个工作目录拥有自己的
+技能副本（同名覆盖用户级、换工作目录不受影响），把仓库 `skills/` 装进它的 `.dsh/skills`：
+
+```powershell
+# 默认：装到当前目录，仓库全部技能
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-workspace-skills.ps1
+
+# 指定工作目录、只装短剧技能集
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-workspace-skills.ps1 `
+  -Workspace D:\某项目 -Skills drama-mode,drama-diagnose,drama-dialogue,drama-director-script,drama-exec-script,drama-style-pack,drama-prompt,drama-shoot,drama-tvc-prompt
+
+# 先看会做什么；-Mirror 会删掉目标端「源里没有」的技能目录（危险，默认关闭）
+... -DryRun
+... -Mirror
+```
+
+DSH 的 `dsh-skill-filesystem` 按 rank 扫描技能根：
+`<projectRoot>/.dsh/skills`（100）→ `<projectRoot>/.agents/skills`（200）→
+`$DSH_HOME/skills`（400）→ `~/.agents/skills`（500），rank 小者优先；`projectRoot` 是最近的含
+`.git` 的祖先目录，没有则取工作目录本身——脚本会定位并提示。安装是幂等的（逐文件 SHA256
+比较，只覆盖不删除），DSH 自动刷新技能目录，**不需要重启**。
+
 ## 使用
 
 ```text
