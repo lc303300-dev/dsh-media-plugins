@@ -44,6 +44,33 @@ import { acquireSlot, atomicWriteJson, atomicWriteText, ensureDir, newTaskId, re
  */
 export const CANVAS_KEYCHAIN_PREFIX = 'dreamina_canvas'
 
+/**
+ * 画布 CLI 登录态子键的格式版本号：`dreamina_canvas_oauth_v<N>_<hash>`。
+ *
+ * 2026-11 的 1.3.0 把子键从 `oauth_v2` 升到 `oauth_v3`，且**旧版子键会留在
+ * 注册表里不删**。CLI 只读写自己那一版子键，所以「当前登录态」必须选
+ * **版本最高**的子键；按 `reg query` 的枚举顺序取第一个会把旧 blob 当成
+ * 活跃登录态 —— 表现为 `dreamina_account current` 指纹对得上、但 1.3.0 实际
+ * 用另一份 blob，且切账号会写进旧子键（1.3.0 读不到，登录态看似切换成功）。
+ *
+ * 无版本号的（更早期/未知格式）排在最后，保证向后兼容。
+ */
+export function canvasSubKeyRank(subKey: string): number {
+  const match = /^dreamina_canvas_oauth_v(\d+)_/i.exec(subKey)
+  if (match) return Number(match[1])
+  return -1
+}
+
+/** 从注册表子键列表里挑出画布 CLI 当前使用的那个（版本最高，同版本按名字定序）。 */
+export function pickCanvasSubKey(subkeys: readonly string[]): string | undefined {
+  const candidates = subkeys.filter((k) => k.startsWith(CANVAS_KEYCHAIN_PREFIX))
+  if (candidates.length === 0) return undefined
+  return [...candidates].sort((a, b) => {
+    const byVersion = canvasSubKeyRank(b) - canvasSubKeyRank(a)
+    return byVersion !== 0 ? byVersion : a.localeCompare(b)
+  })[0]
+}
+
 /** 捕获到的一份画布 CLI 登录态。 */
 export interface CanvasKeychainCapture {
   subKey?: string
@@ -56,12 +83,12 @@ export interface CanvasKeychainCapture {
  * 读取当前激活的画布 CLI 登录态。
  *
  * 子键名带一个 auth-SDK 常量后缀（与 profile/region/instance-id 都无关），
- * 所以这里按前缀发现，而不是硬编码。没有画布登录态时返回空对象。
+ * 所以这里按前缀发现，而不是硬编码；有多个版本残留时取最高版本（见
+ * `pickCanvasSubKey`）。没有画布登录态时返回空对象。
  */
 export async function readActiveCanvasKeychain(runner?: RegRunner): Promise<CanvasKeychainCapture> {
-  const subkeys = (await listKeychainSubkeys(runner)).filter((k) => k.startsWith(CANVAS_KEYCHAIN_PREFIX))
-  if (subkeys.length === 0) return {}
-  const subKey = subkeys[0]
+  const subKey = pickCanvasSubKey(await listKeychainSubkeys(runner))
+  if (!subKey) return {}
   const values = await readKeychainValuesAt(subKey, runner)
   const primary =
     values.find((v) => v.valueName === PRIMARY_VALUE_NAME && v.value.length > 0) ??
@@ -429,7 +456,9 @@ export async function ensureActiveAccount(options: EnsureAccountOptions): Promis
     let canvasSwitched = false
     if (meta.canvasFingerprint !== undefined) {
       const canvasToken = await readAccountCanvasToken(options.privateRoot, target)
-      const canvasSubKey = meta.canvasSubKey ?? againCanvas.subKey
+      // 优先写「CLI 当前真正在读的那个子键」：升级过 CLI 时它可能比账号捕获时
+      // 记录的版本更高（如 v2 -> v3），写进旧子键等于没切换。
+      const canvasSubKey = againCanvas.subKey ?? meta.canvasSubKey
       if (canvasToken && canvasSubKey) {
         await writeKeychainValueAt(canvasSubKey, meta.canvasValueName || PRIMARY_VALUE_NAME, canvasToken, options.runner)
         canvasSwitched = true
@@ -454,7 +483,8 @@ export async function switchCanvasLogin(privateRoot: string, meta: DreaminaAccou
   const token = await readAccountCanvasToken(privateRoot, meta.name)
   if (!token) return false
   const live = await readActiveCanvasKeychain(runner)
-  const subKey = meta.canvasSubKey ?? live.subKey
+  // 同 ensureActiveAccount：活跃子键优先于捕获时记录的（CLI 升级后会换版本）。
+  const subKey = live.subKey ?? meta.canvasSubKey
   if (!subKey) return false
   await writeKeychainValueAt(subKey, meta.canvasValueName || PRIMARY_VALUE_NAME, token, runner)
   return true

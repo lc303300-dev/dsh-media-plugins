@@ -7,14 +7,17 @@ import {
   ACCOUNT_NAME_RE,
   accountDir,
   accountsRoot,
+  canvasSubKeyRank,
   clearDefaultAccount,
   ensureActiveAccount,
   isReusedLoginOutput,
   listAccounts,
   parseDeviceAuthOutput,
   parseUserCredit,
+  pickCanvasSubKey,
   readAccountMeta,
   readAccountToken,
+  readActiveCanvasKeychain,
   readActiveKeychain,
   readDefaultAccount,
   renameAccount,
@@ -79,6 +82,36 @@ function fakeRegistry(initial = {}) {
   return { runner, store, calls }
 }
 
+/**
+ * Registry fake with several keychain subkeys, so the version-selection logic can
+ * be exercised the way it behaves on a machine that upgraded the canvas CLI
+ * (1.3.0 writes `oauth_v3` while the old `oauth_v2` key stays behind).
+ */
+function multiKeychainRegistry(subkeys) {
+  const root = 'HKEY_CURRENT_USER\\Software\\BytedAuthClient\\keychain'
+  // `readKeychainValuesAt` asks with the HKCU abbreviation while `reg query`
+  // prints HKEY_CURRENT_USER: normalise both sides before comparing.
+  const norm = (value) => String(value ?? '').replace(/^HKEY_CURRENT_USER/i, 'HKCU').toLowerCase()
+  const runner = async (args) => {
+    if (args[0] !== 'query') throw new Error(`unexpected reg call: ${args.join(' ')}`)
+    const path = norm(args[1])
+    if (path === norm(root)) {
+      const lines = [root, ...Object.keys(subkeys).map((k) => `${root}\\${k}`)]
+      return { stdout: `${lines.join('\r\n')}\r\n` }
+    }
+    for (const [subKey, values] of Object.entries(subkeys)) {
+      if (path === norm(`${root}\\${subKey}`)) {
+        const lines = [`${root}\\${subKey}`, ...Object.entries(values).map(([n, v]) => `    ${n}    REG_SZ    ${v}`)]
+        return { stdout: `${lines.join('\r\n')}\r\n` }
+      }
+    }
+    const error = new Error('reg query failed')
+    error.stderr = '错误: 系统找不到指定的注册表项或文件。'
+    throw error
+  }
+  return { runner }
+}
+
 test('parseUserCredit reads the real output', () => {
   assert.deepEqual(parseUserCredit(USER_CREDIT), {
     userId: '854784705060587',
@@ -105,6 +138,36 @@ test('parseDeviceAuthOutput reads the headless device-flow material', () => {
   assert.equal(parseDeviceAuthOutput('已复用当前本地 OAuth 登录态。'), undefined)
   assert.equal(isReusedLoginOutput('已复用当前本地 OAuth 登录态。'), true)
   assert.equal(isReusedLoginOutput(DEVICE_AUTH), false)
+})
+
+test('canvas keychain subkey selection prefers the highest oauth version', () => {
+  const v2 = 'dreamina_canvas_oauth_v2_61ac3a54c18a85142240f4ad2c0104e666abc7926f526913b0fb4efe0ca1224b'
+  const v3 = 'dreamina_canvas_oauth_v3_61ac3a54c18a85142240f4ad2c0104e666abc7926f526913b0fb4efe0ca1224b'
+  assert.equal(canvasSubKeyRank(v3), 3)
+  assert.equal(canvasSubKeyRank('dreamina_canvas_oauth_v12_x'), 12)
+  assert.equal(canvasSubKeyRank('dreamina_canvas'), -1)
+  // `reg query` enumeration order must never decide which blob is live.
+  assert.equal(pickCanvasSubKey([v2, v3]), v3)
+  assert.equal(pickCanvasSubKey([v3, v2]), v3)
+  // Unversioned/legacy subkeys rank last; unrelated prefixes are ignored.
+  assert.equal(pickCanvasSubKey(['dreamina_canvas', v2]), v2)
+  assert.equal(pickCanvasSubKey(['dreamina', v2]), v2)
+  assert.equal(pickCanvasSubKey(['dreamina', 'something-else']), undefined)
+  assert.equal(pickCanvasSubKey([]), undefined)
+})
+
+winTest('readActiveCanvasKeychain follows the CLI to the newest subkey version (1.3.0 / oauth_v3)', async () => {
+  const v2 = 'dreamina_canvas_oauth_v2_61ac3a54c18a85142240f4ad2c0104e666abc7926f526913b0fb4efe0ca1224b'
+  const v3 = 'dreamina_canvas_oauth_v3_61ac3a54c18a85142240f4ad2c0104e666abc7926f526913b0fb4efe0ca1224b'
+  // Both keys present, legacy one enumerated first: the v3 blob is the live login.
+  const registry = multiKeychainRegistry({
+    [v2]: { [PRIMARY_VALUE_NAME]: BLOB_A },
+    [v3]: { [PRIMARY_VALUE_NAME]: BLOB_B },
+  })
+  const capture = await readActiveCanvasKeychain(registry.runner)
+  assert.equal(capture.subKey, v3)
+  assert.equal(capture.value, BLOB_B)
+  assert.equal(capture.fingerprint, tokenFingerprint(BLOB_B))
 })
 
 test('account names are path-safe and predictable', () => {

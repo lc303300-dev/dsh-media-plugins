@@ -6,7 +6,7 @@
  * 本模块只负责把两边的语义翻译成命令与结构化判断，**不做任何 DSH/供应商接线**，
  * 因此可以被 `node --test` 直接覆盖；执行封装见 `createCanvasCli`。
  *
- * 契约事实（2026-10 实测 1.2.0 / cee4f27a，公开 cn 制品）：
+ * 契约事实（2026-11-14 实测 1.3.0 / c6a5530a，公开 cn 制品；1.1.1 时期一致）：
  * - 所有命令支持全局 `--format json --non-interactive [--profile NAME] [--region cn]`；
  * - 输出统一 envelope：`{schemaVersion, ok, data|error, meta}`；
  * - 退出码：0 成功 / 2 参数 / 10 待积分确认 / 11 需登录 / 12,13 权限·权益·版本 /
@@ -64,10 +64,13 @@ export type CanvasOperationState = (typeof CANVAS_OPERATION_STATES)[number]
  * 装完必须重新登录一次（`auth login`）。
  */
 export const CANVAS_CLI_SOURCE = {
-  /** 当前解析到的制品基址（来自 install.ps1 的 `$DefaultDownloadBase`；打包号会随发版变化）。 */
-  artifactBase: 'https://jimeng.jianying.com/canvas-cli/install/1_0_0_53',
+  /**
+   * 当前解析到的制品基址（来自 install.ps1 的 `$DefaultDownloadBase`；打包号会随发版变化）。
+   * 2026-11-14 核对：1_0_0_60 -> CLI 1.3.0（commit c6a5530a，2026-11-05 构建）。
+   */
+  artifactBase: 'https://jimeng.jianying.com/canvas-cli/install/1_0_0_60',
   /** 制品元数据（含 version / releaseDate / releaseNotes）。 */
-  versionJson: 'https://jimeng.jianying.com/canvas-cli/install/1_0_0_53/version.json',
+  versionJson: 'https://jimeng.jianying.com/canvas-cli/install/1_0_0_60/version.json',
   /** Windows PowerShell：`irm <installPs1> | iex`。 */
   installPs1: 'https://jimeng.jianying.com/canvas-cli/install.ps1',
   /** macOS / Linux：`curl -fsSL <installSh> | bash`。 */
