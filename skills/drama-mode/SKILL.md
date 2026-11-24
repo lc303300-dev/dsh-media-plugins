@@ -25,7 +25,18 @@ whenToUse: 用户说「进入短剧模式」「短剧模式」「开短剧」「
 | 道具卡 | 做道具卡 | 道具照片 | 1:1 道具设定 | 无 |
 | 音色 | 做音色 / 声音模板 | 角色 + 基准台词 | 每人一段音色样本 | 角色卡 |
 
-**素材纪律**：素材是**参考**不是构图命令——只提供材质、色彩、光线、人物长相，不提供景别与构图（见 `video-director-prompt/references/ai-video-shooting-rules.md` 第一节）；场景卡**不带人物**、必须写真实地点名（见工作区 `AGENTS.md`「场景卡地点信息规则」「场景卡人物规则」）。
+**素材纪律**：素材是**参考**不是构图命令——只提供材质、色彩、光线、人物长相，不提供景别与构图（见 `video-director-prompt/references/ai-video-shooting-rules.md` 第一节）；场景卡**不带人物**、必须写真实地点名、文字两头都不管（既不写"禁止出现文字"，也不强制"必须写出某某招牌字"）。
+
+**素材生图的 provider 分线（硬规则，2026-11-06 定）**：
+
+| 素材类型 | 判定 | 线路 |
+|---|---|---|
+| 角色卡 · 真人 | 卡面是照片本人的**写实**呈现 | `image_provider = comfly-gemini-flash-preview` |
+| 角色卡 · 风格化 | 插画 / 国潮 / 手绘动画 / 二次元 / 漫画等**非写实**形象 | `image_provider = comfly-gpt-image-2-4k` |
+
+- 判定只看「卡面是不是真人写实」：是 → Gemini，不是 → GPT。**风格化角色直接走 GPT，不要问**，也不要因为"角色卡默认走 Gemini"而落到 Gemini 线。
+- 接入参考图优先用 `batch_image` 的 `reference_images`（`generate_image` 的 `image` 通道在本机曾报 `image must be an array`）。
+- 场景卡 / 道具卡不涉及人脸写实判定，走默认线路即可。
 
 ### 脚本层（六个能力，各自独立触发，不强制顺序）
 
@@ -87,7 +98,8 @@ whenToUse: 用户说「进入短剧模式」「短剧模式」「开短剧」「
 - `skills/drama-tvc-prompt/references/`：山音方法论、九列分镜表、10 区块模板、镜头级渲染、布光模块、创意 manifest（仅历史参考）、执行手册。
 - `skills/video-director-prompt/references/ai-video-shooting-rules.md`：拍摄硬规则（优先级最高）。
 - `skills/video-director-prompt/references/three-script-workflow.md`：三层脚本分工（分组在执行脚本层）。
-- 工作区 `AGENTS.md`：画板流程、卡片规则、素材规范。
+- `docs/business-rules.md`：业务口径全集（画布命名与布局、出图交付、扩图、审阅页）。
+- `docs/operations.md`：画板流程、账号切换、踩坑。
 
 ## 能力路由
 

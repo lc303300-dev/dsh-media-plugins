@@ -6,7 +6,7 @@ whenToUse: 用户要上画布、建节点、提交短剧、或要交付文件清
 
 # 画板交付
 
-> 规则依据：工作区 `AGENTS.md`「画板批量制片流程」与「节点布局」；硬规则：`video-director-prompt/references/ai-video-shooting-rules.md` 第十五节（先建图片节点再建视频节点）。
+> 规则依据：`docs/operations.md`（画板批量制片流程、账号与画布）与 `docs/business-rules.md` §7（节点布局）；硬规则：`video-director-prompt/references/ai-video-shooting-rules.md` 第十五节（先建图片节点再建视频节点）。
 
 ## 输入 / 产出
 
