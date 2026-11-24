@@ -15,6 +15,15 @@ whenToUse: 用户要求"每组生成 N 张""多组候选图""编号选图板""�
 7. 截止/宽限后未完成的任务绝不查询、重试或静默重提；同一 manifest 的 job key 稳定，重复提交会被拒绝。
 8. **最大等待时间是硬规则**：`deadline`（停止派发）+ `completion_grace_seconds`（收尾宽限）到点即**收摊**——立刻中止仍在跑的任务（再给最多 5 秒善后），只收集已落地的成功图，写审阅页并结束。**永不自动补跑**：缺失的槽位由用户在审阅页上确认后，**换一个新组 id** 才会重排。
 
+## 审阅页「复制按钮」硬要求（用户 2026-11-17 定，管线级）
+
+审阅页交付出去，用户第一件事就是点「复制勾选名称 / 路径」。**双击（`file://`）打不开就等于这页废了。**
+
+- **实现顺序固定**：在点击的**同步调用栈**里**先** `document.execCommand('copy')`（临时 textarea → `focus()` → `select()` → `setSelectionRange()`），失败再退 `navigator.clipboard.writeText`，仍失败则弹出已全选的手动复制框（提示 Ctrl+C）。
+- **禁止反过来**：先调 clipboard API 时，`file://` 与受限 iframe 会 reject，而 reject 回调已脱离用户手势，此时 execCommand 同样被拒——这就是「复制按钮没反应」的根因。
+- **自建审阅页**必须复用带 `COPY-FIX-2026-11-17` 标记的 `inject(html)`（幂等），不要另写一套复制逻辑。
+- **验收**：HTML 里 `COPY-FIX-2026-11-17` 恰好 1 处；页面内所有 `<script>` 块用 Node `vm.Script` 编译 0 错误；`.card` 的 `data-label` / `data-path` 数量与卡片数一致。
+
 ## 提交节流（实测口径）
 
 **默认并发 10**：manifest 不写 `concurrency` 即按 10 并发派发（与共享图片池上限一致），真实提交间隔仍强制 ≥ 1 秒。
