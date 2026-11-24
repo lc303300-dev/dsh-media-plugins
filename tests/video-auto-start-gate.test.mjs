@@ -3,8 +3,7 @@
  *
  * - 默认（不传 auto_start）：只建节点，不提交；
  * - auto_start=true 必须同时给 auto_start_reason（用户原话留痕），否则在接触任何
- *   CLI / 付费动作之前就拒绝；
- * - test_submit_only 属于测试通道，自身即提交语义，不需要 reason。
+ *   CLI / 付费动作之前就拒绝。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -80,25 +79,4 @@ test('auto_start=false（默认）不要求 auto_start_reason / 确认门', asyn
   // 默认手动模式不该被 auto_start / 确认门拦下；测试里用不存在的 CLI 提前失败。
   assert.equal(/auto_start_reason|requires confirmation of model/.test(message), false, message)
   assert.match(message, /dreamina/i)
-})
-
-test('test_submit_only 视作提交语义，不需要 auto_start_reason（仍要票据）', async () => {
-  const tool = captureTool({ dreaminaPath: missingCliPath() })
-  const cwd = mkdtempSync(join(tmpdir(), 'dsh-auto-start-'))
-  let message = ''
-  try {
-    await tool.execute(
-      {
-        prompt: '镜头推进',
-        allow_manual_prompts: true,
-        manual_prompts_reason: 'test: normalize-only',
-        video_execution_mode: 'test_submit_only',
-        video_group: 'dsh-auto-start-test',
-      },
-      execCtx(cwd),
-    )
-  } catch (error) {
-    message = String(error?.message ?? error)
-  }
-  assert.equal(/auto_start_reason/.test(message), false, message)
 })

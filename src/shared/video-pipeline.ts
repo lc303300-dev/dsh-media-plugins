@@ -88,11 +88,10 @@ export function pickDownloadedVideo(candidates: DownloadCandidate[], submitId: s
  * Returns a cleartext error message, or null when the gate passes.
  */
 export function confirmationGateError(
-  mode: string,
+  _mode: string,
   resolved: { model: string; resolution: string; duration: number },
   confirmed: { model?: string; resolution?: string; duration?: unknown },
 ): string | null {
-  if (mode === 'test_submit_only') return null
   if (!confirmed.model || !confirmed.resolution || confirmed.duration === undefined || confirmed.duration === null) {
     return 'formal video submission requires confirmation of model, resolution, and duration (pass video_confirmation_model / video_confirmation_resolution / video_confirmation_duration)'
   }
@@ -141,7 +140,6 @@ export function confirmationGateErrorForDurations(
   resolved: { model: string; resolution: string; durations: number[] },
   confirmed: { model?: string; resolution?: string; duration?: unknown; durations?: unknown },
 ): string | null {
-  if (mode === 'test_submit_only') return null
   const unique = [...new Set(resolved.durations.map((d) => Number(d)))].filter((d) => Number.isFinite(d)).sort((a, b) => a - b)
   if (unique.length === 0) return 'resolved video durations must not be empty'
   if (unique.length === 1) {

@@ -69,10 +69,6 @@ test('pickDownloadedVideo: ignores non-video files', () => {
   assert.equal(chosen?.name, 'real-abc123.mp4')
 })
 
-test('confirmationGateError: test mode never needs confirmation', () => {
-  assert.equal(confirmationGateError('test_submit_only', { model: 'seedance2.0', resolution: '720p', duration: 5 }, {}), null)
-})
-
 test('confirmationGateError: production requires all three confirmation fields', () => {
   const resolved = { model: 'seedance2.5', resolution: '480p', duration: 5 }
   assert.ok(confirmationGateError('production', resolved, {}))
@@ -178,8 +174,6 @@ test('confirmationGateErrorForDurations: one distinct duration keeps the legacy 
   assert.equal(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '480p', duration: '8秒' }), null)
   assert.match(confirmationGateErrorForDurations('production', resolved, { model: 'seedance2.5', resolution: '480p', duration: 12 }), /duration/)
   assert.ok(confirmationGateErrorForDurations('production', resolved, {}))
-  // test channel never needs confirmation
-  assert.equal(confirmationGateErrorForDurations('test_submit_only', { model: 'seedance2.5', resolution: '480p', durations: [4, 15] }, {}), null)
 })
 
 test('confirmationGateErrorForDurations: mixed per-task durations require the exact declared set', () => {

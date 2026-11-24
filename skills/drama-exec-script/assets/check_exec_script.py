@@ -5,13 +5,16 @@
     python check_exec_script.py 01-执行脚本-正式版.md [--target-seconds 60]
 
 校验项（任一项失败即退出码 1）:
-    1. 每个任务 2–4 镜（1 镜仅允许 ≤2 秒的插入镜）
+    1. 每个任务 2–5 镜（1 镜仅允许 ≤2 秒的插入镜）
     2. 每个任务 4–15 秒
     3. 镜号连续、不重叠、不跳号
     4. 场景切换=是 时必须填切换桥，且桥必须是人物局部特写（脚步/面部/手部/衣摆/特写）
-    5. 开场景别必须是特写 / 承接 / 片头建立（中全景、全景只允许出现在第一个任务）
-    6. 镜数 ≥2 的任务，景别数必须 ≥3
-    7. 给出 --target-seconds 时，合计时长必须与目标一致（±1 秒）
+    5. 开场景别必须是特写 / 承接 / 片头建立（中全景、全景允许出现在任意任务）
+    6. 给出 --target-seconds 时，合计时长必须与目标一致（±1 秒）
+
+软提示（不阻断，只打印）:
+    - 非片头任务用全景开场：请确认构图必需，且场景卡/参考图不得 1:1 入画
+    - 景别数 < 3：按导演脚本确认是否成立（≥3 景别不再强制）
 
 只依赖标准库。
 """
@@ -126,8 +129,8 @@ def main(argv: list[str]) -> int:
             if not 4 <= seconds <= 15:
                 errors.append(f"{tag}: 时长 {seconds}s 超出 4–15 秒")
 
-        if actual > 4:
-            errors.append(f"{tag}: {actual} 镜超过 4 镜上限（模型会丢镜）")
+        if actual > 5:
+            errors.append(f"{tag}: {actual} 镜超过 5 镜上限（超过 4 镜模型开始丢镜）")
         if actual == 1:
             if seconds is not None and seconds > 2:
                 errors.append(f"{tag}: 单镜任务只能是 ≤2 秒的插入镜，当前 {seconds}s")
@@ -136,7 +139,9 @@ def main(argv: list[str]) -> int:
         if not any(w in open_shot for w in ("特写", "承接", "中全景", "全景")):
             errors.append(f"{tag}: 开场景别「{open_shot}」不合规（应为 特写/承接/片头中全景）")
         if any(w in open_shot for w in ("中全景", "全景")) and index > 1:
-            errors.append(f"{tag}: 只有片头第一个任务可用中全景/全景开场，本任务是第 {index} 个")
+            # 2026-11-24 用户定：全景按构图分情况使用，不再限定片头；
+            # 但"场景卡/参考图不得 1:1 入画"仍是硬规则，故这里只做提醒。
+            warnings.append(f"{tag}: 非片头任务用全景开场，确认构图必需且场景卡不得 1:1 入画")
 
         if t["scene_switch"] in ("是", "Y", "y", "✓"):
             if not t["bridge"] or t["bridge"] in ("—", "-", ""):
@@ -146,7 +151,8 @@ def main(argv: list[str]) -> int:
 
         shots_types = parse_int(t["shot_types"])
         if actual >= 2 and shots_types is not None and shots_types < 3:
-            errors.append(f"{tag}: 景别数 {shots_types} < 3（每任务至少 3 个景别）")
+            # 2026-11-24 用户定：景别数按导演脚本决定，不再强制 ≥3。
+            warnings.append(f"{tag}: 景别数 {shots_types} < 3，按导演脚本确认是否成立")
 
         if t["check"] and t["check"] not in ("✅", "✓", "通过"):
             warnings.append(f"{tag}: 校验列写的是「{t['check']}」，不是 ✅")

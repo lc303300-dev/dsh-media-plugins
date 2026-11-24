@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import {
   VIDEO_EXECUTION_MODES,
   VIDEO_COMMANDS,
-  TEST_CHANNEL_MODEL,
   DEFAULT_VIDEO_MODEL,
   DEFAULT_VIDEO_RESOLUTION,
   resolveVideoModel,
@@ -28,14 +27,7 @@ test('model policy: default seedance_2.5; explicit 2.0-family normalizes to seed
   assert.equal(resolveVideoModel('production_submit_only', 'seedance_2.5'), 'seedance_2.5')
 })
 
-test('model policy: test channel forces the cheapest callable model regardless of user model', () => {
-  assert.equal(resolveVideoModel('test_submit_only', 'seedance_2.5'), TEST_CHANNEL_MODEL)
-  assert.equal(resolveVideoModel('test_submit_only', 'seedance_2.0_vip'), TEST_CHANNEL_MODEL)
-})
-
-test('resolution policy: test forces 720p; production defaults to 480p or explicit value', () => {
-  assert.equal(resolveVideoResolution('test_submit_only', undefined, '480p'), '720p')
-  assert.equal(resolveVideoResolution('test_submit_only', '1080p', '480p'), '720p')
+test('resolution policy: production defaults to 480p or explicit value', () => {
   assert.equal(resolveVideoResolution('production', undefined, '480p'), '480p')
   assert.equal(resolveVideoResolution('production', '720p', '480p'), '720p')
 })
@@ -83,8 +75,8 @@ test('model aliases resolve to canvas canonical names; unknown passthrough', () 
   assert.equal(normalizeModel(undefined), undefined)
 })
 
-test('execution modes are exactly the three contract values', () => {
-  assert.deepEqual([...VIDEO_EXECUTION_MODES], ['production', 'production_submit_only', 'test_submit_only'])
+test('execution modes are exactly the two contract values', () => {
+  assert.deepEqual([...VIDEO_EXECUTION_MODES], ['production', 'production_submit_only'])
 })
 
 test('command set is text2video/image2video/frames2video/multimodal2video', () => {
@@ -124,7 +116,6 @@ test('requiresExplicitSelectionSource: any non-default model requires user_expli
   assert.equal(requiresExplicitSelectionSource('seedance_2.5', 'production'), false)
   assert.equal(requiresExplicitSelectionSource('seedance_2.0_vip', 'production'), true)
   assert.equal(requiresExplicitSelectionSource('wan_3.0', 'production'), true)
-  assert.equal(requiresExplicitSelectionSource('seedance_2.0_vip', 'test_submit_only'), false)
 })
 
 test('defaults are 即梦 2.5 + 480p (user instruction 2026-11-13)', () => {
@@ -142,8 +133,6 @@ test('requiresExplicitResolutionSource: any non-480p resolution requires user_ex
   assert.equal(requiresExplicitResolutionSource('720p', 'production'), true)
   assert.equal(requiresExplicitResolutionSource('1080p', 'production'), true)
   assert.equal(requiresExplicitResolutionSource('4k', 'production'), true)
-  // test 通道固定 720p，由通道自身决定，不算用户改档
-  assert.equal(requiresExplicitResolutionSource('720p', 'test_submit_only'), false)
 })
 
 test('isUserExplicitSelection: only the literal user_explicit marker counts', () => {

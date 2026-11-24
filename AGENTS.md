@@ -84,7 +84,7 @@ DSH Studio 媒体能力包。一次安装提供 18 个工具、12 个技能与�
 
 ## 视频/图片创作线路
 
-- **视频创作门（2026-10-21，硬门）**：`prompt_batch set_prompts` / `project_pipeline set_prompt`（source=skill_v1 或创作类 revision）/ `generate_video`（production / production_submit_only）都要求本工作区 24h 内有 `creative_writer` 记录；用户自带原文、normalize-only、或 `creative_writer` 不可用/失败一次后的 **Agent 兜底自写**，必须显式传 `allow_manual_prompts=true` + `manual_prompts_reason`（结果留痕），不得静默手写。`test_submit_only` 豁免；**图片提示词不在此门范围**。
+- **视频创作门（2026-10-21，硬门）**：`prompt_batch set_prompts` / `project_pipeline set_prompt`（source=skill_v1 或创作类 revision）/ `generate_video`（production / production_submit_only）都要求本工作区 24h 内有 `creative_writer` 记录；用户自带原文、normalize-only、或 `creative_writer` 不可用/失败一次后的 **Agent 兜底自写**，必须显式传 `allow_manual_prompts=true` + `manual_prompts_reason`（结果留痕），不得静默手写。**图片提示词不在此门范围**。
 
 - **导演线（默认，唯一）**：`skills/video-prompt-orchestrator` 编排器 —— 单条走非破坏性提示词门，多素材走批次模式（`prompt_batch` 工具 = 原 `dt_batch`，提供批次/1920px 预览/审阅页）。批次模式下**每段必须先 `prompt_revision search_corpus` 取得一次性检索凭证并经 `authoring_gate(segment=该段 material)` 消费**（账本 `corpus-ledger.json`）；`set_prompts` 拒写没有自己凭证的段。默认**不得**触发业务 Skill 线。
 - **Skill 线（仅用户显式要求"启用 Skill 模式"时）**：`skills/video-skill-router` → `project_pipeline`（`create` 有 `skill_mode=true` 硬门）+ `skill_registry`。进入时必须告知用户已进入 Skill 模式。

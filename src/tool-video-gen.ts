@@ -17,7 +17,7 @@
  * - 同一任务绝不换新的 submit-id 重放（付费不可回滚）；等待超时只表示本地等待
  *   结束，服务端任务仍在继续，因此标记 `needs_review` 并保留身份；
  * - `video_execution_mode`：production（提交+等待+下载）、production_submit_only
- *   （只提交）、test_submit_only（强制最低成本模型 + 720p，只提交不轮询）。
+ *   （只提交）。
  *
  * @module @deepseek-ai/dsh-tool-video-gen
  */
@@ -257,7 +257,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         + '用户自带原文 / normalize-only，或 Gemini 失败后的 Agent 兜底：allow_manual_prompts=true + manual_prompts_reason（结果留痕）。'
         + '**节点顺序（硬规则）**：默认把画布与全部素材节点、视频节点**建好就停**（不提交）；只有用户明确要求自动开始时，才在节点全部建好后登记计划、由真人在终端批准，最后带 launch_ticket 提交；工具侧保证票据只在全部节点保存成功后才消费（建节点/上传失败不烧票）。图片素材会被挂成画布**图片节点**并用 `node:<nodeId>` 引用（保留上游连线、画布上看得见图），不是只做资产库 `res:` 引用。'
         + '**默认只建节点、不自动开始（用户 2026-11-13 定，硬规则）**：不传 auto_start 时本工具只做「上传参考素材 → 建图片节点 → 保存视频节点」，把节点和连线铺到画布上就停——**不报价、不确认、不运行、不扣费、不需要 launch_ticket**，由用户在画布上手动点「开始生成」。**只有用户明确表示「自动开始 / 自动生成 / 直接提交」时才传 auto_start=true**，且必须同时传 auto_start_reason（记录用户原话）并带 launch_ticket；自动开始路径的确认门要求 video_confirmation_model / video_confirmation_resolution / video_confirmation_duration（多时长批次用 video_confirmation_durations）与最终值一致。'
-        + '统一视频生成管线（即梦画布 CLI dreamina-canvas）：所有调用分解为 N 个隔离任务，每个任务在画布上是一个独立节点（多产物分节点，每节点 count=1），先并发提交，再（production 模式）统一等待终态并按 resourceId 精确取回。付费链路固定为「保存节点 → node quote 报价 → node confirm 批准（--credit-ceiling）→ node run（--submit-id）→ operation wait → resource download」，报价不等于授权，同一任务绝不换新 submit-id 重放。视频公开模式只有 t2v / first_last_frame / m2v（没有 i2v）：无参考=t2v；单图锁首帧或两张有序图片=first_last_frame；单图但要保留指定比例、或图片/视频/音频混合参考=m2v。**默认档位（用户 2026-11-13 定）：即梦 seedance_2.5 + 480p**（另默认 16:9、5 秒，比例/时长可从 prompt 推断兜底）。**改用其它模型或其它分辨率必须用户本人明确要求**：非默认模型要 video_model_selection_source=user_explicit，非默认分辨率（非 480p）要 video_resolution_selection_source=user_explicit；绝不从语料/示例/容量/失败回退或为"提高画质"自动切换或升级。video_execution_mode：production（提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（强制最低成本模型+720p，仅提交，须提供 video_group）——仅在 auto_start=true 时才有意义。video_count（1-10）为「同一 prompt+参考生成 N 份」；tasks（数组）为「不同素材/不同 prompt 的 N 个任务」。video_group 指定画布名（推荐「项目名_文件名」；工具自动补 `YYYYMMDD-` 日期前缀，名字已带日期则不重复加；模板只做推荐、不校验格式；**新建画布前先问用户画布名**），复用或新建画布，省略则用固定画布 dsh-media；也可用 canvas_project_id 直接指定画布。任务状态持久化在私有运行目录。',
+        + '统一视频生成管线（即梦画布 CLI dreamina-canvas）：所有调用分解为 N 个隔离任务，每个任务在画布上是一个独立节点（多产物分节点，每节点 count=1），先并发提交，再（production 模式）统一等待终态并按 resourceId 精确取回。付费链路固定为「保存节点 → node quote 报价 → node confirm 批准（--credit-ceiling）→ node run（--submit-id）→ operation wait → resource download」，报价不等于授权，同一任务绝不换新 submit-id 重放。视频公开模式只有 t2v / first_last_frame / m2v（没有 i2v）：无参考=t2v；单图锁首帧或两张有序图片=first_last_frame；单图但要保留指定比例、或图片/视频/音频混合参考=m2v。**默认档位（用户 2026-11-13 定）：即梦 seedance_2.5 + 480p**（另默认 16:9、5 秒，比例/时长可从 prompt 推断兜底）。**改用其它模型或其它分辨率必须用户本人明确要求**：非默认模型要 video_model_selection_source=user_explicit，非默认分辨率（非 480p）要 video_resolution_selection_source=user_explicit；绝不从语料/示例/容量/失败回退或为"提高画质"自动切换或升级。video_execution_mode：production（提交+等待+下载）、production_submit_only（仅提交返回 submit_id）——仅在 auto_start=true 时才有意义。video_count（1-10）为「同一 prompt+参考生成 N 份」；tasks（数组）为「不同素材/不同 prompt 的 N 个任务」。video_group 指定画布名（推荐「项目名_文件名」；工具自动补 `YYYYMMDD-` 日期前缀，名字已带日期则不重复加；模板只做推荐、不校验格式；**新建画布前先问用户画布名**），复用或新建画布，省略则用固定画布 dsh-media；也可用 canvas_project_id 直接指定画布。任务状态持久化在私有运行目录。',
       parameters: {
         prompt: {
           type: 'string',
@@ -298,7 +298,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         },
         video_resolution: {
           type: 'string',
-          description: '分辨率：**默认 480p**（即梦 2.5 默认档；test 模式固定 720p）。seedance_2.5 支持 480p/720p/1080p；seedance_2.0_vip 支持 720p/1080p/4k；seedance_2.0_fast_vip / _mini 仅 720p；wan_3.0 / happyhorse_1.1 为 720P/1080P。非 480p 必须是用户明确要求，并同时传 video_resolution_selection_source=user_explicit。',
+          description: '分辨率：**默认 480p**（即梦 2.5 默认档）。seedance_2.5 支持 480p/720p/1080p；seedance_2.0_vip 支持 720p/1080p/4k；seedance_2.0_fast_vip / _mini 仅 720p；wan_3.0 / happyhorse_1.1 为 720P/1080P。非 480p 必须是用户明确要求，并同时传 video_resolution_selection_source=user_explicit。',
         },
         model_version: {
           type: 'string',
@@ -317,7 +317,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         video_execution_mode: {
           type: 'string',
           enum: [...VIDEO_EXECUTION_MODES],
-          description: '执行模式：production（默认，提交+等待+下载）、production_submit_only（仅提交返回 submit_id）、test_submit_only（测试通道，强制最低成本模型+720p，仅提交不轮询，须提供 video_group）。**仅在 auto_start=true（用户明确要求自动开始）时才有意义**；默认手动开始模式不提交，忽略本项。test_submit_only 自身即提交语义（不需要 auto_start_reason），但仍要 launch_ticket。',
+          description: '执行模式：production（默认，提交+等待+下载）、production_submit_only（仅提交返回 submit_id）。**仅在 auto_start=true（用户明确要求自动开始）时才有意义**；默认手动开始模式不提交，忽略本项。',
         },
         auto_start: {
           type: 'boolean',
@@ -325,7 +325,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         },
         auto_start_reason: {
           type: 'string',
-          description: 'auto_start=true 时必填（test_submit_only 除外）：记录用户明确要求自动生成的原文/说明，写入日志留痕。没有用户明确要求不得填。',
+          description: 'auto_start=true 时必填：记录用户明确要求自动生成的原文/说明，写入日志留痕。没有用户明确要求不得填。',
         },
         allow_manual_prompts: {
           type: 'boolean',
@@ -374,7 +374,7 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         },
         video_group: {
           type: 'string',
-          description: '可选：画布名（推荐「项目名_文件名」，1-40 字符单行），工具自动补 YYYYMMDD- 日期前缀（名字已带日期则不重复加）；模板只是推荐、格式不校验。复用同名画布或新建；新建前先问用户画布名。省略时使用固定画布 dsh-media。test_submit_only 必须提供。',
+          description: '可选：画布名（推荐「项目名_文件名」，1-40 字符单行），工具自动补 YYYYMMDD- 日期前缀（名字已带日期则不重复加）；模板只是推荐、格式不校验。复用同名画布或新建；新建前先问用户画布名。省略时使用固定画布 dsh-media。',
         },
         canvas_project_id: {
           type: 'string',
@@ -439,8 +439,8 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         // 用户 2026-11-13 定：**自动开始改为手动触发**。默认只建节点、不提交：
         // 图片节点 + 视频节点铺到画布上后就停，由用户在画布点开始生成。只有用户
         // 明确说要「自动开始 / 自动生成」时才传 auto_start=true（并留原文 + 票据）。
-        const autoStart = args.auto_start === true || mode === 'test_submit_only'
-        if (autoStart && mode !== 'test_submit_only' && String(args.auto_start_reason ?? '').trim().length === 0) {
+        const autoStart = args.auto_start === true
+        if (autoStart && String(args.auto_start_reason ?? '').trim().length === 0) {
           throw mediaErrors.input(
             '自动开始必须由用户明确要求：auto_start=true 要同时传 auto_start_reason（记录用户原话），并带 launch_ticket。'
             + '默认流程只创建图片/视频节点、不提交不扣费，由用户在画布手动点开始。',
@@ -449,17 +449,15 @@ function apply(ctx: Context, config: ResolvedConfig): void {
 
         // Video creative gate: production submissions need a fresh creative_writer
         // record in this workspace. User-supplied / normalize-only prompts opt out
-        // explicitly (with a reason); test submissions ship no content and are exempt.
-        if (mode !== 'test_submit_only') {
-          const gate = await evaluateVideoCreativeGate({
-            workspaceRoot: exec.agent?.session?.header?.cwd ?? process.cwd(),
-            privateDir: config.privateDir,
-            allowManual: args.allow_manual_prompts === true,
-            manualReason: args.manual_prompts_reason,
-          })
-          if (!gate.allowed) {
-            throw mediaErrors.input(`creative gate: ${gate.message ?? 'refused'} ${VIDEO_CREATIVE_GATE_HINT}`)
-          }
+        // explicitly (with a reason).
+        const gate = await evaluateVideoCreativeGate({
+          workspaceRoot: exec.agent?.session?.header?.cwd ?? process.cwd(),
+          privateDir: config.privateDir,
+          allowManual: args.allow_manual_prompts === true,
+          manualReason: args.manual_prompts_reason,
+        })
+        if (!gate.allowed) {
+          throw mediaErrors.input(`creative gate: ${gate.message ?? 'refused'} ${VIDEO_CREATIVE_GATE_HINT}`)
         }
 
         // ---- shared call-level settings (one set for the whole call) ----
@@ -529,9 +527,6 @@ function apply(ctx: Context, config: ResolvedConfig): void {
           const c = args.video_count === undefined ? 1 : Number(args.video_count)
           if (!Number.isInteger(c) || c < 1 || c > 10) throw mediaErrors.input('video_count must be an integer between 1 and 10')
           count = c
-        }
-        if (mode === 'test_submit_only' && count !== 1) {
-          throw mediaErrors.input('test_submit_only supports exactly one task')
         }
         const base: TaskSpec & { count: number } = {
           prompt: prompt0,
@@ -638,9 +633,6 @@ function apply(ctx: Context, config: ResolvedConfig): void {
         if (explicitProject.length > 0) {
           project = { projectId: explicitProject, created: false }
         } else {
-          if (mode === 'test_submit_only' && String(args.video_group ?? '').trim().length === 0) {
-            throw mediaErrors.input('test_submit_only requires video_group to verify canvas routing')
-          }
           resolvedGroupName = String(args.video_group ?? '').trim().length > 0 ? datedVideoGroup(String(args.video_group)) : DEFAULT_CANVAS_NAME
           project = await resolveCanvasProject(cli, resolvedGroupName)
           if (resolvedGroupName === DEFAULT_CANVAS_NAME) resolvedGroupName = undefined

@@ -10,7 +10,6 @@
  * - 用户写法 → canonical 模型名（别名表）；
  * - default model seedance_2.5 / default resolution 480p（用户 2026-11-13 定：
  *   默认就用即梦 2.5 + 480p，**改用其它模型或分辨率必须用户本人明确要求**）；
- * - test 通道强制最低成本模型 + 720p 且只提交不轮询；
  * - 非默认模型必须由用户显式选择（`video_model_selection_source=user_explicit`），
  *   非默认分辨率同样必须由用户显式选择
  *   （`video_resolution_selection_source=user_explicit`），
@@ -23,7 +22,7 @@
  * @module dsh-media-plugins/shared/video-policy
  */
 
-export const VIDEO_EXECUTION_MODES = ['production', 'production_submit_only', 'test_submit_only'] as const
+export const VIDEO_EXECUTION_MODES = ['production', 'production_submit_only'] as const
 export type VideoExecutionMode = (typeof VIDEO_EXECUTION_MODES)[number]
 
 /**
@@ -40,12 +39,6 @@ export type VideoCommand = (typeof VIDEO_COMMANDS)[number]
  * 任务是一条独立的节点提交，因此这里限制的是「同时在跑的 CLI 提交数」。
  */
 export const DEFAULT_VIDEO_CAPACITY = 10
-
-/** test 通道使用当前目录里最低成本的可调用模型（非 VIP 语义在画布 CLI 已不存在）。 */
-export const TEST_CHANNEL_MODEL = 'seedance_2.0_mini'
-
-/** test 通道固定分辨率。 */
-export const TEST_CHANNEL_RESOLUTION = '720p'
 
 /** 默认模型（画布 CLI canonical 名）：即梦 2.5。 */
 export const DEFAULT_VIDEO_MODEL = 'seedance_2.5'
@@ -205,30 +198,27 @@ export function resolutionEquals(a: string, b: string): boolean {
 }
 
 /**
- * Model policy: test 通道强制最低成本模型；其余原样透传（别名已在
- * `normalizeModel` 解析）。画布 CLI 不再有「非 VIP 2.0」这一档，因此旧的
- * 2.0 系列一律归一到 `seedance_2.0_vip`。
+ * Model policy: 原样透传（别名已在 `normalizeModel` 解析）。画布 CLI 不再有
+ * 「非 VIP 2.0」这一档，因此旧的 2.0 系列一律归一到 `seedance_2.0_vip`。
  */
-export function resolveVideoModel(mode: VideoExecutionMode, userModel: string): string {
-  if (mode === 'test_submit_only') return TEST_CHANNEL_MODEL
+export function resolveVideoModel(_mode: VideoExecutionMode, userModel: string): string {
   // 别名归一化放在这里，保证任何调用路径（工具层、测试、旧调用方）拿到的
   // 都是画布 CLI 的 canonical 名，而不是用户口语写法。
   return normalizeModel(userModel)
 }
 
-/** Resolution policy: test 通道强制 720p；否则请求值或默认值。 */
+/** Resolution policy: 请求值优先，缺省用管线默认档（480p）。 */
 export function resolveVideoResolution(
-  mode: VideoExecutionMode,
+  _mode: VideoExecutionMode,
   requested: string | undefined,
   defaultResolution: string,
 ): string {
-  if (mode === 'test_submit_only') return TEST_CHANNEL_RESOLUTION
   return requested ?? defaultResolution
 }
 
 /** A non-default model requires an explicit user selection marker. */
-export function requiresExplicitSelectionSource(model: string, mode: VideoExecutionMode): boolean {
-  return mode !== 'test_submit_only' && model !== DEFAULT_VIDEO_MODEL
+export function requiresExplicitSelectionSource(model: string, _mode: VideoExecutionMode): boolean {
+  return model !== DEFAULT_VIDEO_MODEL
 }
 
 /**
@@ -236,10 +226,9 @@ export function requiresExplicitSelectionSource(model: string, mode: VideoExecut
  *
  * 与模型规则对称：只有 480p 是默认档；720p / 1080p / 4k 等必须由用户本人
  * 明确要求（`video_resolution_selection_source=user_explicit`），Agent 不得
- * 为了"画质更好"自行升级。test 通道固定 720p，不受此门约束。
+ * 为了"画质更好"自行升级。
  */
-export function requiresExplicitResolutionSource(resolution: string, mode: VideoExecutionMode): boolean {
-  if (mode === 'test_submit_only') return false
+export function requiresExplicitResolutionSource(resolution: string, _mode: VideoExecutionMode): boolean {
   return !resolutionEquals(resolution, DEFAULT_VIDEO_RESOLUTION)
 }
 
