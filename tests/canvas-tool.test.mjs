@@ -121,3 +121,27 @@ test('withVideoDefaults: only node create video is touched (edit/run/other comma
   // undefined flags stay safe
   assert.deepEqual(withVideoDefaults('node', 'run', undefined), {})
 })
+
+test('withVideoDefaults: material-import nodes keep raw flags (no model/resolution injection)', () => {
+  // `node create video --resource-id … --import-kind …` 建的是**导入**节点，不接受生成参数：
+  // 一旦被注入 model/resolution，CLI 会判「提供了生成参数但缺 --mode/prompt」而在本地拒绝，
+  // 使这条合法路径必然失败（2026-11-27 实测：工具路径全部 input_error，直调 CLI 才通）。
+  const imported = withVideoDefaults('node', 'create video', {
+    resource_id: ['11111111-1111-4111-8111-111111111111'],
+    import_kind: 'local_upload',
+    title: 'seg-01',
+  })
+  assert.deepEqual(imported, {
+    resource_id: ['11111111-1111-4111-8111-111111111111'],
+    import_kind: 'local_upload',
+    title: 'seg-01',
+  })
+  // import-kind 单独出现（不带 resource-id）同样不注入
+  assert.deepEqual(withVideoDefaults('node', 'create video', { import_kind: 'external_generated' }), {
+    import_kind: 'external_generated',
+  })
+  // 但只要还带生成参数，说明是在建生成节点，默认档位照旧补齐
+  const generated = withVideoDefaults('node', 'create video', { mode: 't2v', prompt: 'x' })
+  assert.equal(generated.model, DEFAULT_VIDEO_MODEL)
+  assert.equal(generated.resolution, DEFAULT_VIDEO_RESOLUTION)
+})

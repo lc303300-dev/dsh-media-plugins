@@ -188,6 +188,10 @@ export function withVideoDefaults(command: string, action: string, flags: Record
   if (command !== 'node') return out
   const act = String(action ?? '').trim().toLowerCase()
   if (!/^create\s+video$/.test(act)) return out
+  // 导入既有素材的节点（`--resource-id` / `--import-kind`）不接受生成参数：
+  // 注入 model/resolution 会让 CLI 判定"提供了生成参数但缺 --mode/prompt"而在本地拒绝，
+  // 导致 `node create video --resource-id …` 这条合法路径必然失败。
+  if (out.resource_id !== undefined || out.import_kind !== undefined) return out
   const blank = (v: unknown): boolean => v === undefined || v === null || String(v).trim() === ''
   if (blank(out.model)) out.model = DEFAULT_VIDEO_MODEL
   if (blank(out.resolution)) out.resolution = DEFAULT_VIDEO_RESOLUTION
